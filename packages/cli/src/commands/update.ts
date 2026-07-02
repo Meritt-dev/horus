@@ -31,6 +31,12 @@ async function ensureBackendPinned(
   // one, so the compiled-in PINNED_SOURCE_VERSION is stale. Callers past a binary
   // swap must pass the freshly-downloaded release version instead (HOR-350).
   targetVersion: string = PINNED_SOURCE_VERSION,
+  // A wheel CONFIRMED to be `targetVersion` (e.g. just downloaded from that
+  // release). Required whenever targetVersion differs from the compiled-in pin:
+  // the sibling horus_source.whl is only trustworthy for THIS binary's own pin —
+  // staging it under any other version would install stale backend bits that
+  // then wrongly PASS the pin check (PR #35 review, discussion_r3513589546).
+  confirmedWheelPath?: string,
 ): Promise<void> {
   let installed: string | null = null;
   try {
@@ -42,8 +48,15 @@ async function ensureBackendPinned(
     write(`  ${pc.green('✓')} Source backend already on pinned ${targetVersion}.`);
     return;
   }
+  if (targetVersion !== PINNED_SOURCE_VERSION && confirmedWheelPath === undefined) {
+    // No wheel confirmed for that release — never reuse the old sibling wheel.
+    write(`  ${pc.yellow('!')} Backend wheel for ${targetVersion} wasn't downloaded — skipping backend install.`);
+    write(`    ${pc.dim('Re-run `horus update`, or: curl -fsSL https://horus.sh/install.sh | bash')}`);
+    return;
+  }
   await installBundledBackend(write, {
     version: targetVersion,
+    ...(confirmedWheelPath !== undefined ? { _wheelPath: confirmedWheelPath } : {}),
     label:
       installed === null
         ? undefined
@@ -244,6 +257,7 @@ export async function runUpdate(opts: {
   // running (old) process resolves the wheel from the binary's directory, so
   // writing it there lets ensureBackendPinned install the NEW backend below.
   const wheelAsset = release.assets.find((a) => a.name === 'horus_source.whl');
+  let refreshedWheelPath: string | undefined;
   if (wheelAsset) {
     try {
       const whlRes = await _fetch(wheelAsset.browser_download_url, {
@@ -251,16 +265,21 @@ export async function runUpdate(opts: {
         redirect: 'follow',
       });
       if (whlRes.ok) {
-        writeFileSync(join(dirname(binaryPath), 'horus_source.whl'), Buffer.from(await whlRes.arrayBuffer()));
+        const target = join(dirname(binaryPath), 'horus_source.whl');
+        writeFileSync(target, Buffer.from(await whlRes.arrayBuffer()));
+        refreshedWheelPath = target;
         write(`  ${pc.green('✓')} Bundled backend wheel refreshed.`);
       }
     } catch {
-      // Best-effort — ensureBackendPinned degrades to the installer hint.
+      // Download failed — refreshedWheelPath stays unset and the pinning step
+      // below refuses to reuse the stale sibling wheel for the new version.
     }
   }
 
   // Bring the source backend to the version of the release we just installed —
   // NOT the stale compiled-in pin of this still-running old process (HOR-350).
-  await ensureBackendPinned(write, latest);
+  // Only a wheel confirmed downloaded from THIS release may be installed as
+  // `latest`; on a failed refresh this skips with the installer fallback.
+  await ensureBackendPinned(write, latest, refreshedWheelPath);
   return 0;
 }
