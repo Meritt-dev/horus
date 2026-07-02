@@ -6,7 +6,7 @@
  * via `uv tool install`.
  */
 
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -28,9 +28,31 @@ export function resolveBundledWheel(): string | null {
 }
 
 /**
+ * The wheel's ACTUAL package version, read from its `*.dist-info/` directory
+ * name (zip member paths are stored verbatim, so a raw byte scan is reliable
+ * without a zip library). Returns null for a torn/corrupt/non-wheel file.
+ *
+ * This is what makes the bundled install TRUST-FREE: a sibling wheel is never
+ * assumed to match the pin (a partial self-update can leave a NEW binary next
+ * to an OLD wheel — PR #35 review, discussion_r3513795163); the content is
+ * verified and a mismatch is refused.
+ */
+export function readWheelDistVersion(wheelPath: string): string | null {
+  try {
+    const raw = readFileSync(wheelPath).toString('latin1');
+    const m = /horus_source-([0-9][A-Za-z0-9.+!-]*?)\.dist-info\//.exec(raw);
+    return m?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Install the backend from the bundled wheel. Returns true on success.
  * Best-effort: failures print the installer fallback and return false —
- * callers degrade, they never abort on this.
+ * callers degrade, they never abort on this. The wheel's dist-info version
+ * must equal the target version — stale/torn wheels are refused, never
+ * installed under a version they aren't.
  */
 export async function installBundledBackend(
   write: (line: string) => void,
@@ -47,6 +69,19 @@ export async function installBundledBackend(
     write(
       `  ${pc.dim('Bundled backend wheel not found — install via: curl -fsSL https://horus.sh/install.sh | bash')}`,
     );
+    return false;
+  }
+  const actual = readWheelDistVersion(wheel);
+  if (actual === null) {
+    write(`  ${pc.yellow('!')} Bundled backend wheel is unreadable/corrupt — skipping install.`);
+    write(`    ${pc.dim('Re-run the installer: curl -fsSL https://horus.sh/install.sh | bash')}`);
+    return false;
+  }
+  if (actual !== version) {
+    write(
+      `  ${pc.yellow('!')} Bundled backend wheel is ${actual} but ${version} is required — refusing the stale wheel.`,
+    );
+    write(`    ${pc.dim('Re-run `horus update`, or: curl -fsSL https://horus.sh/install.sh | bash')}`);
     return false;
   }
   write(`  ${opts.label ?? `Installing source backend ${version} from the bundle…`}`);

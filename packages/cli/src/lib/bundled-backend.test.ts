@@ -49,7 +49,9 @@ let lines: string[];
 beforeEach(() => {
   bundleDir = mkdtempSync(join(tmpdir(), 'horus-bundle-'));
   flatWheel = join(bundleDir, 'horus_source.whl');
-  writeFileSync(flatWheel, 'fake-wheel-bytes');
+  // A wheel's zip stores member paths verbatim — the dist-info marker is what
+  // readWheelDistVersion verifies. This fake claims the mocked pin (9.9.9).
+  writeFileSync(flatWheel, 'PK fake horus_source-9.9.9.dist-info/METADATA fake-wheel-bytes');
   lines = [];
   seams.execFileError = null;
   seams.wheelArgExistedAtExec = false;
@@ -74,7 +76,7 @@ describe('installBundledBackend', () => {
     expect(basename(wheelArg)).toBe('horus_source-9.9.9-py3-none-any.whl');
     // The staged copy really existed (same bytes) when uv ran…
     expect(seams.wheelArgExistedAtExec).toBe(true);
-    expect(seams.wheelArgBytes).toBe('fake-wheel-bytes');
+    expect(seams.wheelArgBytes).toContain('fake-wheel-bytes');
     // …and the staging dir is cleaned up afterwards.
     expect(existsSync(wheelArg)).toBe(false);
   });
@@ -97,11 +99,36 @@ describe('installBundledBackend', () => {
     expect(lines.join('\n')).toContain('install.sh');
   });
 
+  it('REGRESSION: refuses a stale sibling wheel whose content is not the target version', async () => {
+    // The later-process scenario from discussion_r3513795163: a partial
+    // self-update left a NEW binary (pin mocked 9.9.9) beside an OLD wheel.
+    const staleWheel = join(bundleDir, 'stale.whl');
+    writeFileSync(staleWheel, 'PK horus_source-1.0.0.dist-info/METADATA old-bytes');
+    const ok = await installBundledBackend((l) => lines.push(l), { _wheelPath: staleWheel });
+
+    expect(ok).toBe(false);
+    expect(seams.execFile).not.toHaveBeenCalled();
+    const out = lines.join('\n');
+    expect(out).toContain('1.0.0');
+    expect(out).toContain('refusing the stale wheel');
+  });
+
+  it('refuses a torn/corrupt wheel (no readable dist-info version)', async () => {
+    const torn = join(bundleDir, 'torn.whl');
+    writeFileSync(torn, 'garbage-bytes-no-marker');
+    const ok = await installBundledBackend((l) => lines.push(l), { _wheelPath: torn });
+    expect(ok).toBe(false);
+    expect(seams.execFile).not.toHaveBeenCalled();
+    expect(lines.join('\n')).toContain('unreadable/corrupt');
+  });
+
   it('stages under the caller-provided version, not the compiled-in pin (self-update)', async () => {
     // After a self-update the freshly-downloaded wheel is the NEW release version,
     // while PINNED_SOURCE_VERSION (mocked 9.9.9) is this old process's stale pin.
+    const newWheel = join(bundleDir, 'downloaded.whl');
+    writeFileSync(newWheel, 'PK horus_source-1.2.3.dist-info/METADATA new-bytes');
     const ok = await installBundledBackend((l) => lines.push(l), {
-      _wheelPath: flatWheel,
+      _wheelPath: newWheel,
       version: '1.2.3',
     });
 

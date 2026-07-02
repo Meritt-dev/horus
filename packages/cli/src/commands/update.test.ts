@@ -226,6 +226,9 @@ describe('runUpdate — self-update backend wheel refresh', () => {
     dir = mkdtempSync(j(tmpdir(), 'horus-update-'));
     binPath = j(dir, 'horus');
     wfs(binPath, 'old-binary');
+    // A stale sibling wheel from the PREVIOUS install — the partial-update
+    // hazard: it must never survive a failed refresh (discussion_r3513795163).
+    wfs(j(dir, 'horus_source.whl'), 'PK horus_source-0.1.16.dist-info/ old-wheel-bytes');
     origArgv1 = process.argv[1];
     process.argv[1] = binPath;
     vi.clearAllMocks();
@@ -249,6 +252,14 @@ describe('runUpdate — self-update backend wheel refresh', () => {
     // The pinning step must SKIP, not stage the old sibling wheel as 99.0.0.
     expect(vi.mocked(installBundledBackend)).not.toHaveBeenCalled();
     expect(out).toContain("wasn't downloaded — skipping backend install");
+    // And the stale sibling must be GONE, so the NEXT process (whose compiled
+    // pin is 99.0.0) can't trust it by co-location — it falls back to the
+    // installer instead of installing old backend bits under the new pin.
+    const { existsSync: ex } = await import('node:fs');
+    const { join: j2, dirname: dn2 } = await import('node:path');
+    const { realpathSync: rp } = await import('node:fs');
+    expect(ex(j2(dn2(rp(binPath)), 'horus_source.whl'))).toBe(false);
+    expect(out).toContain('removed the stale bundled wheel');
   });
 
   it('a confirmed wheel download is passed explicitly to the backend install', async () => {

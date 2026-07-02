@@ -257,22 +257,36 @@ export async function runUpdate(opts: {
   // running (old) process resolves the wheel from the binary's directory, so
   // writing it there lets ensureBackendPinned install the NEW backend below.
   const wheelAsset = release.assets.find((a) => a.name === 'horus_source.whl');
+  const siblingWheel = join(dirname(binaryPath), 'horus_source.whl');
   let refreshedWheelPath: string | undefined;
-  if (wheelAsset) {
-    try {
-      const whlRes = await _fetch(wheelAsset.browser_download_url, {
-        headers: { 'User-Agent': `horus/${HORUS_VERSION}` },
-        redirect: 'follow',
-      });
-      if (whlRes.ok) {
-        const target = join(dirname(binaryPath), 'horus_source.whl');
-        writeFileSync(target, Buffer.from(await whlRes.arrayBuffer()));
-        refreshedWheelPath = target;
-        write(`  ${pc.green('✓')} Bundled backend wheel refreshed.`);
+  try {
+    if (!wheelAsset) throw new Error('release has no horus_source.whl asset');
+    const whlRes = await _fetch(wheelAsset.browser_download_url, {
+      headers: { 'User-Agent': `horus/${HORUS_VERSION}` },
+      redirect: 'follow',
+    });
+    if (!whlRes.ok) throw new Error(`wheel download failed: ${whlRes.status}`);
+    // Write-then-rename so a crash mid-download can never leave a TORN wheel
+    // that a later process would trust by co-location.
+    const tmpWheel = `${siblingWheel}.tmp-${process.pid}`;
+    writeFileSync(tmpWheel, Buffer.from(await whlRes.arrayBuffer()));
+    renameSync(tmpWheel, siblingWheel);
+    refreshedWheelPath = siblingWheel;
+    write(`  ${pc.green('✓')} Bundled backend wheel refreshed.`);
+  } catch {
+    // The binary is already the NEW version, so the OLD sibling wheel must not
+    // survive: the next process (new compiled-in pin) would trust it by
+    // co-location and install stale backend bits under the new pin (PR #35
+    // review, discussion_r3513795163). Remove it so later `horus update`/
+    // `horus init` fall back to the installer; install-time dist-info
+    // verification is the second line of defense if this unlink fails.
+    if (existsSync(siblingWheel)) {
+      try {
+        unlinkSync(siblingWheel);
+        write(`  ${pc.yellow('!')} Backend wheel refresh failed — removed the stale bundled wheel.`);
+      } catch {
+        write(`  ${pc.yellow('!')} Backend wheel refresh failed and the stale wheel could not be removed.`);
       }
-    } catch {
-      // Download failed — refreshedWheelPath stays unset and the pinning step
-      // below refuses to reuse the stale sibling wheel for the new version.
     }
   }
 
