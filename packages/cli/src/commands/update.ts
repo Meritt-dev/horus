@@ -25,22 +25,29 @@ const execFileAsync = promisify(execFile);
  * after updating the CLI we install the bundled wheel via `uv tool`. Best-effort: never
  * fails the update — falls back to pointing at the installer.
  */
-async function ensureBackendPinned(write: (line: string) => void): Promise<void> {
+async function ensureBackendPinned(
+  write: (line: string) => void,
+  // After a self-update the binary is replaced but THIS process is still the old
+  // one, so the compiled-in PINNED_SOURCE_VERSION is stale. Callers past a binary
+  // swap must pass the freshly-downloaded release version instead (HOR-350).
+  targetVersion: string = PINNED_SOURCE_VERSION,
+): Promise<void> {
   let installed: string | null = null;
   try {
     installed = await getSourceVersion();
   } catch {
     installed = null;
   }
-  if (installed === PINNED_SOURCE_VERSION) {
-    write(`  ${pc.green('✓')} Source backend already on pinned ${PINNED_SOURCE_VERSION}.`);
+  if (installed === targetVersion) {
+    write(`  ${pc.green('✓')} Source backend already on pinned ${targetVersion}.`);
     return;
   }
   await installBundledBackend(write, {
+    version: targetVersion,
     label:
       installed === null
         ? undefined
-        : `Upgrading source backend ${installed} → ${PINNED_SOURCE_VERSION} (bundled wheel)…`,
+        : `Upgrading source backend ${installed} → ${targetVersion} (bundled wheel)…`,
   });
 }
 
@@ -252,7 +259,8 @@ export async function runUpdate(opts: {
     }
   }
 
-  // Bring the source backend to the version this new CLI is pinned to (HOR-350).
-  await ensureBackendPinned(write);
+  // Bring the source backend to the version of the release we just installed —
+  // NOT the stale compiled-in pin of this still-running old process (HOR-350).
+  await ensureBackendPinned(write, latest);
   return 0;
 }

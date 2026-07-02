@@ -412,6 +412,43 @@ describe('Evidence titles and payloads', () => {
     expect((payload['context'] as Record<string, unknown>)['attempt']).toBe(3);
   });
 
+  it('logsToEvidence payload redacts secrets NESTED in context objects and arrays', () => {
+    // Real logger context is nested (`context.error.url`, request config, driver
+    // details); a top-level-only pass leaves these secrets in the persisted payload.
+    const records: LogRecord[] = [
+      {
+        timestamp: '2026-06-15T10:00:00Z',
+        level: 'error',
+        levelValue: 50,
+        message: 'db connect failed',
+        context: {
+          requestId: 'req-1',
+          error: { url: 'postgres://user:supersecret@db.internal:5432/app' },
+          retries: [{ dsn: 'redis://:hunter2@cache:6379' }],
+        },
+        service: 'api',
+        index: 'logs-2026.06.15',
+        raw: { message: 'db connect failed' },
+      },
+    ];
+    const evidence = logsToEvidence(records, 'test-query', '2026-06-15T10:05:00Z');
+    const payload = evidence[0]!.payload as Record<string, unknown>;
+    const serialized = JSON.stringify(payload);
+
+    // Secrets one/two levels deep (and inside an array) must not survive.
+    expect(serialized).not.toContain('supersecret');
+    expect(serialized).not.toContain('hunter2');
+    const context = payload['context'] as Record<string, unknown>;
+    expect((context['error'] as Record<string, unknown>)['url']).toContain(
+      'postgres://[REDACTED]@',
+    );
+    expect(((context['retries'] as Record<string, unknown>[])[0]!)['dsn']).toContain(
+      'redis://[REDACTED]@',
+    );
+    // Non-secret structure and scalars are preserved.
+    expect(context['requestId']).toBe('req-1');
+  });
+
   it('shopify queryEvidence redacts secret-bearing GraphQL error messages in the payload', async () => {
     const client = {
       graphql: async () => ({

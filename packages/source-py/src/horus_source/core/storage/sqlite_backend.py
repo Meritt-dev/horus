@@ -273,7 +273,10 @@ class SqliteBackend:
         """
         path = Path(path)
         if read_only:
-            uri = f"file:{path}?mode=ro"
+            # Percent-encode the path: a raw f-string lets URI delimiters in the
+            # filesystem path (``?``/``#``) truncate the filename and drop
+            # ``mode=ro``. ``Path.as_uri()`` escapes it (requires an absolute path).
+            uri = path.resolve().as_uri() + "?mode=ro"
             conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,7 +323,9 @@ class SqliteBackend:
         if self._ro_conn is None:
             if self._path is None:
                 raise RuntimeError("SqliteBackend.initialize() must be called before use")
-            uri = f"file:{self._path}?mode=ro"
+            # Escape the path so ``?``/``#`` in a repo path can't slip past the
+            # read-only open (see initialize()). ``as_uri()`` percent-encodes it.
+            uri = self._path.resolve().as_uri() + "?mode=ro"
             ro = sqlite3.connect(uri, uri=True, check_same_thread=False)
             try:
                 _load_sqlite_vec_extension(ro)

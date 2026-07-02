@@ -725,6 +725,25 @@ export function computeErrorDeltas(
 // Evidence conversion
 // ---------------------------------------------------------------------------
 
+/**
+ * Recursively redact secret-bearing string leaves in a structured value.
+ * Logger `context` is commonly nested (`context.error.url`, request config, driver
+ * details), so a top-level-only pass leaves secrets in nested objects/arrays that
+ * still survive into `JSON.stringify(payload)` and flow to reports/AI input. Walks
+ * objects and arrays, redacting every string leaf; non-string scalars pass through.
+ * Context originates from Elasticsearch `_source` (already JSON), so it is acyclic.
+ */
+function deepRedactSecrets(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(deepRedactSecrets);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, deepRedactSecrets(v)]),
+    );
+  }
+  return value;
+}
+
 export function logsToEvidence(
   records: LogRecord[],
   query: string,
@@ -754,14 +773,7 @@ export function logsToEvidence(
       message: redactSecrets(r.message),
       ...(r.detail !== undefined ? { detail: redactSecrets(r.detail) } : {}),
       ...(r.context !== undefined
-        ? {
-            context: Object.fromEntries(
-              Object.entries(r.context).map(([k, v]) => [
-                k,
-                typeof v === 'string' ? redactSecrets(v) : v,
-              ]),
-            ),
-          }
+        ? { context: deepRedactSecrets(r.context) as Record<string, unknown> }
         : {}),
     };
 

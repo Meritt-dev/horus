@@ -96,4 +96,20 @@ describe('installBundledBackend', () => {
     expect(seams.execFile).not.toHaveBeenCalled();
     expect(lines.join('\n')).toContain('install.sh');
   });
+
+  it('stages under the caller-provided version, not the compiled-in pin (self-update)', async () => {
+    // After a self-update the freshly-downloaded wheel is the NEW release version,
+    // while PINNED_SOURCE_VERSION (mocked 9.9.9) is this old process's stale pin.
+    const ok = await installBundledBackend((l) => lines.push(l), {
+      _wheelPath: flatWheel,
+      version: '1.2.3',
+    });
+
+    expect(ok).toBe(true);
+    const args = seams.execFile.mock.calls[0]![1] as string[];
+    const wheelArg = args[args.length - 1]!;
+    expect(basename(wheelArg)).toBe('horus_source-1.2.3-py3-none-any.whl');
+    expect(basename(wheelArg)).not.toContain('9.9.9');
+    expect(lines.join('\n')).toContain('1.2.3');
+  });
 });
