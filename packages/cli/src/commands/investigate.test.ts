@@ -237,3 +237,13 @@ describe('runInvestigate — unknown environment', () => {
     expect(stderr).toContain('Unknown environment: staging');
   });
 });
+
+describe('runInvestigate — output format validation (dogfood: --format xml fell back silently)', () => {
+  it('rejects an unknown format with exit 1 before doing any work', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runInvestigate('some hint', { format: 'xml' });
+    expect(code).toBe(1);
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('Unknown format "xml"');
+    errSpy.mockRestore();
+  });
+});

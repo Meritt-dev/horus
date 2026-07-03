@@ -12,7 +12,7 @@ function printSuggested(steps: RouteStep[]): void {
 
 export async function runExplain(
   query: string,
-  opts: { config?: string; depth?: number; json?: boolean; repo?: string },
+  opts: { config?: string; depth?: number; json?: boolean; full?: boolean; repo?: string },
 ): Promise<number> {
   const config = await loadConfig(opts.config);
   const code = codeForRepo(config, opts.repo);
@@ -62,18 +62,25 @@ export async function runExplain(
   if (!top) return 1;
 
   const isExactMatch = top.name.toLowerCase() === query.toLowerCase();
+  let fuzzyNotice: string | null = null;
   if (!isExactMatch) {
     if (await isQueueBoundary(config, query)) {
-      console.log(`No exact symbol match for: ${pc.bold(query)}`);
-      console.log(
-        pc.dim(`  "${query}" matches an async boundary — try: `) + pc.bold(`horus queues ${query}`),
-      );
+      if (opts.json) {
+        console.log(JSON.stringify({ symbol: null, queueBoundary: query }, null, 2));
+      } else {
+        console.log(`No exact symbol match for: ${pc.bold(query)}`);
+        console.log(
+          pc.dim(`  "${query}" matches an async boundary — try: `) + pc.bold(`horus queues ${query}`),
+        );
+      }
       return 1;
     }
-    console.log(
-      pc.yellow(`  No exact match for "${query}"`) +
-        pc.dim(` — showing closest: "${top.name}" (fuzzy match)`),
-    );
+    fuzzyNotice = `No exact match for "${query}" — showing closest: "${top.name}" (fuzzy match)`;
+    // stdout must be VALID JSON in --json mode (dogfood: human fuzzy text corrupted
+    // parsers) — the notice becomes a structured field instead.
+    if (!opts.json) {
+      console.log(pc.yellow(`  ${fuzzyNotice}`));
+    }
   }
   // Semantic search often returns several same-named hits (e.g. a resolver, a service,
   // and a test factory all named `createCompany`). We explain the highest-ranked match
@@ -100,16 +107,39 @@ export async function runExplain(
   ]);
 
   if (opts.json) {
+    // Compact by default: dogfood showed `explain Client --json` producing enormous
+    // output (full neighbour lists, full per-depth impact, snippets with raw source).
+    // `--full` restores everything.
+    const cap = <T>(xs: T[], n: number) => (opts.full ? xs : xs.slice(0, n));
+    const strip = (sym: Record<string, unknown>) => {
+      if (opts.full) return sym;
+      const { snippet: _s, sourceBody: _b, content: _c, ...rest } = sym;
+      return rest;
+    };
+    const impactOut = opts.full
+      ? impact
+      : {
+          ...impact,
+          byDepth: impact.byDepth.map((d) => ({
+            ...d,
+            symbols: d.symbols.slice(0, 25),
+            truncated: d.symbols.length > 25 ? true : undefined,
+          })),
+        };
     console.log(
       JSON.stringify(
         {
-          symbol: ctx.symbol,
+          symbol: strip(ctx.symbol as unknown as Record<string, unknown>),
+          ...(fuzzyNotice !== null ? { notice: fuzzyNotice } : {}),
           community: ctx.community,
           isDead: ctx.isDead,
-          callers: ctx.callers,
-          callees: ctx.callees,
-          impact,
-          flows,
+          callers: cap(ctx.callers, 20).map((s) => strip(s as unknown as Record<string, unknown>)),
+          callees: cap(ctx.callees, 20).map((s) => strip(s as unknown as Record<string, unknown>)),
+          ...(!opts.full && (ctx.callers.length > 20 || ctx.callees.length > 20)
+            ? { truncated: 'callers/callees capped at 20 — re-run with --full' }
+            : {}),
+          impact: impactOut,
+          flows: cap(flows, 10),
           // HOR-386 — structured next-steps from the SAME router; empty on the happy path.
           nextSteps: route({ command: 'explain', seedName: top.name, query }),
         },

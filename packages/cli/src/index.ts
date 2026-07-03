@@ -404,6 +404,7 @@ Examples:
     .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
     .option('--repo <name>', 'repository name to scope the source lookup to')
     .option('--json', 'output JSON')
+    .option('--full', 'full JSON: uncapped lists + snippets (default: compact)')
     .action(
       async (
         query: string,
@@ -797,6 +798,7 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     )
     .option('--json', 'output JSON (alias for --format json)')
     .option('--format <fmt>', 'output format: text | markdown | json', 'text')
+    .option('--full', 'include raw evidence payloads in JSON output (default: compact)')
     .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
     .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
     .action(

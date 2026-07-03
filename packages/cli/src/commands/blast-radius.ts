@@ -80,16 +80,19 @@ export async function runBlastRadius(
         }
         return 1;
       }
-      if (r.seed.name.toLowerCase() !== query.toLowerCase()) {
-        console.log(
-          pc.yellow(`  No exact match for "${query}"`) +
-            pc.dim(` — showing closest: "${r.seed.name}" (fuzzy match)`),
-        );
+      const fuzzyNotice =
+        r.seed.name.toLowerCase() !== query.toLowerCase()
+          ? `No exact match for "${query}" — showing closest: "${r.seed.name}" (fuzzy match)`
+          : null;
+      // stdout stays VALID JSON in --json mode — the notice is a structured field.
+      if (fuzzyNotice !== null && !opts.json) {
+        console.log(pc.yellow(`  ${fuzzyNotice}`));
       }
       if (opts.json) {
         // HOR-386 — bolt the SAME router's structured next-steps onto the --json shape
         // (mirrors investigate.ts adding `freshness`). Empty on the happy path.
         const obj = JSON.parse(blastRadiusToJSON(r)) as Record<string, unknown>;
+        if (fuzzyNotice !== null) obj.notice = fuzzyNotice;
         obj.nextSteps = route({ command: 'blast-radius', seedName: r.seed.name, query });
         console.log(JSON.stringify(obj, null, 2));
       } else {

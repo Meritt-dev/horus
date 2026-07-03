@@ -232,12 +232,20 @@ export async function runInvestigate(
     service?: string;
     json?: boolean;
     format?: string;
+    full?: boolean;
     ai?: boolean;
     aiModel?: string;
     /** Injectable AI provider for smoke tests — bypasses credential requirement. */
     _aiProvider?: NarrativeProvider;
   },
 ): Promise<number> {
+  // Validate the output format BEFORE any work — `--format xml` used to silently
+  // fall back to text after a full investigation ran (dogfood).
+  const requestedFormat = opts.json ? 'json' : (opts.format ?? 'text');
+  if (!['text', 'json', 'markdown', 'md'].includes(requestedFormat)) {
+    console.error(pc.red(`Unknown format "${requestedFormat}". Valid: text, json, markdown.`));
+    return 1;
+  }
   try {
     const config = await loadConfig(opts.config);
 
@@ -330,6 +338,18 @@ export async function runInvestigate(
       if (format === 'json') {
         const obj = JSON.parse(reportToJSON(report)) as Record<string, unknown>;
         obj.freshness = freshness;
+        // Compact by default (agent-facing): evidence payloads/snippets carry raw
+        // source strings and can be enormous — keep citable metadata, drop bodies.
+        // `--full` restores the raw report.
+        if (!opts.full) {
+          const ev = obj['evidence'];
+          if (Array.isArray(ev)) {
+            obj['evidence'] = ev.map((e) => {
+              const { payload: _payload, ...rest } = e as Record<string, unknown>;
+              return { ...rest, payload: '[omitted — re-run with --full]' };
+            });
+          }
+        }
         console.log(JSON.stringify(obj, null, 2));
       } else {
         console.log(format === 'markdown' || format === 'md' ? reportToMarkdown(report) : renderReport(report));
