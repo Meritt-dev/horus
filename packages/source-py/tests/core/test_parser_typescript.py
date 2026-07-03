@@ -425,3 +425,121 @@ class TestDiFieldCapture:
         result = ts_parser.parse(code, "empty.ts")
         cls = next(s for s in result.symbols if s.kind == "class")
         assert cls.di_fields == {}
+
+
+class TestJsxComponentUsage:
+    """Dogfood P1: `<Content />` is an invocation of Content, but produced no call
+    edge — every JSX component read as dead code."""
+
+    @pytest.fixture
+    def tsx_parser(self) -> TypeScriptParser:
+        return TypeScriptParser(dialect="tsx")
+
+    def test_self_closing_and_paired_elements_are_calls(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = """\
+const Content = () => <p>hi</p>;
+const Form = () => <form />;
+export const Page = () => (
+  <div>
+    <Content />
+    <Form>inner</Form>
+  </div>
+);
+"""
+        result = tsx_parser.parse(code, "src/page.tsx")
+        called = {c.name for c in result.calls}
+        assert "Content" in called
+        assert "Form" in called
+
+    def test_intrinsic_lowercase_tags_are_not_calls(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = 'export const X = () => <div className="a"><span /></div>;\n'
+        result = tsx_parser.parse(code, "src/x.tsx")
+        called = {c.name for c in result.calls}
+        assert "div" not in called
+        assert "span" not in called
+
+    def test_member_component_usage_records_property_name(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = "export const Y = () => <UI.Widget />;\n"
+        result = tsx_parser.parse(code, "src/y.tsx")
+        widget = [c for c in result.calls if c.name == "Widget"]
+        assert widget and widget[0].receiver == "UI"
+
+
+class TestPropertyAssignmentFunctions:
+    """Dogfood cycle-2 N6: express's ENTIRE API (`res.send = function send(){}`,
+    `app.use = function use(fn){}`) was invisible — 0 methods repo-wide."""
+
+    def test_receiver_property_function_is_a_method(self, js_parser: TypeScriptParser) -> None:
+        code = (
+            "var res = Object.create(null);\n"
+            "res.send = function send(body) {\n  return this.end(body);\n};\n"
+            "res.json = (obj) => res.send(JSON.stringify(obj));\n"
+        )
+        result = js_parser.parse(code, "lib/response.js")
+        by_name = {s.name: s for s in result.symbols if s.kind == "method"}
+        assert by_name["send"].class_name == "res"
+        assert by_name["json"].class_name == "res"
+        # The receiver's methods ARE the module API — exported.
+        assert "send" in result.exports
+        assert "json" in result.exports
+
+    def test_prototype_assignment_owned_by_class(self, js_parser: TypeScriptParser) -> None:
+        code = "function Router() {}\nRouter.prototype.handle = function handle(req) {};\n"
+        result = js_parser.parse(code, "lib/router.js")
+        methods = {s.name: s for s in result.symbols if s.kind == "method"}
+        assert methods["handle"].class_name == "Router"
+
+    def test_deep_and_this_receivers_skipped(self, js_parser: TypeScriptParser) -> None:
+        code = (
+            "a.b.c = function nested() {};\n"
+            "this.x = function viaThis() {};\n"
+        )
+        result = js_parser.parse(code, "lib/misc.js")
+        names = {s.name for s in result.symbols}
+        assert "nested" not in names
+        assert "viaThis" not in names
+
+    def test_non_function_property_assignment_ignored(self, js_parser: TypeScriptParser) -> None:
+        code = "config.port = 8080;\nconfig.name = 'svc';\n"
+        result = js_parser.parse(code, "lib/config.js")
+        assert result.symbols == []
+        assert result.exports == []
+
+
+def test_alias_assignment_counts_as_usage(js_parser: TypeScriptParser) -> None:
+    """Dogfood cycle-4 (lodash): `lodash.debounce = debounce` aliases a function by
+    name onto the export object — that IS usage of `debounce`."""
+    code = "function debounce(fn, wait) {}\nlodash.debounce = debounce;\n"
+    result = js_parser.parse(code, "lodash.js")
+    assert any(c.name == "debounce" for c in result.calls)
+
+
+def test_ternary_and_initializer_value_references(js_parser: TypeScriptParser) -> None:
+    """Dogfood cycle-4 (lodash): dispatch-table internals referenced by VALUE."""
+    code = (
+        "function arrayAggregator(a) {}\nfunction baseAggregator(a) {}\n"
+        "var func = isArray(c) ? arrayAggregator : baseAggregator;\n"
+        "var alias = arrayAggregator;\n"
+    )
+    result = js_parser.parse(code, "lodash.js")
+    names = [c.name for c in result.calls]
+    assert names.count("arrayAggregator") >= 2
+    assert "baseAggregator" in names
+
+
+def test_object_literal_value_references(js_parser: TypeScriptParser) -> None:
+    """Handler registries / mixins: `{ 'after': after, onError }` references both."""
+    code = (
+        "function after() {}\nfunction onError() {}\n"
+        "mixin({ 'after': after, onError });\n"
+    )
+    result = js_parser.parse(code, "lib/registry.js")
+    names = {c.name for c in result.calls}
+    assert "after" in names
+    assert "onError" in names

@@ -164,6 +164,7 @@ describe('runReplay exit codes', () => {
       createdAt: new Date(),
       summary: null,
       incidentInput: null,
+      project: null,
       narrative: null,
       report: null,
     });
@@ -205,6 +206,7 @@ describe('runPostmortem exit codes', () => {
       createdAt: new Date(),
       summary: null,
       incidentInput: null,
+      project: null,
       narrative: null,
       report: null,
     });

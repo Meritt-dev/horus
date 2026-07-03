@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import PurePosixPath
 
 from horus_source.core.graph.graph import KnowledgeGraph
@@ -40,13 +41,40 @@ def _is_go_test_symbol(name: str, file_path: str) -> bool:
 
 def _is_test_file(file_path: str) -> bool:
     parts = PurePosixPath(file_path).parts
+    name = parts[-1] if parts else ""
     return (
         "tests" in parts
         or "test" in parts
         or any(p.startswith("test_") for p in parts)
         or file_path.endswith("conftest.py")
         or file_path.endswith("_test.go")  # Go test files
+        # JS/TS co-located tests (index.test.tsx next to index.tsx) — hono dogfood:
+        # 234 of the remaining dead flags were symbols inside *.test.* files.
+        or ".test." in name
+        or ".spec." in name
+        or any(p in _NON_PRODUCT_DIRS for p in parts)
+        or _BUILD_CONFIG_FILE_RE.search(file_path) is not None
     )
+
+# Benchmark/example/demo trees are exercised by external runners (or exist purely as
+# documentation), so "no in-repo caller" is their NORMAL state, not evidence of death —
+# hono's report was 30 symbols of pure bench/perf noise. Mirrors the test-dir exemption.
+_NON_PRODUCT_DIRS: frozenset[str] = frozenset({
+    "bench", "benches", "benchmark", "benchmarks",  # benches/ is the Rust convention
+    "example", "examples", "sample", "samples", "demo", "demos",
+    "fixtures", "e2e", "perf", "perf-measures", "runtime-tests",
+    "docs", "docs_src", "website", "sandbox",  # docs sites + scratch trees (axios dogfood)
+    "vendor", "vendors", "third_party", "third-party",  # vendored code isn't ours to flag
+})
+
+# Root-level build/tooling config files — invoked by build tools, never by repo code
+# (axios dogfood: gulpfile.js / rollup.config.js helpers flagged dead).
+_BUILD_CONFIG_FILE_RE = re.compile(
+    r"(^|/)(gulpfile|gruntfile|webpack[^/]*|rollup[^/]*|vite[^/]*|babel[^/]*|karma[^/]*"
+    r"|eslint[^/]*|prettier[^/]*|jest[^/]*|vitest[^/]*|tsup[^/]*|postcss[^/]*)"
+    r"\.(config\.)?[cm]?[jt]s$",
+    re.IGNORECASE,
+)
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__") and len(name) > 4
@@ -93,6 +121,16 @@ _TYPING_STUB_DECORATORS: frozenset[str] = frozenset({
 def _has_typing_stub_decorator(node: GraphNode) -> bool:
     decorators: list[str] = node.properties.get("decorators", [])
     return any(d in _TYPING_STUB_DECORATORS for d in decorators)
+
+def _is_cfg_test_symbol(node: GraphNode) -> bool:
+    """Rust inline unit test (`#[cfg(test)] mod`) — run by the test runner, not calls."""
+    return "cfg(test)" in node.properties.get("decorators", [])
+
+def _is_trait_impl_method(node: GraphNode) -> bool:
+    """Rust `impl Trait for T` method — invoked by the language (operators,
+    conversions, vtables), not by in-repo named calls. Same rationale as the
+    Python override/protocol passes."""
+    return "trait_impl" in node.properties.get("decorators", [])
 
 _ENUM_BASES: frozenset[str] = frozenset({
     "Enum", "IntEnum", "StrEnum", "Flag", "IntFlag",
@@ -231,7 +269,10 @@ def process_dead_code(graph: KnowledgeGraph) -> int:
     4. It is not a class constructor (``__init__`` / ``__new__``).
     5. It is not a test function (name starts with ``test_``).
     6. It is not a test class (name starts with ``Test``).
-    7. It is not in a test file (fixtures/helpers are exempt).
+    7. It is not in a test file or a benchmark/example/demo tree (exercised
+       by external runners — "no in-repo caller" is their normal state).
+    7b. It is not a public method of an exported class (an exported class's
+        public methods ARE the library surface).
     8. It is not a dunder method (name starts and ends with ``__``).
     9. It is not a class referenced via type annotations (``USES_TYPE``).
     10. It does not have a framework-registration decorator.
@@ -258,9 +299,33 @@ def process_dead_code(graph: KnowledgeGraph) -> int:
     """
     dead_count = 0
 
+    # Methods inherit their class's export status: an exported class's public methods
+    # ARE the library surface — "no in-repo caller" is normal for them (hono dogfood:
+    # 345 methods of exported classes flagged). Hard-private (#name) and
+    # convention-private (_name) methods stay eligible.
+    exported_classes: set[tuple[str, str]] = {
+        (cls.file_path, cls.name)
+        for cls in graph.get_nodes_by_label(NodeLabel.CLASS)
+        if cls.is_exported
+    }
+
+    def _is_public_method_of_exported_class(node: GraphNode, label: NodeLabel) -> bool:
+        return (
+            label == NodeLabel.METHOD
+            and bool(node.class_name)
+            and not node.name.startswith(("_", "#"))
+            and (node.file_path, node.class_name) in exported_classes
+        )
+
     for label in _SYMBOL_LABELS:
         for node in graph.get_nodes_by_label(label):
             if _is_exempt(node.name, node.is_entry_point, node.is_exported, node.file_path):
+                continue
+            if _is_public_method_of_exported_class(node, label):
+                continue
+            if _is_cfg_test_symbol(node):
+                continue
+            if _is_trait_impl_method(node):
                 continue
             if graph.has_incoming(node.id, RelType.CALLS):
                 continue

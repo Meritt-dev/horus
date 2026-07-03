@@ -1,4 +1,14 @@
 import { desc, eq } from 'drizzle-orm';
+
+/**
+ * Optional project scope for investigation reads. The shared local DB holds EVERY
+ * project's investigations; unscoped reads leaked one project's incident titles into
+ * another's `investigations`/onboard/priors/cloud-sync (dogfood N1). `project`
+ * undefined = unscoped (single-project setups / id-addressed access).
+ */
+export interface InvestigationScope {
+  project?: string;
+}
 import type { HorusDb } from './client.js';
 import { investigations } from './schema.js';
 
@@ -28,16 +38,20 @@ export async function getInvestigation(db: HorusDb, id: string) {
  * Same ordering as {@link listInvestigations} (createdAt desc) so "the last investigation"
  * means the same row both surfaces would show first. Powers `horus feedback` with no id.
  */
-export async function getLastInvestigationId(db: HorusDb): Promise<string | null> {
+export async function getLastInvestigationId(
+  db: HorusDb,
+  scope: InvestigationScope = {},
+): Promise<string | null> {
   const rows = await db
     .select({ id: investigations.id })
     .from(investigations)
+    .where(scope.project === undefined ? undefined : eq(investigations.project, scope.project))
     .orderBy(desc(investigations.createdAt))
     .limit(1);
   return rows[0]?.id ?? null;
 }
 
-export async function listInvestigations(db: HorusDb, limit = 20) {
+export async function listInvestigations(db: HorusDb, limit = 20, scope: InvestigationScope = {}) {
   return db
     .select({
       id: investigations.id,
@@ -47,11 +61,16 @@ export async function listInvestigations(db: HorusDb, limit = 20) {
       createdAt: investigations.createdAt,
     })
     .from(investigations)
+    .where(scope.project === undefined ? undefined : eq(investigations.project, scope.project))
     .orderBy(desc(investigations.createdAt))
     .limit(limit);
 }
 
-export async function listInvestigationsWithReports(db: HorusDb, limit = 20) {
+export async function listInvestigationsWithReports(
+  db: HorusDb,
+  limit = 20,
+  scope: InvestigationScope = {},
+) {
   return db
     .select({
       id: investigations.id,
@@ -60,6 +79,7 @@ export async function listInvestigationsWithReports(db: HorusDb, limit = 20) {
       report: investigations.report,
     })
     .from(investigations)
+    .where(scope.project === undefined ? undefined : eq(investigations.project, scope.project))
     .orderBy(desc(investigations.createdAt))
     .limit(limit);
 }

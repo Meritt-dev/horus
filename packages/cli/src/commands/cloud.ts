@@ -6,6 +6,7 @@
  * `.horus/cloud.json` binding is authoritative and carries no secrets.
  */
 import pc from "picocolors";
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createInterface } from "node:readline/promises";
 import type { ContextResponse, CloudClient } from "../lib/cloud/api.js";
 import {
@@ -207,11 +208,19 @@ export async function runCloudSync(
   // Source: local investigations that carry a stored report (others can't be uploaded). The db
   // stays open through the upload loop so each investigation's human outcome label (HOR-390 eval
   // store) can ride its sync; closed once in the finally below.
+  // Push ONLY this project's investigations — an unscoped read uploaded every local
+  // project's incidents to this repo's cloud team (dogfood N1).
+  let project: string | undefined;
+  try {
+    project = resolveEnvironment(await loadConfig(opts.config)).project;
+  } catch {
+    /* unresolvable — leave unscoped */
+  }
   const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   try {
     const uploadable: { id: string; title: string | null; report: InvestigationReport }[] = [];
     let skippedNoReport = 0;
-    const rows = await listInvestigationsWithReports(db, opts.limit ?? 1000);
+    const rows = await listInvestigationsWithReports(db, opts.limit ?? 1000, { project });
     for (const row of rows) {
       if (row.report && typeof row.report === "object") {
         uploadable.push({ id: row.id, title: row.title, report: row.report as InvestigationReport });

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalDb, shouldUseEmbeddedDb } from './client.js';
+import { listInvestigations, listInvestigationsWithReports, getLastInvestigationId } from './investigations.js';
 import { investigations, incidentMemory, memoryItem, memoryLink, memoryAudit } from './schema.js';
 import { eq } from 'drizzle-orm';
 
@@ -154,6 +155,35 @@ describe('createLocalDb (embedded pglite)', () => {
       expect(rows[0]!.title).toBe('persisted');
     } finally {
       await second.sql.end();
+    }
+  }, 30_000);
+
+  it('N1 REGRESSION: investigation reads are project-scoped on the shared DB', async () => {
+    // Dogfood N1: `horus investigations`/onboard/priors/cloud-sync in one repo listed
+    // ANOTHER project's incident titles — the table had no project column and every
+    // read was unscoped. Verify the migration + scoped reads end-to-end.
+    const { db, sql } = await createLocalDb({ path: join(dir, 'horus.db') });
+    try {
+      await db.insert(investigations).values([
+        { title: 'maison incident', incidentInput: { repo: 'maison-safqa' }, project: 'maison-safqa' },
+        { title: 'leadcall incident', incidentInput: { repo: 'leadcall-api' }, project: 'leadcall-api' },
+        { title: 'legacy row', incidentInput: {}, project: null },
+      ]);
+
+      const maison = await listInvestigations(db, 20, { project: 'maison-safqa' });
+      expect(maison.map((r) => r.title)).toEqual(['maison incident']);
+
+      // Unscoped (single-project setups / no resolvable project) still sees everything.
+      const all = await listInvestigations(db, 20);
+      expect(all).toHaveLength(3);
+
+      // Reports + last-id follow the same scope.
+      const reports = await listInvestigationsWithReports(db, 20, { project: 'leadcall-api' });
+      expect(reports.map((r) => r.title)).toEqual(['leadcall incident']);
+      const lastMaison = await getLastInvestigationId(db, { project: 'maison-safqa' });
+      expect(lastMaison).toBe(maison[0]!.id);
+    } finally {
+      await sql.end();
     }
   }, 30_000);
 

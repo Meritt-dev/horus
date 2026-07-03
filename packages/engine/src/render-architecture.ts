@@ -28,7 +28,7 @@ export function renderArchitecture(m: ArchitectureModel): string {
     for (const s of m.subsystems) {
       // Mark test/example clusters so a large one lower in the list doesn't read as a
       // contradiction of the "largest" (product) subsystem in the summary (HOR-377).
-      const tag = isTestyCommunity(s.name) ? ' (tests)' : '';
+      const tag = (s.testy ?? isTestyCommunity(s.name)) ? ' (tests)' : '';
       lines.push(`- ${s.name} — ${s.members} members${tag}`);
     }
   }

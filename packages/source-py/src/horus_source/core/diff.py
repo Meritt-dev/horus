@@ -56,6 +56,18 @@ def diff_graphs(
     """
     result = StructuralDiff()
 
+    # Synthetic nodes (processes/communities/folders) are DERIVED per snapshot — their
+    # ids/names churn with clustering, so they show up as bogus "added symbols" like
+    # "test_invalid → ResponseValidationError ()" with no file (dogfood cycle-2 N5).
+    # Diff compares SOURCE symbols only.
+    _synthetic = ("process", "community", "folder")
+    base_nodes = {
+        nid: n for nid, n in base_nodes.items() if n.label.value not in _synthetic
+    }
+    current_nodes = {
+        nid: n for nid, n in current_nodes.items() if n.label.value not in _synthetic
+    }
+
     base_ids = set(base_nodes)
     current_ids = set(current_nodes)
 

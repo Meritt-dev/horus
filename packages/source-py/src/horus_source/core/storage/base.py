@@ -140,6 +140,14 @@ class StorageBackend(Protocol):
         """Execute a raw backend-specific query string."""
         ...
 
+    def name_contains_search(self, token: str, limit: int = 20) -> list[SearchResult]:
+        """Symbols whose ``name`` contains *token* (case-insensitive substring).
+
+        The retrieval channel FTS can't provide (`router` → `APIRouter`); public
+        names rank before underscore-private, shorter before longer.
+        """
+        ...
+
     def exact_name_search(self, name: str, limit: int = 5) -> list[SearchResult]:
         """Search for nodes with an exact name match."""
         ...
@@ -330,6 +338,20 @@ class StorageBackend(Protocol):
         ``file_path`` and ``content``, ordered by ``id``. Structural/synthetic nodes
         (folder/community/process) are excluded — they carry no searchable code. This
         unblocks the CLI stitcher, which needs the whole body, not a 200-char snippet.
+        """
+        ...
+
+    def files_containing(
+        self, tokens: list[str], per_token_limit: int
+    ) -> dict[str, list[str]]:
+        """Distinct file paths whose FILE-node content contains each token.
+
+        Returns ``{token: [file_path, ...]}`` with up to *per_token_limit* paths per
+        token (case-insensitive substring, file nodes only — whole-file content).
+        Per-token budgets, unlike :meth:`content_contains_any`'s shared limit, so a
+        common token can't crowd rarer ones out. Backs external-system detection in
+        the engine's `architecture` discovery (the Cypher seam it replaces died in
+        the kùzu→SQLite migration).
         """
         ...
 

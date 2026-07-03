@@ -479,13 +479,21 @@ def resolve_file_calls(
             call.line, fpd.file_path, file_sym_index
         )
         if source_id is None:
-            logger.debug(
-                "No containing symbol for call %s at line %d in %s",
-                call.name,
-                call.line,
-                fpd.file_path,
-            )
-            continue
+            # Module-scope reference (dogfood cycle-4, lodash): prototype wiring like
+            # `Hash.prototype.get = hashGet` sits in an anonymous IIFE — no named
+            # containing symbol, so the reference was dropped ENTIRELY and hashGet
+            # read as dead. Fall back to the FILE node as the edge source: honest
+            # ("referenced at module scope of lodash.js") and keeps aliveness intact.
+            file_node = graph.get_node(generate_id(NodeLabel.FILE, fpd.file_path))
+            if file_node is None:
+                logger.debug(
+                    "No containing symbol for call %s at line %d in %s",
+                    call.name,
+                    call.line,
+                    fpd.file_path,
+                )
+                continue
+            source_id = file_node.id
 
         caller_class_name: str | None = None
         if call.receiver in ("self", "this"):
@@ -521,6 +529,34 @@ def resolve_file_calls(
                 edge = _make_edge(source_id, target_id, confidence, seen)
                 if edge is not None:
                     edges.append(edge)
+
+            # Ambiguous same-file method dispatch (dogfood cycle-3): a file with
+            # several same-named methods on DIFFERENT classes (serde's
+            # SeqDeserializer.end / MapDeserializer.end / ...) resolved every
+            # `x.end()` to the FIRST candidate only — the siblings never received
+            # an edge and were flagged dead despite being called. Static analysis
+            # can't type the receiver, so link the remaining same-file candidates
+            # at low confidence: dead-code sees a reference; confidence-aware
+            # consumers can discount it.
+            if (
+                target_id is not None
+                and call.receiver
+                and call.receiver not in ("self", "this")
+            ):
+                same_file_siblings = [
+                    nid
+                    for nid in call_index.get(call.name, [])
+                    if nid != target_id
+                    and (n := graph.get_node(nid)) is not None
+                    and n.file_path == fpd.file_path
+                    and n.label == NodeLabel.METHOD
+                    and n.class_name
+                ]
+                if 0 < len(same_file_siblings) <= 5:
+                    for nid in same_file_siblings:
+                        sib_edge = _make_edge(source_id, nid, 0.4, seen)
+                        if sib_edge is not None:
+                            edges.append(sib_edge)
 
         for arg_name in call.arguments:
             if arg_name in _CALL_BLOCKLIST:

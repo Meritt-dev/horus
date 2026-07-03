@@ -1,7 +1,10 @@
 import type {
   SourceCommunitiesResult,
   SourceContentHit,
+  SourceCouplingResult,
   SourceCypherResult,
+  SourceDeadCodeResult,
+  SourceFilesContainingResult,
   SourceDiffResult,
   SourceExactSymbol,
   SourceFlowsResult,
@@ -274,6 +277,30 @@ export class SourceHttpClient {
   async processes(): Promise<SourceProcessesResult['processes']> {
     const res = await this.request<SourceProcessesResult>('GET', '/api/processes');
     return res.processes ?? [];
+  }
+
+  /** Dead-code report — total count + symbols grouped by file. */
+  deadCode(): Promise<SourceDeadCodeResult> {
+    return this.request<SourceDeadCodeResult>('GET', '/api/dead-code');
+  }
+
+  /** Temporal (co-change) coupling pairs between files. */
+  async coupling(): Promise<SourceCouplingResult['pairs']> {
+    const res = await this.request<SourceCouplingResult>('GET', '/api/coupling');
+    return res.pairs ?? [];
+  }
+
+  /**
+   * Per-token distinct FILE paths whose content contains the token (external-system
+   * detection). `limit` is a PER-TOKEN budget so a common token can't crowd out rare ones.
+   */
+  async filesContaining(tokens: string[], limit = 500): Promise<Record<string, string[]>> {
+    const res = await this.request<SourceFilesContainingResult>('POST', '/api/content-search', {
+      tokens,
+      limit,
+      filesOnly: true,
+    });
+    return res.matches ?? {};
   }
 
   // -------------------------------------------------------------------------

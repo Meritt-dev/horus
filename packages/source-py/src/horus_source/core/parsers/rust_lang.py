@@ -25,6 +25,8 @@ graph are out of scope for v1 (cross-module call resolution is a follow-up).
 
 from __future__ import annotations
 
+import re
+
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Node, Parser
 
@@ -71,6 +73,8 @@ class RustParser(LanguageParser):
             self._extract_use(node, result)
         elif ntype == "call_expression":
             self._extract_call(node, result)
+        elif ntype == "macro_invocation":
+            self._extract_macro_calls(node, result)
 
         for child in node.children:
             self._walk(child, result)
@@ -93,6 +97,41 @@ class RustParser(LanguageParser):
                 return name_node.text.decode() if name_node is not None else ""
             parent = parent.parent
         return ""
+
+    @staticmethod
+    def _in_trait_impl(node: Node) -> bool:
+        """True when *node* is a method inside ``impl Trait for Type``.
+
+        Trait impls are Rust's dynamic-dispatch surface: `From::from`, `PartialEq::eq`,
+        `Display::fmt` etc. are invoked by the language (operators, conversions, vtables),
+        not by in-repo named calls — the same reason Python dunders and overrides are
+        exempt from dead-code detection.
+        """
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "impl_item":
+                return parent.child_by_field_name("trait") is not None
+            parent = parent.parent
+        return False
+
+    @staticmethod
+    def _in_cfg_test_mod(node: Node) -> bool:
+        """True when *node* lives inside a ``#[cfg(test)] mod`` (inline unit tests).
+
+        tree-sitter-rust parses outer attributes as PRECEDING SIBLINGS of the item
+        they decorate, so each ancestor ``mod_item``'s attribute stack is checked.
+        """
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "mod_item":
+                sib = parent.prev_named_sibling
+                while sib is not None and sib.type == "attribute_item":
+                    text = sib.text.decode()
+                    if "cfg" in text and "test" in text:
+                        return True
+                    sib = sib.prev_named_sibling
+            parent = parent.parent
+        return False
 
     def _type_name(self, node: Node) -> str:
         """Bare type name from a (possibly generic / scoped) type node."""
@@ -126,6 +165,13 @@ class RustParser(LanguageParser):
                 content=node.text.decode(),
                 signature=self._signature(node, name),
                 class_name=owner,
+                # Markers dead-code detection exempts on (clap dogfood): inline unit
+                # tests (`#[cfg(test)] mod` — runner-invoked) and trait-impl methods
+                # (`impl Trait for T` — language-invoked via operators/conversions).
+                decorators=(
+                    (["cfg(test)"] if self._in_cfg_test_mod(node) else [])
+                    + (["trait_impl"] if self._in_trait_impl(node) else [])
+                ),
             )
         )
         if _is_pub(node):
@@ -212,6 +258,46 @@ class RustParser(LanguageParser):
 
     # -- calls ----------------------------------------------------------------
 
+    @staticmethod
+    def _identifier_arguments(call_node: Node) -> list[str]:
+        """Bare identifier arguments — unit structs / fn refs passed by name
+        (`deserializer.deserialize_str(CowStrVisitor)`). Resolution links them at
+        reduced confidence, so passing a visitor by value counts as usage
+        (dogfood cycle-3: serde's *Visitor unit structs were flagged dead)."""
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return []
+        return [c.text.decode() for c in args.children if c.type == "identifier"]
+
+    # Call-ish tokens inside a macro body: `receiver.method(` or `function(`.
+    _MACRO_CALL_RE = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*)\s*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+    def _extract_macro_calls(self, node: Node, result: ParseResult) -> None:
+        """Mine call-shaped tokens out of a macro body (dogfood cycle-3).
+
+        tree-sitter parses macro arguments as raw token trees, NOT expressions —
+        so every call wrapped in `tri!(...)`, `assert!(...)`, `vec![...]` etc. was
+        invisible (serde: `tri!(seq_visitor.end())` produced nothing, and the
+        called methods read as dead). A conservative regex over the token text
+        recovers `name(` / `recv.name(` shapes; resolution confidence-guards the
+        rest, exactly as it does for regular unresolved names.
+        """
+        token_tree = next((c for c in node.children if c.type == "token_tree"), None)
+        if token_tree is None:
+            return
+        text = token_tree.text.decode()
+        line = node.start_point[0] + 1
+        seen: set[tuple[str, str]] = set()
+        for m in self._MACRO_CALL_RE.finditer(text):
+            receiver, name = m.group(1) or "", m.group(2)
+            if name in ("if", "for", "while", "match", "loop", "unsafe", "return"):
+                continue
+            key = (receiver, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.calls.append(CallInfo(name=name, line=line, receiver=receiver))
+
     def _extract_call(self, node: Node, result: ParseResult) -> None:
         func = node.child_by_field_name("function")
         if func is None:
@@ -226,6 +312,7 @@ class RustParser(LanguageParser):
                         name=field.text.decode(),
                         line=line,
                         receiver=value.text.decode() if value is not None else "",
+                        arguments=self._identifier_arguments(node),
                     )
                 )
         elif func.type == "scoped_identifier":
@@ -241,4 +328,10 @@ class RustParser(LanguageParser):
                     )
                 )
         elif func.type == "identifier":
-            result.calls.append(CallInfo(name=func.text.decode(), line=line))
+            result.calls.append(
+                CallInfo(
+                    name=func.text.decode(),
+                    line=line,
+                    arguments=self._identifier_arguments(node),
+                )
+            )

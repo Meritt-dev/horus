@@ -469,3 +469,141 @@ class TestMultiLanguageExemptions:
         node_id = _add_symbol_node(g, NodeLabel.CLASS, "src/widgets.py", "ExampleWidget")
         process_dead_code(g)
         assert g.get_node(node_id).is_dead is True
+
+
+class TestExportedClassMethodExemption:
+    """Dogfood P1: 345 of hono's 375 dead flags were public methods of exported
+    classes — the library surface itself. Methods inherit export status."""
+
+    def test_public_method_of_exported_class_not_dead(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/handler.ts")
+        _add_symbol_node(
+            graph, NodeLabel.CLASS, "src/handler.ts", "LambdaAdapter", is_exported=True
+        )
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "getPath", class_name="LambdaAdapter"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is False
+
+    def test_private_methods_of_exported_class_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/handler.ts")
+        _add_symbol_node(
+            graph, NodeLabel.CLASS, "src/handler.ts", "LambdaAdapter", is_exported=True
+        )
+        conv = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "_internal", class_name="LambdaAdapter"
+        )
+        hard = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "#hidden", class_name="LambdaAdapter"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(conv).is_dead is True
+        assert graph.get_node(hard).is_dead is True
+
+    def test_method_of_unexported_class_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/util.ts")
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/util.ts", "Scratch")
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/util.ts", "compute", class_name="Scratch"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is True
+
+    def test_same_class_name_in_other_file_not_exempted(self) -> None:
+        # The exemption is keyed by (file_path, class_name) — an exported `Foo` in
+        # one file must not launder an unexported `Foo` elsewhere.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/a.ts")
+        _add_file_node(graph, "src/b.ts")
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/a.ts", "Foo", is_exported=True)
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/b.ts", "Foo")
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/b.ts", "run", class_name="Foo"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is True
+
+
+class TestNonProductDirExemption:
+    """Benchmarks/examples are exercised by external runners — never dead."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "benchmarks/http/index.ts",
+            "examples/web/app.py",
+            "perf-measures/startup/run.ts",
+            "runtime-tests/deno/x.ts",
+            "demo/quickstart.go",
+        ],
+    )
+    def test_non_product_paths_exempt(self, path: str) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, path)
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "helper")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is False
+
+    def test_src_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/inner/util.ts")
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/inner/util.ts", "unused")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is True
+
+
+class TestColocatedJsTestFiles:
+    @pytest.mark.parametrize(
+        "path",
+        ["src/jsx/index.test.tsx", "src/router.test.ts", "lib/api.spec.js"],
+    )
+    def test_js_colocated_test_files_exempt(self, path: str) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, path)
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "fixtureHelper")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is False
+
+    def test_dotted_prod_name_not_over_matched(self) -> None:
+        # 'latest.ts' / 'contest.py' style names must NOT be treated as tests.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/contest.py")
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/contest.py", "unused")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is True
+
+
+def test_cfg_test_symbols_exempt() -> None:
+    """Rust `#[cfg(test)] mod` symbols carry a decorator marker — never dead."""
+    graph = KnowledgeGraph()
+    _add_file_node(graph, "src/lib.rs")
+    fn_id = generate_id(NodeLabel.FUNCTION, "src/lib.rs", "helper")
+    graph.add_node(
+        GraphNode(
+            id=fn_id,
+            label=NodeLabel.FUNCTION,
+            name="helper",
+            file_path="src/lib.rs",
+            properties={"decorators": ["cfg(test)"]},
+        )
+    )
+    process_dead_code(graph)
+    assert graph.get_node(fn_id).is_dead is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["docs/.vitepress/theme/index.ts", "gulpfile.js", "rollup.config.js", "sandbox/client.js", "webpack.dev.config.mjs"],
+)
+def test_docs_and_build_config_exempt(path: str) -> None:
+    """Dogfood cycle-3 (axios): docs-site + root build-tool config helpers are
+    invoked by tooling, never by repo code — not dead-code candidates."""
+    graph = KnowledgeGraph()
+    _add_file_node(graph, path)
+    fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "toolingHelper")
+    process_dead_code(graph)
+    assert graph.get_node(fn_id).is_dead is False

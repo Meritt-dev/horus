@@ -220,6 +220,18 @@ def _table_for_id(node_id: str) -> str | None:
 
 _EMBEDDING_PROPERTIES = "node_id STRING, vec FLOAT[384], PRIMARY KEY(node_id)"
 
+
+# Test/example/demo/bench paths rank LAST in exact-name results (dogfood cycle-4:
+# rocket's 10 `examples/*/main.rs` fns named `rocket` starved the pool before the
+# core `Rocket` struct — explain never saw the real symbol).
+_DEPRIORITIZED_RESULT_PATH_RE = __import__("re").compile(
+    r"(^|/)(tests?|__tests__|spec|examples?|samples?|demos?|benches|benchmarks?|fixtures?)(/|$)"
+    r"|(\.|_)(test|spec)\.[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.(py|go|rs)$",
+)
+
+def _is_deprioritized_result_path(file_path: str) -> bool:
+    return bool(file_path) and _DEPRIORITIZED_RESULT_PATH_RE.search(file_path) is not None
+
 class KuzuBackend:
     """StorageBackend implementation backed by KuzuDB.
 
@@ -888,6 +900,25 @@ class KuzuBackend:
         results = sorted(out.values(), key=lambda d: d["id"])
         return results[:limit]
 
+    def files_containing(
+        self, tokens: list[str], per_token_limit: int
+    ) -> dict[str, list[str]]:
+        """Distinct file paths whose FILE-node content contains each token (per-token budget)."""
+        per_token_limit = int(per_token_limit)
+        out: dict[str, list[str]] = {}
+        for token in tokens:
+            if not token:
+                continue
+            rows = self._exec_rows(
+                f"MATCH (node:File) "
+                f"WHERE lower(node.content) CONTAINS lower('{escape_cypher(token)}') "
+                f"AND node.file_path <> '' "
+                f"RETURN DISTINCT node.file_path ORDER BY node.file_path "
+                f"LIMIT {per_token_limit}"
+            )
+            out[token] = [r[0] for r in rows if r[0]]
+        return out
+
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:
         """Process flows *node_id* is a step in, with each flow's ordered, named steps."""
         proc_rows = self._exec_rows(
@@ -1054,7 +1085,7 @@ class KuzuBackend:
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
                     # Prefer executable raise sites over the constant's declaration; among
                     # those, a smaller body is the more specific match. Tests rank last.
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (
@@ -1157,7 +1188,7 @@ class KuzuBackend:
                     content = row[3] or ""
                     signature = row[4] or ""
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (
@@ -1176,6 +1207,42 @@ class KuzuBackend:
                 logger.debug("decorator_arg_search failed on table %s", table, exc_info=True)
         ranked.sort(key=lambda t: t[0])
         return [r for _, r in ranked][:limit]
+
+    def name_contains_search(self, token: str, limit: int = 20) -> list[SearchResult]:
+        """Symbols whose ``name`` CONTAINS *token* — mirrors SQLiteBackend (dogfood N9)."""
+        limit = int(limit)
+        if not token:
+            return []
+        out: list[tuple[int, int, int, SearchResult]] = []
+        for table in _SEARCHABLE_TABLES:
+            rows = self._exec_rows(
+                f"MATCH (n:{table}) "
+                f"WHERE lower(n.name) CONTAINS lower('{escape_cypher(token)}') "
+                f"RETURN n.id, n.name, n.file_path, n.content LIMIT {limit}"
+            )
+            for node_id, name, file_path, content in rows:
+                node_id = node_id or ""
+                name = name or ""
+                label_prefix = node_id.split(":", 1)[0] if node_id else ""
+                private = 1 if name.startswith(("_", "#")) else 0
+                decl_rank = 0 if label_prefix in ("class", "interface") else 1
+                out.append(
+                    (
+                        private,
+                        len(name),
+                        decl_rank,
+                        SearchResult(
+                            node_id=node_id,
+                            score=0.5,
+                            node_name=name,
+                            file_path=file_path or "",
+                            label=label_prefix,
+                            snippet=(content or "")[:200],
+                        ),
+                    )
+                )
+        out.sort(key=lambda t: (t[0], t[1], t[2], t[3].node_id))
+        return [r for _, _, _, r in out[:limit]]
 
     def exact_name_search(self, name: str, limit: int) -> list[SearchResult]:
         """Symbols whose ``name`` equals *name* exactly (case-insensitive).
@@ -1211,7 +1278,7 @@ class KuzuBackend:
                     content = row[3] or ""
                     signature = row[4] or ""
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (

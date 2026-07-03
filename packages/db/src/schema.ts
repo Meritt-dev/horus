@@ -49,6 +49,11 @@ export const investigations = pgTable('investigations', {
   summary: text('summary'),
   narrative: jsonb('narrative'),
   report: jsonb('report'),
+  // Project label (nullable for back-compat, like queue_edges/incident_memory).
+  // The shared local DB holds every project's investigations — without this,
+  // `horus investigations`/onboard in one repo listed another project's incident
+  // titles (dogfood N1). Migration 0011 backfills from incident_input->>'repo'.
+  project: text('project'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

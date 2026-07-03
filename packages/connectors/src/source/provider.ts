@@ -110,7 +110,11 @@ export class SourceCodeProvider implements CodeProvider {
     const ql = query.toLowerCase();
 
     // Re-rank semantic results: partial name matches above pure embedding-only matches,
-    // File-label results below all symbol matches.
+    // File-label results below all symbol matches. Within a band, PUBLIC declarations
+    // outrank private internals (dogfood cycle-2 N9: fastapi `search "router"` filled
+    // its top-8 with _RouterIncludeContext/__init__/_contains_router while APIRouter —
+    // the symbol the user meant — missed the page; hybrid scores are near-flat, so
+    // the underscore prefix is the only discriminating signal available here).
     const semantic = semanticRes
       .filter((r) => !exactIds.has(r.nodeId))
       .map((r) => {
@@ -119,6 +123,9 @@ export class SourceCodeProvider implements CodeProvider {
         let rank = 0;
         if (!isFile && (nl.includes(ql) || ql.includes(nl))) rank = 2;
         else if (isFile && (nl.includes(ql) || ql.includes(nl))) rank = 1;
+        if (r.name.startsWith('_') || r.name.startsWith('#')) rank -= 1; // private convention
+        const label = (r.label ?? '').toLowerCase();
+        if (label === 'class' || label === 'interface') rank += 0.5; // declarations lead
         return { r, rank };
       });
 
@@ -270,5 +277,31 @@ export class SourceCodeProvider implements CodeProvider {
 
   cypher(query: string): Promise<CypherResult> {
     return this.client.cypher(query);
+  }
+
+  // Typed read-path passthroughs for architecture discovery — see CodeProvider contract.
+
+  overview(): Promise<{ nodesByLabel: Record<string, number> }> {
+    return this.client.overview();
+  }
+
+  communities(): Promise<{ name: string; memberCount: number; members?: string[] }[]> {
+    return this.client.communities();
+  }
+
+  processes(): Promise<{ name: string; stepCount?: number; steps?: { nodeId: string }[] }[]> {
+    return this.client.processes();
+  }
+
+  deadCode(): Promise<{ total: number }> {
+    return this.client.deadCode();
+  }
+
+  coupling(): Promise<{ coChanges: number }[]> {
+    return this.client.coupling();
+  }
+
+  filesContaining(tokens: string[], limit?: number): Promise<Record<string, string[]>> {
+    return this.client.filesContaining(tokens, limit);
   }
 }

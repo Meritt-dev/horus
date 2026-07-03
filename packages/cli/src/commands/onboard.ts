@@ -3,6 +3,7 @@ import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import { buildOnboarding, renderOnboarding, onboardingToJSON } from '@horus/engine';
+import { detectOwnPackages } from '../lib/own-packages.js';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
@@ -68,7 +69,13 @@ export async function runOnboard(
     try {
       const g = await buildOnboarding(
         { area },
-        { code, db, repoPath: repo.path, project: renv.project },
+        {
+          code,
+          db,
+          repoPath: repo.path,
+          project: renv.project,
+          ownPackages: detectOwnPackages(repo.path),
+        },
       );
       if (opts.json) {
         console.log(onboardingToJSON(g));

@@ -179,3 +179,38 @@ func (h *Handler) getUser(c *gin.Context) {
     # Exported vs unexported visibility.
     assert "NewHandler" in result.exports and "Register" in result.exports
     assert "getUser" not in result.exports
+
+
+class TestGoTypeUsage:
+    """Dogfood cycle-2 N7: `var Form = formBinding{}` produced no edge — private
+    Go types read as dead and struct impact was empty."""
+
+    def test_composite_literal_emits_type_ref(self) -> None:
+        parser = GoParser()
+        code = (
+            "package binding\n\n"
+            "type formBinding struct{}\n\n"
+            "var Form = formBinding{}\n"
+        )
+        result = parser.parse(code, "binding/form.go")
+        refs = {(r.name, r.kind) for r in result.type_refs}
+        assert ("formBinding", "variable") in refs
+
+    def test_params_results_and_fields(self) -> None:
+        parser = GoParser()
+        code = (
+            "package gin\n\n"
+            "type Engine struct {\n    pool Pool\n}\n\n"
+            "func New(opts Options) *Engine { return nil }\n"
+        )
+        result = parser.parse(code, "gin.go")
+        refs = {(r.name, r.kind) for r in result.type_refs}
+        assert ("Options", "param") in refs
+        assert ("Pool", "variable") in refs  # struct field
+        assert ("Engine", "variable") in refs or ("Engine", "param") in refs or any(r.name == "Engine" for r in result.type_refs)
+
+    def test_builtins_skipped(self) -> None:
+        parser = GoParser()
+        code = "package x\n\nfunc F(s string, n int) error { return nil }\n"
+        result = parser.parse(code, "x.go")
+        assert result.type_refs == []

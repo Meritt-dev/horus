@@ -27,6 +27,11 @@ class ContentSearchRequest(BaseModel):
 
     tokens: list[str] = Field(min_length=1, max_length=50)
     limit: int = Field(default=20, ge=1, le=500)
+    # When true, return per-token distinct FILE paths instead of node content:
+    # {"matches": {token: [file_path, ...]}} with `limit` as a PER-TOKEN budget.
+    # Backs the engine's external-system detection — content payloads would be
+    # wasteful and a shared OR-limit lets common tokens crowd out rare ones.
+    filesOnly: bool = False  # noqa: N815 — JSON wire key from the TS client
 
 
 @router.post("/search")
@@ -72,6 +77,14 @@ def content_search(body: ContentSearchRequest, request: Request) -> dict:
     snippet, so the caller can stitch evidence without a follow-up fetch.
     """
     storage = request.app.state.storage
+    if body.filesOnly:
+        try:
+            matches = storage.files_containing(body.tokens, body.limit)
+        except Exception as exc:
+            logger.error("Content search (filesOnly) failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail="Content search failed") from exc
+        return {"matches": matches}
+
     try:
         rows = storage.content_contains_any(body.tokens, body.limit)
     except Exception as exc:

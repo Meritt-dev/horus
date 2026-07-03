@@ -112,9 +112,79 @@ class TypeScriptParser(LanguageParser):
             self._maybe_extract_module_exports(node, source, result)
         elif ntype == "method_definition":
             self._extract_method(node, source, result)
+        elif ntype in ("jsx_opening_element", "jsx_self_closing_element"):
+            self._extract_jsx_component_usage(node, result)
+        elif ntype == "variable_declarator":
+            self._extract_value_references(node, result)
+        elif ntype == "object":
+            self._extract_object_value_references(node, result)
 
         for child in node.children:
             self._walk(child, source, result, visited)
+
+    def _extract_value_references(self, node: Node, result: ParseResult) -> None:
+        """Function-by-VALUE references in initializers (dogfood cycle-4, lodash):
+        ``var func = isArray(c) ? arrayAggregator : baseAggregator`` uses both
+        functions, but neither is called by name — 200+ dispatch-table internals
+        read as dead. Emit references for identifier initializers and ternary
+        branches; resolution only links names that resolve to CALLABLE symbols,
+        so non-function identifiers drop out harmlessly."""
+        value = node.child_by_field_name("value")
+        if value is None:
+            return
+        line = node.start_point[0] + 1
+        candidates: list[Node] = []
+        if value.type == "identifier":
+            candidates.append(value)
+        elif value.type == "ternary_expression":
+            for field in ("consequence", "alternative"):
+                branch = value.child_by_field_name(field)
+                if branch is not None and branch.type == "identifier":
+                    candidates.append(branch)
+        for ident in candidates:
+            result.calls.append(CallInfo(name=ident.text.decode(), line=line))
+
+    def _extract_object_value_references(self, node: Node, result: ParseResult) -> None:
+        """Identifier VALUES in object literals are references — handler registries,
+        route tables, mixins (`mixin({ 'after': after })`, `{onError: handleError}`).
+        Resolution links only names that resolve to callable symbols."""
+        line = node.start_point[0] + 1
+        for prop in node.children:
+            if prop.type == "pair":
+                value = prop.child_by_field_name("value")
+                if value is not None and value.type == "identifier":
+                    result.calls.append(CallInfo(name=value.text.decode(), line=line))
+            elif prop.type == "shorthand_property_identifier":
+                result.calls.append(CallInfo(name=prop.text.decode(), line=line))
+
+    def _extract_jsx_component_usage(self, node: Node, result: ParseResult) -> None:
+        """Record ``<Component />`` as a call to ``Component``.
+
+        Rendering a component IS invoking it, but there is no call_expression in
+        the tree — so every JSX component previously read as dead code (hono
+        dogfood: `Content`/`Form` used as ``<Content />`` flagged dead). Only
+        capitalized names count: lowercase tags (``<div>``) are intrinsic
+        elements, and ``<ns.Member />`` usage resolves via the member name.
+        """
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        line = node.start_point[0] + 1
+        if name_node.type == "identifier":
+            name = name_node.text.decode()
+            if name[:1].isupper():
+                result.calls.append(CallInfo(name=name, line=line))
+        elif name_node.type == "member_expression":
+            prop = name_node.child_by_field_name("property")
+            obj = name_node.child_by_field_name("object")
+            if prop is not None and prop.text.decode()[:1].isupper():
+                result.calls.append(
+                    CallInfo(
+                        name=prop.text.decode(),
+                        line=line,
+                        receiver=obj.text.decode() if obj else "",
+                    )
+                )
 
     def _extract_export(
         self, node: Node, source: str, result: ParseResult
@@ -185,29 +255,70 @@ class TypeScriptParser(LanguageParser):
             if obj_node is None or prop_node is None:
                 continue
             obj_text = obj_node.text.decode()
-            if obj_text not in ("exports", "module.exports"):
+
+            if obj_text in ("exports", "module.exports"):
+                # exports.X = fn / module.exports.X = fn — module public API.
+                sym_name = prop_node.text.decode()
+                result.exports.append(sym_name)
+
+                func_node = self._unwrap_to_function(right)
+                if func_node is not None:
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+                    content = child.text.decode()
+                    signature = self._build_function_signature(func_node, sym_name)
+                    result.symbols.append(
+                        SymbolInfo(
+                            name=sym_name,
+                            kind="function",
+                            start_line=start_line,
+                            end_line=end_line,
+                            content=content,
+                            signature=signature,
+                        )
+                    )
+                    self._extract_function_types(func_node, sym_name, result)
                 continue
 
-            sym_name = prop_node.text.decode()
-            result.exports.append(sym_name)
-
+            # General property-assignment function (dogfood cycle-2 N6): the classic
+            # CommonJS/prototype idiom — `res.send = function send(body) {...}`,
+            # `app.use = function use(fn) {...}`, `Foo.prototype.bar = () => {...}`.
+            # Express's ENTIRE API is defined this way and was invisible to the graph
+            # (0 methods repo-wide). Extract as a method owned by the receiver so
+            # `res.send` resolves like `Class.method`; the receiver object is usually
+            # module-exported, so the name joins the export surface (it IS the API).
             func_node = self._unwrap_to_function(right)
-            if func_node is not None:
-                start_line = child.start_point[0] + 1
-                end_line = child.end_point[0] + 1
-                content = child.text.decode()
-                signature = self._build_function_signature(func_node, sym_name)
-                result.symbols.append(
-                    SymbolInfo(
-                        name=sym_name,
-                        kind="function",
-                        start_line=start_line,
-                        end_line=end_line,
-                        content=content,
-                        signature=signature,
+            if func_node is None:
+                # `lodash.debounce = debounce` — aliasing a function BY NAME onto an
+                # export/prototype object is USAGE of that function (dogfood cycle-4:
+                # lodash's entire API is attached this way; 215 aliased functions read
+                # as dead). Same semantics as passing a callback by identifier.
+                if right.type == "identifier":
+                    result.calls.append(
+                        CallInfo(name=right.text.decode(), line=child.start_point[0] + 1)
                     )
+                continue
+            method_name = prop_node.text.decode()
+            # `Foo.prototype` receivers own methods as `Foo`; plain `res`/`app` own as-is.
+            owner = obj_text[: -len(".prototype")] if obj_text.endswith(".prototype") else obj_text
+            # Skip deep/member receivers (a.b.c = fn) — ambiguous ownership, rare as API.
+            if "." in owner or owner in ("this",):
+                continue
+            start_line = child.start_point[0] + 1
+            end_line = child.end_point[0] + 1
+            result.symbols.append(
+                SymbolInfo(
+                    name=method_name,
+                    kind="method",
+                    class_name=owner,
+                    start_line=start_line,
+                    end_line=end_line,
+                    content=child.text.decode(),
+                    signature=self._build_function_signature(func_node, method_name),
                 )
-                self._extract_function_types(func_node, sym_name, result)
+            )
+            result.exports.append(method_name)
+            self._extract_function_types(func_node, method_name, result)
 
     def _extract_function_declaration(
         self, node: Node, source: str, result: ParseResult

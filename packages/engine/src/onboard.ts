@@ -164,12 +164,20 @@ export function filterArchitecture(
 
 export async function buildOnboarding(
   input: { area?: string },
-  deps: { code: CodeProvider; db: HorusDb; repoPath: string; project?: string },
+  deps: {
+    code: CodeProvider;
+    db: HorusDb;
+    repoPath: string;
+    project?: string;
+    /** Manifest-derived package names — excluded from external-system detection (N2). */
+    ownPackages?: string[];
+  },
 ): Promise<OnboardingGuide> {
   const architecture = await discoverArchitecture({
     code: deps.code,
     db: deps.db,
     project: deps.project,
+    ownPackages: deps.ownPackages,
   });
 
   const area = input.area?.trim();
@@ -185,7 +193,7 @@ export async function buildOnboarding(
     filteredArchitecture = filterArchitecture(architecture, tokens);
 
     // Past incidents: prefer reports with tag overlap, fall back to title matching.
-    const invs = await listInvestigationsWithReports(deps.db, 50);
+    const invs = await listInvestigationsWithReports(deps.db, 50, { project: deps.project });
     const areaTokenArray = [...tokens];
     const seenIds = new Set<string>();
 
@@ -219,7 +227,7 @@ export async function buildOnboarding(
     pastIncidents = pastIncidents.slice(0, 8);
   } else {
     // No area supplied — show the whole-repo view as before.
-    const invs = await listInvestigations(deps.db, 8);
+    const invs = await listInvestigations(deps.db, 8, { project: deps.project });
     pastIncidents = invs.map((i) => ({
       id: i.id,
       title: i.title,

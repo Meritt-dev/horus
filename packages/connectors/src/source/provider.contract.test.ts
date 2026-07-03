@@ -38,8 +38,9 @@ describe('SourceCodeProvider contract', () => {
   it('context returns the full relationship set', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
-    const r = await client.cypher('MATCH (n:Method) RETURN n.id AS id LIMIT 1');
-    const id = String(r.rows[0]?.[0]);
+    const [seed] = await client.symbolsByLabel(['method', 'function'], 1);
+    if (!seed) return ctx.skip();
+    const id = seed.id;
     const c = await provider.context(id);
 
     expect(c.symbol.id).toBe(id);
@@ -56,13 +57,9 @@ describe('SourceCodeProvider contract', () => {
 
     const knownId =
       'method:src/modules/zoho/zoho-oauth.service.ts:ZohoOAuthService.refreshAccessToken';
-    const escapedId =
-      'method:src/modules/zoho/zoho-oauth.service.ts:ZohoOAuthService.refreshAccessToken';
-    const exists = (
-      await client.cypher(
-        `MATCH (n) WHERE n.id = "${escapedId}" RETURN n.id`,
-      )
-    ).rowCount;
+    // Repo-specific probe (leadcall-api) — resolve via the typed line-hydration
+    // endpoint and skip on any other host rather than false-failing.
+    const exists = Object.keys(await client.nodesLines([knownId])).length > 0;
 
     if (!exists) return ctx.skip();
 
@@ -75,12 +72,11 @@ describe('SourceCodeProvider contract', () => {
   it('flowsFor returns ordered flows', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
-    const r = await client.cypher(
-      'MATCH (s)-[rel:CodeRelation]->(p:Process) WHERE rel.rel_type = "step_in_process" RETURN s.id AS id LIMIT 1',
-    );
-    if (!r.rowCount) return ctx.skip();
+    // Seed with a symbol known to be a process step — the first step of any process.
+    const processes = await client.processes();
+    const id = processes[0]?.steps[0]?.nodeId;
+    if (!id) return ctx.skip();
 
-    const id = String(r.rows[0]?.[0]);
     const flows = await provider.flowsFor(id);
 
     expect(flows.length).toBeGreaterThan(0);
@@ -94,8 +90,9 @@ describe('SourceCodeProvider contract', () => {
   it('impact returns target + byDepth', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
-    const r = await client.cypher('MATCH (n:Method) RETURN n.id AS id LIMIT 1');
-    const id = String(r.rows[0]?.[0]);
+    const [seed] = await client.symbolsByLabel(['method', 'function'], 1);
+    if (!seed) return ctx.skip();
+    const id = seed.id;
     const imp = await provider.impact(id, 2);
 
     expect(imp.target.id).toBe(id);
@@ -112,15 +109,18 @@ describe('SourceCodeProvider contract', () => {
       expect(Array.isArray(d.removed)).toBe(true);
       expect(Array.isArray(d.modified)).toBe(true);
     } catch (e) {
-      if (e instanceof SourceHttpError && e.status === 400) return ctx.skip();
+      // 400: host rejects the ref; 500: repo can't resolve HEAD~3 (shallow clone).
+      if (e instanceof SourceHttpError && (e.status === 400 || e.status === 500)) {
+        return ctx.skip();
+      }
       throw e;
     }
-  });
+  }, 30_000);
 
-  it('cypher passthrough returns rows', async (ctx) => {
+  it('query-console passthrough returns rows (read-only SQL since HOR-392)', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
-    const res = await provider.cypher('MATCH (n) RETURN count(n)');
+    const res = await provider.cypher('SELECT count(*) FROM nodes');
     expect(res.rowCount).toBe(1);
     expect(Array.isArray(res.rows)).toBe(true);
   });

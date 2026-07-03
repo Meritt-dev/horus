@@ -671,3 +671,78 @@ def test_shadowed_receiver_param_does_not_link_to_module_const() -> None:
     process_calls(parse_data, g)
     targets = {r.target for r in g.get_relationships_by_type(RelType.CALLS)}
     assert client_id not in targets
+
+
+class TestAmbiguousSameFileDispatch:
+    """Dogfood cycle-3: a file with several same-named methods on DIFFERENT classes
+    (serde's SeqDeserializer.end / MapDeserializer.end) resolved every `x.end()` to
+    the FIRST candidate — the siblings never got an edge and were flagged dead."""
+
+    def test_siblings_receive_low_confidence_edges(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/de.rs")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/de.rs", "visit_seq", 1, 10)
+        seq_end = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/de.rs", "end", 20, 30, class_name="SeqDeserializer"
+        )
+        map_end = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/de.rs", "end", 40, 50, class_name="MapDeserializer"
+        )
+
+        parse_data = [
+            FileParseData(
+                file_path="src/de.rs",
+                language="rust",
+                parse_result=ParseResult(
+                    calls=[CallInfo(name="end", line=5, receiver="seq_visitor")],
+                ),
+            ),
+        ]
+        process_calls(parse_data, g)
+        rels = g.get_relationships_by_type(RelType.CALLS)
+        targets = {r.target: r.properties.get("confidence") for r in rels}
+        # BOTH same-file candidates are referenced; the primary at 1.0, the
+        # ambiguous sibling at low confidence.
+        assert seq_end in targets and map_end in targets
+        assert 1.0 in targets.values()
+        assert any(c is not None and c < 0.5 for c in targets.values())
+
+    def test_no_sibling_edges_without_a_receiver(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/x.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/x.py", "caller", 1, 10)
+        _add_symbol_node(g, NodeLabel.METHOD, "src/x.py", "run", 20, 30, class_name="A")
+        _add_symbol_node(g, NodeLabel.METHOD, "src/x.py", "run", 40, 50, class_name="B")
+
+        parse_data = [
+            FileParseData(
+                file_path="src/x.py",
+                language="python",
+                parse_result=ParseResult(calls=[CallInfo(name="run", line=5)]),
+            ),
+        ]
+        process_calls(parse_data, g)
+        rels = g.get_relationships_by_type(RelType.CALLS)
+        # Bare-name call (no receiver): primary resolution only, no fan-out.
+        assert len(rels) == 1
+
+
+def test_module_scope_reference_falls_back_to_file_source() -> None:
+    """Dogfood cycle-4 (lodash): `Hash.prototype.get = hashGet` at anonymous-IIFE /
+    module scope has no containing symbol — the reference was dropped and hashGet
+    read as dead. The FILE node is the honest edge source."""
+    g = KnowledgeGraph()
+    file_id = _add_file_node(g, "lodash.js")
+    target = _add_symbol_node(g, NodeLabel.FUNCTION, "lodash.js", "hashGet", 10, 20)
+
+    parse_data = [
+        FileParseData(
+            file_path="lodash.js",
+            language="javascript",
+            # line 500 is outside every symbol's range — module scope.
+            parse_result=ParseResult(calls=[CallInfo(name="hashGet", line=500)]),
+        ),
+    ]
+    process_calls(parse_data, g)
+    rels = g.get_relationships_by_type(RelType.CALLS)
+    assert any(r.source == file_id and r.target == target for r in rels)

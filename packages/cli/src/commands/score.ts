@@ -1,4 +1,5 @@
 import pc from 'picocolors';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, getInvestigation, listInvestigationsWithReports } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
 import { resolveDbUrl } from '../lib/db-url.js';
@@ -82,9 +83,16 @@ export async function runScores(opts: {
   config?: string;
   limit?: number;
 }): Promise<number> {
+  // Score THIS project's investigations only (dogfood N1 — shared-DB isolation).
+  let project: string | undefined;
+  try {
+    project = resolveEnvironment(await loadConfig(opts.config)).project;
+  } catch {
+    /* unresolvable — leave unscoped */
+  }
   const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   try {
-    const rows = await listInvestigationsWithReports(db, opts.limit ?? 15);
+    const rows = await listInvestigationsWithReports(db, opts.limit ?? 15, { project });
     const scored = rows
       .filter((r) => r.report)
       .map((r) => ({
