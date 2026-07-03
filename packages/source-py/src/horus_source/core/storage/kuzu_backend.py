@@ -220,6 +220,18 @@ def _table_for_id(node_id: str) -> str | None:
 
 _EMBEDDING_PROPERTIES = "node_id STRING, vec FLOAT[384], PRIMARY KEY(node_id)"
 
+
+# Test/example/demo/bench paths rank LAST in exact-name results (dogfood cycle-4:
+# rocket's 10 `examples/*/main.rs` fns named `rocket` starved the pool before the
+# core `Rocket` struct — explain never saw the real symbol).
+_DEPRIORITIZED_RESULT_PATH_RE = __import__("re").compile(
+    r"(^|/)(tests?|__tests__|spec|examples?|samples?|demos?|benches|benchmarks?|fixtures?)(/|$)"
+    r"|(\.|_)(test|spec)\.[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.(py|go|rs)$",
+)
+
+def _is_deprioritized_result_path(file_path: str) -> bool:
+    return bool(file_path) and _DEPRIORITIZED_RESULT_PATH_RE.search(file_path) is not None
+
 class KuzuBackend:
     """StorageBackend implementation backed by KuzuDB.
 
@@ -1073,7 +1085,7 @@ class KuzuBackend:
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
                     # Prefer executable raise sites over the constant's declaration; among
                     # those, a smaller body is the more specific match. Tests rank last.
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (
@@ -1176,7 +1188,7 @@ class KuzuBackend:
                     content = row[3] or ""
                     signature = row[4] or ""
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (
@@ -1266,7 +1278,7 @@ class KuzuBackend:
                     content = row[3] or ""
                     signature = row[4] or ""
                     label_prefix = node_id.split(":", 1)[0] if node_id else ""
-                    is_test = "/tests/" in file_path or "/test_" in file_path
+                    is_test = _is_deprioritized_result_path(file_path)
                     exec_rank = 0 if label_prefix in ("function", "method") else 1
                     ranked.append(
                         (

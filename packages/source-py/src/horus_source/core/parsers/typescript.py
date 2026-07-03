@@ -114,9 +114,48 @@ class TypeScriptParser(LanguageParser):
             self._extract_method(node, source, result)
         elif ntype in ("jsx_opening_element", "jsx_self_closing_element"):
             self._extract_jsx_component_usage(node, result)
+        elif ntype == "variable_declarator":
+            self._extract_value_references(node, result)
+        elif ntype == "object":
+            self._extract_object_value_references(node, result)
 
         for child in node.children:
             self._walk(child, source, result, visited)
+
+    def _extract_value_references(self, node: Node, result: ParseResult) -> None:
+        """Function-by-VALUE references in initializers (dogfood cycle-4, lodash):
+        ``var func = isArray(c) ? arrayAggregator : baseAggregator`` uses both
+        functions, but neither is called by name — 200+ dispatch-table internals
+        read as dead. Emit references for identifier initializers and ternary
+        branches; resolution only links names that resolve to CALLABLE symbols,
+        so non-function identifiers drop out harmlessly."""
+        value = node.child_by_field_name("value")
+        if value is None:
+            return
+        line = node.start_point[0] + 1
+        candidates: list[Node] = []
+        if value.type == "identifier":
+            candidates.append(value)
+        elif value.type == "ternary_expression":
+            for field in ("consequence", "alternative"):
+                branch = value.child_by_field_name(field)
+                if branch is not None and branch.type == "identifier":
+                    candidates.append(branch)
+        for ident in candidates:
+            result.calls.append(CallInfo(name=ident.text.decode(), line=line))
+
+    def _extract_object_value_references(self, node: Node, result: ParseResult) -> None:
+        """Identifier VALUES in object literals are references — handler registries,
+        route tables, mixins (`mixin({ 'after': after })`, `{onError: handleError}`).
+        Resolution links only names that resolve to callable symbols."""
+        line = node.start_point[0] + 1
+        for prop in node.children:
+            if prop.type == "pair":
+                value = prop.child_by_field_name("value")
+                if value is not None and value.type == "identifier":
+                    result.calls.append(CallInfo(name=value.text.decode(), line=line))
+            elif prop.type == "shorthand_property_identifier":
+                result.calls.append(CallInfo(name=prop.text.decode(), line=line))
 
     def _extract_jsx_component_usage(self, node: Node, result: ParseResult) -> None:
         """Record ``<Component />`` as a call to ``Component``.
@@ -250,6 +289,14 @@ class TypeScriptParser(LanguageParser):
             # module-exported, so the name joins the export surface (it IS the API).
             func_node = self._unwrap_to_function(right)
             if func_node is None:
+                # `lodash.debounce = debounce` — aliasing a function BY NAME onto an
+                # export/prototype object is USAGE of that function (dogfood cycle-4:
+                # lodash's entire API is attached this way; 215 aliased functions read
+                # as dead). Same semantics as passing a callback by identifier.
+                if right.type == "identifier":
+                    result.calls.append(
+                        CallInfo(name=right.text.decode(), line=child.start_point[0] + 1)
+                    )
                 continue
             method_name = prop_node.text.decode()
             # `Foo.prototype` receivers own methods as `Foo`; plain `res`/`app` own as-is.

@@ -219,6 +219,18 @@ def _build_fts_match(query: str) -> str | None:
     return " OR ".join(f"{tok}*" for tok in tokens)
 
 
+
+# Test/example/demo/bench paths rank LAST in exact-name results (dogfood cycle-4:
+# rocket's 10 `examples/*/main.rs` fns named `rocket` starved the pool before the
+# core `Rocket` struct — explain never saw the real symbol).
+_DEPRIORITIZED_RESULT_PATH_RE = __import__("re").compile(
+    r"(^|/)(tests?|__tests__|spec|examples?|samples?|demos?|benches|benchmarks?|fixtures?)(/|$)"
+    r"|(\.|_)(test|spec)\.[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.(py|go|rs)$",
+)
+
+def _is_deprioritized_result_path(file_path: str) -> bool:
+    return bool(file_path) and _DEPRIORITIZED_RESULT_PATH_RE.search(file_path) is not None
+
 def _like_escape(value: str) -> str:
     """Escape ``%``/``_``/``\\`` so *value* is matched literally in a LIKE clause."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -1519,7 +1531,7 @@ class SqliteBackend:
             node_id = node_id or ""
             file_path = file_path or ""
             label_prefix = node_id.split(":", 1)[0] if node_id else ""
-            is_test = "/tests/" in file_path or "/test_" in file_path
+            is_test = _is_deprioritized_result_path(file_path)
             exec_rank = 0 if label_prefix in ("function", "method") else 1
             ranked.append(
                 (
@@ -1557,7 +1569,7 @@ class SqliteBackend:
             node_id = node_id or ""
             file_path = file_path or ""
             label_prefix = node_id.split(":", 1)[0] if node_id else ""
-            is_test = "/tests/" in file_path or "/test_" in file_path
+            is_test = _is_deprioritized_result_path(file_path)
             exec_rank = 0 if label_prefix in ("function", "method") else 1
             ranked.append(
                 (
@@ -1627,7 +1639,7 @@ class SqliteBackend:
             seen.add(node_id)
             file_path = file_path or ""
             label_prefix = node_id.split(":", 1)[0] if node_id else ""
-            is_test = "/tests/" in file_path or "/test_" in file_path
+            is_test = _is_deprioritized_result_path(file_path)
             exec_rank = 0 if label_prefix in ("function", "method") else 1
             ranked.append(
                 (

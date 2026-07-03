@@ -725,3 +725,24 @@ class TestAmbiguousSameFileDispatch:
         rels = g.get_relationships_by_type(RelType.CALLS)
         # Bare-name call (no receiver): primary resolution only, no fan-out.
         assert len(rels) == 1
+
+
+def test_module_scope_reference_falls_back_to_file_source() -> None:
+    """Dogfood cycle-4 (lodash): `Hash.prototype.get = hashGet` at anonymous-IIFE /
+    module scope has no containing symbol — the reference was dropped and hashGet
+    read as dead. The FILE node is the honest edge source."""
+    g = KnowledgeGraph()
+    file_id = _add_file_node(g, "lodash.js")
+    target = _add_symbol_node(g, NodeLabel.FUNCTION, "lodash.js", "hashGet", 10, 20)
+
+    parse_data = [
+        FileParseData(
+            file_path="lodash.js",
+            language="javascript",
+            # line 500 is outside every symbol's range — module scope.
+            parse_result=ParseResult(calls=[CallInfo(name="hashGet", line=500)]),
+        ),
+    ]
+    process_calls(parse_data, g)
+    rels = g.get_relationships_by_type(RelType.CALLS)
+    assert any(r.source == file_id and r.target == target for r in rels)

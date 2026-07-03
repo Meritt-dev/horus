@@ -64,6 +64,7 @@ _NON_PRODUCT_DIRS: frozenset[str] = frozenset({
     "example", "examples", "sample", "samples", "demo", "demos",
     "fixtures", "e2e", "perf", "perf-measures", "runtime-tests",
     "docs", "docs_src", "website", "sandbox",  # docs sites + scratch trees (axios dogfood)
+    "vendor", "vendors", "third_party", "third-party",  # vendored code isn't ours to flag
 })
 
 # Root-level build/tooling config files — invoked by build tools, never by repo code

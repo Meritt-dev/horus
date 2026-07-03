@@ -510,3 +510,36 @@ class TestPropertyAssignmentFunctions:
         result = js_parser.parse(code, "lib/config.js")
         assert result.symbols == []
         assert result.exports == []
+
+
+def test_alias_assignment_counts_as_usage(js_parser: TypeScriptParser) -> None:
+    """Dogfood cycle-4 (lodash): `lodash.debounce = debounce` aliases a function by
+    name onto the export object — that IS usage of `debounce`."""
+    code = "function debounce(fn, wait) {}\nlodash.debounce = debounce;\n"
+    result = js_parser.parse(code, "lodash.js")
+    assert any(c.name == "debounce" for c in result.calls)
+
+
+def test_ternary_and_initializer_value_references(js_parser: TypeScriptParser) -> None:
+    """Dogfood cycle-4 (lodash): dispatch-table internals referenced by VALUE."""
+    code = (
+        "function arrayAggregator(a) {}\nfunction baseAggregator(a) {}\n"
+        "var func = isArray(c) ? arrayAggregator : baseAggregator;\n"
+        "var alias = arrayAggregator;\n"
+    )
+    result = js_parser.parse(code, "lodash.js")
+    names = [c.name for c in result.calls]
+    assert names.count("arrayAggregator") >= 2
+    assert "baseAggregator" in names
+
+
+def test_object_literal_value_references(js_parser: TypeScriptParser) -> None:
+    """Handler registries / mixins: `{ 'after': after, onError }` references both."""
+    code = (
+        "function after() {}\nfunction onError() {}\n"
+        "mixin({ 'after': after, onError });\n"
+    )
+    result = js_parser.parse(code, "lib/registry.js")
+    names = {c.name for c in result.calls}
+    assert "after" in names
+    assert "onError" in names

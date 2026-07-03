@@ -479,13 +479,21 @@ def resolve_file_calls(
             call.line, fpd.file_path, file_sym_index
         )
         if source_id is None:
-            logger.debug(
-                "No containing symbol for call %s at line %d in %s",
-                call.name,
-                call.line,
-                fpd.file_path,
-            )
-            continue
+            # Module-scope reference (dogfood cycle-4, lodash): prototype wiring like
+            # `Hash.prototype.get = hashGet` sits in an anonymous IIFE — no named
+            # containing symbol, so the reference was dropped ENTIRELY and hashGet
+            # read as dead. Fall back to the FILE node as the edge source: honest
+            # ("referenced at module scope of lodash.js") and keeps aliveness intact.
+            file_node = graph.get_node(generate_id(NodeLabel.FILE, fpd.file_path))
+            if file_node is None:
+                logger.debug(
+                    "No containing symbol for call %s at line %d in %s",
+                    call.name,
+                    call.line,
+                    fpd.file_path,
+                )
+                continue
+            source_id = file_node.id
 
         caller_class_name: str | None = None
         if call.receiver in ("self", "this"):
