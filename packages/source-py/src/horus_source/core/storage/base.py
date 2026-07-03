@@ -333,6 +333,20 @@ class StorageBackend(Protocol):
         """
         ...
 
+    def files_containing(
+        self, tokens: list[str], per_token_limit: int
+    ) -> dict[str, list[str]]:
+        """Distinct file paths whose FILE-node content contains each token.
+
+        Returns ``{token: [file_path, ...]}`` with up to *per_token_limit* paths per
+        token (case-insensitive substring, file nodes only — whole-file content).
+        Per-token budgets, unlike :meth:`content_contains_any`'s shared limit, so a
+        common token can't crowd rarer ones out. Backs external-system detection in
+        the engine's `architecture` discovery (the Cypher seam it replaces died in
+        the kùzu→SQLite migration).
+        """
+        ...
+
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:
         """Return the process flows *node_id* participates in, with their ordered steps.
 

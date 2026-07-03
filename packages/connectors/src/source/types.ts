@@ -120,6 +120,22 @@ export interface SourceCommunitiesResult {
   }[];
 }
 
+/** GET /api/dead-code response — total + symbols grouped by file. */
+export interface SourceDeadCodeResult {
+  total: number;
+  byFile: Record<string, { name: string; type: string; line: number }[]>;
+}
+
+/** GET /api/coupling response — temporal (co-change) coupling pairs between files. */
+export interface SourceCouplingResult {
+  pairs: { fileA: string; fileB: string; strength: number; coChanges: number }[];
+}
+
+/** POST /api/content-search filesOnly response — per-token distinct FILE paths. */
+export interface SourceFilesContainingResult {
+  matches: Record<string, string[]>;
+}
+
 /** GET /api/processes response. */
 export interface SourceProcessesResult {
   processes: {

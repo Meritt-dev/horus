@@ -888,6 +888,25 @@ class KuzuBackend:
         results = sorted(out.values(), key=lambda d: d["id"])
         return results[:limit]
 
+    def files_containing(
+        self, tokens: list[str], per_token_limit: int
+    ) -> dict[str, list[str]]:
+        """Distinct file paths whose FILE-node content contains each token (per-token budget)."""
+        per_token_limit = int(per_token_limit)
+        out: dict[str, list[str]] = {}
+        for token in tokens:
+            if not token:
+                continue
+            rows = self._exec_rows(
+                f"MATCH (node:File) "
+                f"WHERE lower(node.content) CONTAINS lower('{escape_cypher(token)}') "
+                f"AND node.file_path <> '' "
+                f"RETURN DISTINCT node.file_path ORDER BY node.file_path "
+                f"LIMIT {per_token_limit}"
+            )
+            out[token] = [r[0] for r in rows if r[0]]
+        return out
+
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:
         """Process flows *node_id* is a step in, with each flow's ordered, named steps."""
         proc_rows = self._exec_rows(

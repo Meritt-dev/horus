@@ -271,4 +271,30 @@ export class SourceCodeProvider implements CodeProvider {
   cypher(query: string): Promise<CypherResult> {
     return this.client.cypher(query);
   }
+
+  // Typed read-path passthroughs for architecture discovery — see CodeProvider contract.
+
+  overview(): Promise<{ nodesByLabel: Record<string, number> }> {
+    return this.client.overview();
+  }
+
+  communities(): Promise<{ name: string; memberCount: number }[]> {
+    return this.client.communities();
+  }
+
+  processes(): Promise<{ name: string }[]> {
+    return this.client.processes();
+  }
+
+  deadCode(): Promise<{ total: number }> {
+    return this.client.deadCode();
+  }
+
+  coupling(): Promise<{ coChanges: number }[]> {
+    return this.client.coupling();
+  }
+
+  filesContaining(tokens: string[], limit?: number): Promise<Record<string, string[]>> {
+    return this.client.filesContaining(tokens, limit);
+  }
 }

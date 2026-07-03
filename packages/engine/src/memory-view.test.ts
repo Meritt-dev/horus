@@ -61,7 +61,7 @@ function makeDb(data: FakeData): HorusDb {
   } as unknown as HorusDb;
 }
 
-/** Drives discoverArchitecture's cypher calls by matching on query substrings. */
+/** Drives discoverArchitecture through its typed read-path methods (the Cypher seam is dead). */
 function makeCode(opts: {
   subsystems?: [string, number][];
   keyFlows?: string[];
@@ -75,29 +75,33 @@ function makeCode(opts: {
     async health() {
       return { ok: opts.hostDown !== true };
     },
-    async cypher(query: string) {
-      if (query.includes('member_of')) {
-        return { rows: (opts.subsystems ?? []).map(([n, c]) => [n, c]) };
-      }
-      if (query.includes('p:Process')) {
-        return { rows: (opts.keyFlows ?? []).map((f) => [f]) };
-      }
-      if (query.includes('is_dead')) {
-        return { rows: [[opts.deadCode ?? 0]] };
-      }
-      if (query.includes('coupled_with')) {
-        return { rows: [[opts.highCoupling ?? 0]] };
-      }
-      if (query.includes('n.content CONTAINS')) {
-        const m = query.match(/CONTAINS "([^"]+)"/);
-        const marker = m?.[1] ?? '';
-        const n = opts.externalFiles?.[marker] ?? 0;
-        return { rows: Array.from({ length: n }, (_, i) => [`src/${marker}/f${i}.ts`]) };
-      }
-      if (query.includes('label(n)')) {
-        return { rows: [['File', 10]] };
-      }
-      return { rows: [] };
+    async overview() {
+      return { nodesByLabel: { file: 10 } };
+    },
+    async communities() {
+      return (opts.subsystems ?? []).map(([name, memberCount]) => ({ name, memberCount }));
+    },
+    async processes() {
+      return (opts.keyFlows ?? []).map((name) => ({ name }));
+    },
+    async deadCode() {
+      return { total: opts.deadCode ?? 0, byFile: {} };
+    },
+    async coupling() {
+      return Array.from({ length: opts.highCoupling ?? 0 }, (_, i) => ({
+        fileA: `a${i}.ts`,
+        fileB: `b${i}.ts`,
+        strength: 1,
+        coChanges: 3,
+      }));
+    },
+    async filesContaining(tokens: string[]) {
+      return Object.fromEntries(
+        tokens.map((t) => [
+          t,
+          Array.from({ length: opts.externalFiles?.[t] ?? 0 }, (_, i) => `src/${t}/f${i}.ts`),
+        ]),
+      );
     },
     async searchSymbols() {
       return opts.symbols ?? [];

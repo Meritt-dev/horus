@@ -378,6 +378,24 @@ class TestCliReadPathEndpoints:
         ]
         mock_storage.content_contains_any.assert_called_once_with(["E_CODE"], 5)
 
+    def test_content_search_files_only(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        # filesOnly returns per-token distinct file paths (external-system detection)
+        # and never touches the content path.
+        mock_storage.files_containing.return_value = {
+            "redis": ["src/queue.ts"],
+            "kafka": [],
+        }
+        response = client.post(
+            "/content-search",
+            json={"tokens": ["redis", "kafka"], "limit": 500, "filesOnly": True},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"matches": {"redis": ["src/queue.ts"], "kafka": []}}
+        mock_storage.files_containing.assert_called_once_with(["redis", "kafka"], 500)
+        mock_storage.content_contains_any.assert_not_called()
+
     def test_symbols_exact_excludes_files_and_hydrates_lines(
         self, mock_storage: MagicMock, client: TestClient
     ) -> None:

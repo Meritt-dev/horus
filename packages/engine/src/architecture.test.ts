@@ -39,19 +39,22 @@ vi.mock('@horus/db', () => ({
 
 const { discoverArchitecture } = await import('./architecture.js');
 
-// Minimal CodeProvider — every architecture cypher query returns no rows, so the
-// async boundaries come solely from the (mocked) queue edges.
+// Minimal CodeProvider with NO typed read-path methods — every section must degrade
+// to its empty default, so the async boundaries come solely from the (mocked) queue
+// edges. Also documents that the engine never requires the optional methods.
 const fakeCode = { cypher: async () => ({ rows: [] }) } as unknown as CodeProvider;
 const fakeDb = {} as never;
 
 describe('discoverArchitecture — detects Python async DB drivers (HOR-379)', () => {
   it('surfaces asyncpg, aiomysql, sqlite as external systems', async () => {
     const code = {
-      cypher: async (q: string) => {
+      filesContaining: async (tokens: string[]) => {
+        const matches: Record<string, string[]> = {};
+        for (const t of tokens) matches[t] = [];
         for (const m of ['asyncpg', 'aiomysql', 'sqlite']) {
-          if (q.includes(`CONTAINS "${m}"`)) return { rows: [[`src/backends/${m}_backend.py`]] };
+          if (tokens.includes(m)) matches[m] = [`src/backends/${m}_backend.py`];
         }
-        return { rows: [] };
+        return matches;
       },
     } as unknown as CodeProvider;
     const model = await discoverArchitecture({ code, db: fakeDb });
@@ -59,6 +62,65 @@ describe('discoverArchitecture — detects Python async DB drivers (HOR-379)', (
     expect(names).toContain('asyncpg');
     expect(names).toContain('aiomysql');
     expect(names).toContain('sqlite');
+  });
+});
+
+describe('discoverArchitecture — typed read path (dogfood P1: architecture rendered empty)', () => {
+  // REGRESSION: discoverArchitecture used to emit raw Cypher through code.cypher();
+  // the SQLite console rejects Cypher, so every section silently caught into its
+  // empty default and `horus architecture` showed "0 subsystems" on every real repo
+  // (hono: 34 clusters computed, 0 rendered). The model must be populated from the
+  // typed methods WITHOUT touching cypher() at all.
+  const richCode = {
+    cypher: async () => {
+      throw new Error('Cypher not supported on this backend');
+    },
+    overview: async () => ({
+      nodesByLabel: { method: 1128, function: 783, file: 450, embedding: 99 },
+    }),
+    communities: async () => [
+      { name: 'Routes+core', memberCount: 320 },
+      { name: 'Tests+flask', memberCount: 1638 },
+      { name: 'Connectors', memberCount: 210 },
+    ],
+    processes: async () => [{ name: 'checkout → charge → receipt' }, { name: 'auth → session' }],
+    deadCode: async () => ({ total: 42, byFile: {} }),
+    coupling: async () => [
+      { fileA: 'a.ts', fileB: 'b.ts', strength: 0.9, coChanges: 5 },
+      { fileA: 'c.ts', fileB: 'd.ts', strength: 0.2, coChanges: 1 },
+    ],
+    filesContaining: async (tokens: string[]) =>
+      Object.fromEntries(
+        tokens.map((t) => [
+          t,
+          t === 'redis' ? ['src/queue/redis.ts', 'tests/redis.test.ts'] : [],
+        ]),
+      ),
+  } as unknown as CodeProvider;
+
+  it('populates every section from the typed methods, never cypher()', async () => {
+    const m = await discoverArchitecture({ code: richCode, db: fakeDb });
+    // Subsystems exist and real ones outrank the (larger) test cluster.
+    expect(m.subsystems.length).toBe(3);
+    expect(m.subsystems[0]?.name).toBe('Routes+core');
+    expect(m.subsystems.at(-1)?.name).toBe('Tests+flask');
+    // Node stats sorted by count, embeddings filtered.
+    expect(m.nodeStats[0]).toEqual({ label: 'method', count: 1128 });
+    expect(m.nodeStats.some((s) => s.label === 'embedding')).toBe(false);
+    // Flows, fragility, external systems all flow through.
+    expect(m.keyFlows).toContain('auth → session');
+    expect(m.fragile.deadCode).toBe(42);
+    expect(m.fragile.highCouplingPairs).toBe(1); // only the coChanges>=3 pair
+    expect(m.externalSystems).toEqual([{ name: 'redis', files: 1 }]); // test path excluded
+    expect(m.summary).toContain('3 subsystems');
+  });
+
+  it('degrades per-section when the provider lacks the typed methods (old hosts)', async () => {
+    const m = await discoverArchitecture({ code: fakeCode, db: fakeDb });
+    expect(m.subsystems).toEqual([]);
+    expect(m.nodeStats).toEqual([]);
+    expect(m.externalSystems).toEqual([]);
+    expect(m.fragile).toEqual({ deadCode: 0, highCouplingPairs: 0 });
   });
 });
 

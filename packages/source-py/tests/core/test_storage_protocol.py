@@ -894,6 +894,58 @@ class TestCliReadPath:
         backend.bulk_load(self._content_graph())
         assert backend.content_contains_any([], limit=10) == []
 
+    # ---------------------------------------------------------------- files_containing
+    # Backs external-system detection in `horus architecture` — per-token distinct
+    # FILE paths, so one common marker can't crowd rarer ones out of a shared limit.
+
+    def _files_graph(self) -> KnowledgeGraph:
+        graph = KnowledgeGraph()
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="queue.ts",
+                file_path="src/queue.ts",
+                content="import Redis from 'redis'\nimport { Queue } from 'bullmq'",
+            )
+        )
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="db.py",
+                file_path="src/db.py",
+                content="import asyncpg\nPOOL = asyncpg.create_pool()",
+            )
+        )
+        # A FUNCTION node mentioning a marker must NOT count — file nodes only
+        # (symbol content would double-count its containing file).
+        graph.add_node(
+            _make_node(
+                name="uses_redis",
+                file_path="src/misc.py",
+                content="redis.get('k')",
+            )
+        )
+        return graph
+
+    def test_files_containing_per_token_file_paths(self, backend: StorageBackend) -> None:
+        backend.bulk_load(self._files_graph())
+        out = backend.files_containing(["redis", "asyncpg", "kafka"], per_token_limit=10)
+        assert out["redis"] == ["src/queue.ts"]  # file node only, not uses_redis's file
+        assert out["asyncpg"] == ["src/db.py"]
+        assert out["kafka"] == []
+
+    def test_files_containing_case_insensitive_and_limit(self, backend: StorageBackend) -> None:
+        backend.bulk_load(self._files_graph())
+        out = backend.files_containing(["REDIS"], per_token_limit=10)
+        assert out["REDIS"] == ["src/queue.ts"]
+        capped = backend.files_containing(["import"], per_token_limit=1)
+        assert len(capped["import"]) == 1
+
+    def test_files_containing_empty_tokens(self, backend: StorageBackend) -> None:
+        backend.bulk_load(self._files_graph())
+        assert backend.files_containing([], per_token_limit=10) == {}
+        assert backend.files_containing([""], per_token_limit=10) == {}
+
     def test_flows_for_symbol(self, backend: StorageBackend) -> None:
         graph, ids = _analytics_graph()
         backend.bulk_load(graph)

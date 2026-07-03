@@ -1273,6 +1273,27 @@ class SqliteBackend:
             for r in rows
         ]
 
+    def files_containing(
+        self, tokens: list[str], per_token_limit: int
+    ) -> dict[str, list[str]]:
+        """Distinct file paths whose FILE-node content contains each token (per-token budget)."""
+        conn = self._require_conn()
+        per_token_limit = int(per_token_limit)
+        out: dict[str, list[str]] = {}
+        with self._lock:
+            for token in tokens:
+                if not token:
+                    continue
+                rows = conn.execute(
+                    "SELECT DISTINCT file_path FROM nodes "
+                    "WHERE label = 'file' AND file_path != '' "
+                    "AND lower(content) LIKE ? ESCAPE '\\' "
+                    "ORDER BY file_path LIMIT ?",
+                    [f"%{_like_escape(token.lower())}%", per_token_limit],
+                ).fetchall()
+                out[token] = [r[0] for r in rows]
+        return out
+
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:
         """Process flows *node_id* is a step in, with each flow's ordered, named steps."""
         conn = self._require_conn()
