@@ -12,8 +12,11 @@
 export type PathKind = 'product' | 'test' | 'docs' | 'example' | 'config' | 'vendored';
 
 /** Directory names that mark everything beneath them. */
-const TEST_DIRS = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'testdata', 'fixtures', '__fixtures__', '__mocks__', 'e2e']);
-const DOCS_DIRS = new Set(['docs', 'doc', 'docs_src', 'website']);
+const TEST_DIRS = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'testdata', 'fixtures', '__fixtures__', '__testfixtures__', 'testfixtures', '__mocks__', 'e2e']);
+// `www` and `site` are the conventional docs/marketing-site trees in OSS libraries
+// (trpc/tanstack ship a docusaurus site under `www/`); their content leaked into
+// external-system detection (dogfood 0.21: trpc `www/` → graphql/prisma "integrations").
+const DOCS_DIRS = new Set(['docs', 'doc', 'docs_src', 'website', 'www', 'site']);
 // Bench/demo/sandbox trees are exercised by external runners or exist as
 // documentation — grouped with examples because every consumer treats them the same.
 const EXAMPLE_DIRS = new Set([

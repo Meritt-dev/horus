@@ -21,6 +21,8 @@ describe('classifyPath', () => {
       'spec/models/order.rb',
       'testdata/fixture.json',
       'src/__fixtures__/queue.ts',
+      // jscodeshift codemod fixtures (dogfood 0.21: tanstack query-codemods → axios FP).
+      'packages/query-codemods/src/v5/keep-previous-data/__testfixtures__/named.input.tsx',
       'e2e/checkout.ts',
       // Mirrored with horus_source/core/classify.py (fixture-queue dogfood):
       'lib/api.spec.js', // .spec. on any extension
@@ -37,6 +39,10 @@ describe('classifyPath', () => {
     expect(classifyPath('README.md')).toBe('docs');
     expect(classifyPath('docs_src/tutorial/t1.py')).toBe('docs');
     expect(classifyPath('website/src/pages/index.tsx')).toBe('docs');
+    // Docusaurus/marketing-site trees (dogfood 0.21: trpc/tanstack `www/`) are docs.
+    expect(classifyPath('www/docusaurus.config.ts')).toBe('docs');
+    expect(classifyPath('www/src/components/sponsors/script.pull.ts')).toBe('docs');
+    expect(classifyPath('site/src/pages/index.tsx')).toBe('docs');
     expect(classifyPath('examples/basic/server.ts')).toBe('example');
     // Bench/demo/sandbox trees are exercised by external runners — non-product.
     expect(classifyPath('benchmarks/http/index.ts')).toBe('example');

@@ -23,10 +23,10 @@ _VENDORED_DIRS: frozenset[str] = frozenset({
 
 _TEST_DIRS: frozenset[str] = frozenset({
     "test", "tests", "__tests__", "spec", "specs", "testdata",
-    "fixtures", "__fixtures__", "__mocks__", "e2e",
+    "fixtures", "__fixtures__", "__testfixtures__", "testfixtures", "__mocks__", "e2e",
 })
 
-_DOCS_DIRS: frozenset[str] = frozenset({"docs", "doc", "docs_src", "website"})
+_DOCS_DIRS: frozenset[str] = frozenset({"docs", "doc", "docs_src", "website", "www", "site"})
 
 # Benchmark/demo/sandbox trees are exercised by external runners or exist as
 # documentation — grouped with examples because every consumer treats them the same.
