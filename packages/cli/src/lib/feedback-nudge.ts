@@ -21,7 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, listInvestigations, getLatestOutcomeLabel } from '@horus/db';
 import { runFeedbackPrompt } from './telemetry/feedback.js';
 import { persistOutcomeLabel } from '../commands/feedback.js';
@@ -135,9 +135,17 @@ export async function maybePromptResolutionFeedback(opts: { config?: string } = 
     let last: LastInvestigation | null = null;
     let labeled = false;
     const config = await loadConfig(opts.config);
+    // Scope to the active project — "the latest investigation" must not be another
+    // project's on the shared DB (dogfood N1).
+    let project: string | undefined;
+    try {
+      project = resolveEnvironment(config).project;
+    } catch {
+      /* unresolvable — leave unscoped */
+    }
     const { db, sql } = await openDb(config.database.url);
     try {
-      const row = (await listInvestigations(db, 1))[0];
+      const row = (await listInvestigations(db, 1, { project }))[0];
       if (row) {
         last = { id: row.id, title: row.title ?? null, createdAtMs: new Date(row.createdAt).getTime() };
         labeled = (await getLatestOutcomeLabel(db, row.id)) !== null;

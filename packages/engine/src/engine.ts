@@ -3817,7 +3817,7 @@ export async function investigate(
   // ceiling. Build a node-id → prior-count map from the recent incident store.
   const priorIncidents = new Map<string, number>();
   try {
-    const priors = await listInvestigationsWithReports(deps.db, 50);
+    const priors = await listInvestigationsWithReports(deps.db, 50, { project: input.repo });
     for (const row of priors) {
       const rep = row.report as InvestigationReport | null | undefined;
       if (!rep || !Array.isArray(rep.evidence) || rep.evidence.length === 0) continue;
@@ -4306,6 +4306,9 @@ async function persist(
         incidentInput: input,
         status: 'open',
         summary: report.summary,
+        // Stamp the project so reads can scope — the shared DB leaked one
+        // project's investigations into another's lists/priors (dogfood N1).
+        project: input.repo ?? null,
       })
       .returning({ id: investigationsTable.id, createdAt: investigationsTable.createdAt });
 

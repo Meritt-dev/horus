@@ -350,7 +350,7 @@ export async function buildMemoryView(scope: string, deps: MemoryViewDeps): Prom
   } else {
     // Broader recall fallback (mirrors buildOnboarding's area path): reports whose derived tags
     // overlap the scope, else title match; capped at 8.
-    const invs = await listInvestigationsWithReports(db, 50);
+    const invs = await listInvestigationsWithReports(db, 50, { project });
     const seen = new Set<string>();
     for (const inv of invs) {
       if (seen.has(inv.id)) continue;

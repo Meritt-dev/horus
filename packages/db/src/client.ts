@@ -123,7 +123,80 @@ export async function openDb(url: string | undefined, opts?: { max?: number }): 
       return unavailableDbHandle();
     }
   }
-  return createDb(url as string, opts);
+  const handle = createDb(url as string, opts);
+  // Bring an existing user Postgres up to the current schema (dogfood N10): the
+  // installer only migrates FRESH databases and `horus update` never migrates, so a
+  // new release adding a column had NO delivery path to existing installs — its
+  // inserts would silently fail. Best-effort: schema drift degrades exactly as before.
+  try {
+    await ensurePostgresMigrations(handle.sql as postgres.Sql);
+  } catch {
+    /* best-effort — commands surface real DB errors themselves */
+  }
+  return handle;
+}
+
+/**
+ * Postgres error codes meaning "this DDL already happened" — safe to skip when
+ * REPLAYING migrations on a database that predates tag tracking (created by
+ * drizzle-kit or the installer, which record nothing the CLI can read).
+ */
+const ALREADY_APPLIED_PG_CODES = new Set([
+  '42701', // duplicate_column
+  '42P07', // duplicate_table / duplicate_index
+  '42710', // duplicate_object
+  '42723', // duplicate_function
+]);
+
+/** Cross-process serialization key for migration convergence (pg_advisory_lock). */
+const MIGRATION_LOCK_KEY = 913_736_500_1;
+
+/**
+ * Idempotently converge a user-run Postgres to the bundled schema, mirroring the
+ * pglite path: applied tags are recorded in `__horus_migrations`; a database that
+ * predates the tag table replays every migration with per-statement tolerance for
+ * "already exists" errors (the bundled migrations contain no destructive statements).
+ * Concurrent CLI processes serialize on an advisory lock. Fast path: one SELECT.
+ */
+export async function ensurePostgresMigrations(sql: postgres.Sql): Promise<void> {
+  await sql.unsafe(
+    `CREATE TABLE IF NOT EXISTS "__horus_migrations" (
+       "tag" text PRIMARY KEY,
+       "applied_at" timestamptz NOT NULL DEFAULT now()
+     );`,
+  );
+  const doneRows = await sql.unsafe(`SELECT tag FROM "__horus_migrations";`);
+  const done = new Set(doneRows.map((r) => String((r as unknown as { tag: string }).tag)));
+  if (EMBEDDED_MIGRATIONS.every((m) => done.has(m.tag))) return;
+
+  // A dedicated connection so the advisory lock and the statements share a session.
+  const conn = await sql.reserve();
+  try {
+    await conn.unsafe(`SELECT pg_advisory_lock(${MIGRATION_LOCK_KEY});`);
+    try {
+      // Re-read under the lock — another process may have converged while we waited.
+      const lockedDone = await conn.unsafe(`SELECT tag FROM "__horus_migrations";`);
+      const applied = new Set(lockedDone.map((r) => String((r as unknown as { tag: string }).tag)));
+      for (const migration of EMBEDDED_MIGRATIONS) {
+        if (applied.has(migration.tag)) continue;
+        for (const statement of migration.statements) {
+          try {
+            await conn.unsafe(statement);
+          } catch (e) {
+            const code = (e as { code?: string }).code ?? '';
+            if (!ALREADY_APPLIED_PG_CODES.has(code)) throw e;
+          }
+        }
+        await conn.unsafe(`INSERT INTO "__horus_migrations" (tag) VALUES ($1) ON CONFLICT DO NOTHING;`, [
+          migration.tag,
+        ]);
+      }
+    } finally {
+      await conn.unsafe(`SELECT pg_advisory_unlock(${MIGRATION_LOCK_KEY});`);
+    }
+  } finally {
+    conn.release();
+  }
 }
 
 const migrationsApplied = new WeakSet<PGlite>();

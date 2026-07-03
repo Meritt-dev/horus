@@ -117,5 +117,13 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
       "ALTER TABLE \"memory_item\" ADD COLUMN \"tags\" text[];",
       "CREATE INDEX IF NOT EXISTS \"memory_item_signature_idx\" ON \"memory_item\" (\"signature\");"
     ]
+  },
+  {
+    "tag": "0011_investigations_project",
+    "statements": [
+      "ALTER TABLE \"investigations\" ADD COLUMN \"project\" text;",
+      "UPDATE \"investigations\" SET \"project\" = incident_input->>'repo'\nWHERE \"project\" IS NULL AND incident_input->>'repo' IS NOT NULL;",
+      "CREATE INDEX \"investigations_project_created_idx\" ON \"investigations\" (\"project\",\"created_at\");"
+    ]
   }
 ];

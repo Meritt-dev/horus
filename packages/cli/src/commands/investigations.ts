@@ -9,6 +9,7 @@
  * un-replayable.
  */
 import pc from 'picocolors';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, listInvestigations } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
 import { resolveDbUrl } from '../lib/db-url.js';
@@ -43,13 +44,21 @@ export async function runInvestigations(opts: {
   const cloudCfg = readCloudConfig(repoRoot);
   const cloudLinked = isCloudActive(cloudCfg);
 
-  // 1. Local rows — the replayable source of truth.
+  // 1. Local rows — the replayable source of truth, scoped to THIS project: the
+  // shared DB holds every project's investigations and an unscoped list leaked
+  // other projects' incident titles into this repo (dogfood N1).
+  let project: string | undefined;
+  try {
+    project = resolveEnvironment(await loadConfig(opts.config)).project;
+  } catch {
+    /* unresolvable — leave unscoped */
+  }
   let localRows: Array<{ id: string; createdAt: Date; title: string | null }> = [];
   let localError: Error | null = null;
   try {
     const { db, sql } = await openDb(await resolveDbUrl(opts.config));
     try {
-      localRows = await listInvestigations(db, opts.limit ?? 20);
+      localRows = await listInvestigations(db, opts.limit ?? 20, { project });
     } finally {
       await sql.end();
     }

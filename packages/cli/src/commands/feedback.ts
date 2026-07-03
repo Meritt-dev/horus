@@ -84,9 +84,16 @@ export async function runFeedback(
     let last: string | null = null;
     try {
       const config = await loadConfig(opts.config);
+      // "The last investigation" means THIS project's last on the shared DB (dogfood N1).
+      let project: string | undefined;
+      try {
+        project = resolveEnvironment(config).project;
+      } catch {
+        /* unresolvable — leave unscoped */
+      }
       const { db, sql } = await openDb(config.database.url);
       try {
-        last = await getLastInvestigationId(db);
+        last = await getLastInvestigationId(db, { project });
       } finally {
         await sql.end();
       }

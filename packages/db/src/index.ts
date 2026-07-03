@@ -77,6 +77,7 @@ export {
   listInvestigations,
   listInvestigationsWithReports,
   updateInvestigationReport,
+  type InvestigationScope,
 } from './investigations.js';
 export { runMigrations } from './migrate.js';
 export { checkDatabase, EXPECTED_TABLES, type DbHealth } from './health.js';
