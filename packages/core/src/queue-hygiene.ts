@@ -16,7 +16,13 @@
  *     classifier, which also catches co-located `*.test.ts` and `__fixtures__`).
  *  3. Generic-with-no-files — a bare generic word (`name`, `emails`, `jobs`, …)
  *     with zero file evidence is fixture/template residue, not a queue.
- *  4. Generic-without-a-real-worker (group level) — a generic group is extraction
+ *  4. Type-declaration-only edges — an edge whose EVERY file is a type-declaration
+ *     file (`.d.ts`/`.d.mts`/`.d.cts` or `*.interface(s).ts`) is a shape the
+ *     extractor grazed, never a producer/consumer (dogfood 0.21: kafkajs's
+ *     `types/index.d.ts` and Nest's `kafka.interface.ts` fabricating queue GZIP ↔
+ *     worker Snappy from a `CompressionTypes` enum). One real product file
+ *     alongside a type-decl file is enough to keep the edge.
+ *  5. Generic-without-a-real-worker (group level) — a generic group is extraction
  *     residue — e.g. the stitcher's own `X_QUEUE_NAME` literals self-matching —
  *     even when a file is product code, UNLESS a real worker vouches for it. A
  *     real worker is a NAMED symbol (a function/method registration like
@@ -112,9 +118,40 @@ function isEnumConstantEdge(edge: QueueEdgeLike): boolean {
   return /(enum|constant|attribute|telemetry)/.test(base);
 }
 
-/** Edge-level keep/drop: plausible name, not fixture-only, not an enum-constant self-match. */
+/**
+ * A type-declaration file: a `.d.ts`/`.d.mts`/`.d.cts` ambient-types file, or a
+ * `*.interface.ts` / `*.interfaces.ts` (also `.cts`/`.mts`) declarations module.
+ * Types cannot produce or consume messages, so they are never real queue evidence.
+ */
+function isTypeDeclarationFile(file: string): boolean {
+  const base = (file.split('/').pop() ?? file).toLowerCase();
+  return /\.d\.[cm]?ts$/.test(base) || /\.interfaces?\.[cm]?ts$/.test(base);
+}
+
+/**
+ * A type-declaration-only edge: EVERY file behind it is a type-declaration file
+ * (dogfood 0.21: kafkajs's `types/index.d.ts` and Nest's `kafka.interface.ts`
+ * both fabricated queue GZIP ↔ worker Snappy from a `CompressionTypes` enum in a
+ * `.d.ts`). Types declare shapes; they neither produce nor consume messages. An
+ * edge with even ONE real product file alongside a type-decl file is NOT dropped.
+ */
+function isTypeDeclarationEdge(edge: QueueEdgeLike): boolean {
+  const files = [edge.producerFile, edge.workerFile].filter(
+    (f): f is string => f != null && f !== '',
+  );
+  if (files.length === 0) return false;
+  return files.every((f) => isTypeDeclarationFile(f));
+}
+
+/** Edge-level keep/drop: plausible name, not fixture-only, not an enum-constant
+ *  self-match, not a type-declaration-only edge. */
 export function shouldKeepQueueEdge(edge: QueueEdgeLike): boolean {
-  return isPlausibleQueueName(edge.queueName) && !isFixtureQueueEdge(edge) && !isEnumConstantEdge(edge);
+  return (
+    isPlausibleQueueName(edge.queueName) &&
+    !isFixtureQueueEdge(edge) &&
+    !isEnumConstantEdge(edge) &&
+    !isTypeDeclarationEdge(edge)
+  );
 }
 
 /**

@@ -305,3 +305,43 @@ describe('enum/constant string constants are not queues (dogfood 0.21)', () => {
     expect(filterQueueEdges(edges)).toHaveLength(2);
   });
 });
+
+// ── dogfood 0.21: queue evidence living only in type-declaration files ──────────────
+describe('type-declaration-only edges are not queues (dogfood 0.21)', () => {
+  it('drops a kafkajs GZIP↔Snappy edge whose producer AND worker are in types/index.d.ts', () => {
+    // A `CompressionTypes` enum in an ambient `.d.ts` — types cannot produce or consume.
+    const edges = [
+      { queueName: 'GZIP', producerSymbol: 'GZIP', producerFile: 'types/index.d.ts', workerSymbol: 'Snappy', workerFile: 'types/index.d.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('drops a Nest GZIP↔Snappy edge in kafka.interface.ts (also caught by the same-file enum rule)', () => {
+    const edges = [
+      { queueName: 'GZIP', producerSymbol: 'GZIP', producerFile: 'packages/microservices/external/kafka.interface.ts', workerSymbol: 'Snappy', workerFile: 'packages/microservices/external/kafka.interface.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('drops even when the two type-decl files differ (.d.mts producer, .interfaces.cts worker)', () => {
+    const edges = [
+      { queueName: 'order-events', producerSymbol: 'OrderEvent', producerFile: 'src/types/index.d.mts', workerSymbol: 'OrderConsumer', workerFile: 'src/kafka.interfaces.cts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('KEEPS an edge with producer in src/queue.ts and worker null', () => {
+    const edges = [
+      { queueName: 'order-events', producerSymbol: 'OrderProducer', producerFile: 'src/queue.ts', workerSymbol: null, workerFile: null },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(1);
+  });
+
+  it('KEEPS a real queue with producer in types/index.d.ts BUT worker in src/worker.ts', () => {
+    // One real product file alongside a type-decl file is enough — do not drop.
+    const edges = [
+      { queueName: 'order-events', producerSymbol: 'OrderProducer', producerFile: 'types/index.d.ts', workerSymbol: 'OrderWorker', workerFile: 'src/worker.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(1);
+  });
+});
