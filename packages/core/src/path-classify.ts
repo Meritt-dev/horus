@@ -30,10 +30,11 @@ const EXAMPLE_DIRS = new Set([
 // `stripe` d.ts, yarn release blobs) — they're not hand-written integrations.
 const VENDORED_DIRS = new Set(['node_modules', 'vendor', 'vendors', 'vendored', 'third_party', 'third-party', 'dist', 'build', '.venv', 'venv', '.yarn', 'generated', '__generated__']);
 
-/** Test-file naming conventions across the indexed languages. `.test.`/`.spec.`
- *  accept any extension (co-located tests: `router.test.ts`, `api.spec.js`, ...). */
+/** Test-file naming conventions across the indexed languages. `.test.`/`.spec.`/`.tst.`
+ *  accept any extension (co-located tests: `router.test.ts`, `api.spec.js`, and pino's
+ *  type-test convention `pino.tst.ts`, ...). */
 const TEST_FILE_RE =
-  /(\.(test|spec)\.[^/.]+$|^test_[^/]*\.[^/.]+$|_test\.(py|go|rs)$|^Test[A-Z][^/]*\.java$|Test\.java$|Spec\.(scala|kt)$|^conftest\.py$)/;
+  /(\.(test|spec|tst)\.[^/.]+$|^test_[^/]*\.[^/.]+$|_test\.(py|go|rs)$|^Test[A-Z][^/]*\.java$|Test\.java$|Spec\.(scala|kt)$|^conftest\.py$)/;
 
 /** Config-ish files that are neither runtime code nor tests. */
 const CONFIG_FILE_RE =

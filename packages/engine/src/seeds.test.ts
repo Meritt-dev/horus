@@ -12,6 +12,7 @@ import {
   isAnchoredExactSeed,
   isCodegenPath,
   isTypeDeclarationSymbol,
+  productTier,
 } from './seeds.js';
 
 function sym(name: string, filePath: string): Symbol {
@@ -499,6 +500,36 @@ describe('HOR-447 — codegen + type-declaration seed demotion', () => {
   });
 });
 
+
+describe('productTier — A5 lexicographic product-over-deprioritized tier', () => {
+  const s = (name: string, filePath: string): Symbol => sym(name, filePath);
+
+  it('drops deprioritized namesakes when ANY product candidate matches', () => {
+    const product = s('Command', 'src/command.ts');
+    const fixtures = Array.from({ length: 16 }, (_, i) => s('Command', `test/fixtures/c${i}.ts`));
+    expect(productTier([...fixtures, product])).toEqual([product]); // count never beats product-ness
+  });
+
+  it('falls back to the full set when NO product candidate exists (test-only repo)', () => {
+    const a = s('Command', 'test/a.ts');
+    const b = s('Command', 'spec/b.ts');
+    expect(productTier([a, b])).toEqual([a, b]);
+  });
+
+  it('collapses the tiers when includeTests is set', () => {
+    const product = s('Command', 'src/command.ts');
+    const fixture = s('Command', 'test/fixtures/c.ts');
+    expect(productTier([fixture, product], true)).toEqual([fixture, product]);
+  });
+
+  it('rankExactCandidates leads with product but still lists the demoted fixture (full list)', () => {
+    const product: Symbol = { id: 'class:src/command.ts:Command', name: 'Command', filePath: 'src/command.ts', startLine: 1, endLine: 120 };
+    const fixture: Symbol = { id: 'class:test/fixtures/c.ts:Command', name: 'Command', filePath: 'test/fixtures/c.ts', startLine: 1, endLine: 400 };
+    const ranked = rankExactCandidates('Command', [fixture, product]);
+    expect(ranked[0]).toBe(product); // product wins despite the fixture's larger body
+    expect(ranked).toHaveLength(2); // the fixture is still surfaced, just demoted
+  });
+});
 
 describe('rankExactCandidates (dogfood P1 — explain disambiguation)', () => {
   const sym = (

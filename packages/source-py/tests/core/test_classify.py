@@ -20,6 +20,7 @@ class TestTestPaths:
             "src/jsx/index.test.tsx",
             "lib/api.spec.js",
             "src/entry.spec.tsx",
+            "src/types/pino.tst.ts",  # pino's `.tst.ts` type-test convention (dogfood 0.21.1 A5)
             "app/test_models.py",
             "backend/models_test.py",
             "pkg/server_test.go",

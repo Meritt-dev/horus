@@ -40,10 +40,11 @@ _EXAMPLE_DIRS: frozenset[str] = frozenset({
 })
 
 # Test-file naming conventions across the indexed languages. Anchored to the
-# BASENAME. `.test.`/`.spec.` accept any extension (co-located JS/TS tests, and
-# dead-code previously matched any `.test.` name).
+# BASENAME. `.test.`/`.spec.`/`.tst.` accept any extension (co-located JS/TS tests,
+# pino's type-test convention `pino.tst.ts`, and dead-code previously matched any
+# `.test.` name).
 _TEST_FILE_RE = re.compile(
-    r"(\.(test|spec)\.[^/.]+$)"
+    r"(\.(test|spec|tst)\.[^/.]+$)"
     r"|(^test_[^/]*\.[^/.]+$)"
     r"|(_test\.(py|go|rs)$)"
     r"|(^Test[A-Z][^/]*\.java$)|(Test\.java$)"

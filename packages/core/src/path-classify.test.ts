@@ -26,6 +26,7 @@ describe('classifyPath', () => {
       'e2e/checkout.ts',
       // Mirrored with horus_source/core/classify.py (fixture-queue dogfood):
       'lib/api.spec.js', // .spec. on any extension
+      'src/types/pino.tst.ts', // pino's `.tst.ts` type-test convention (dogfood 0.21.1 A5)
       'src/test_helpers/factory.py', // test_-prefixed directory
       'src/main/java/TestOwnerController.java', // Test-prefix Java convention
       'pkg/server_test.go',

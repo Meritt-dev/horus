@@ -425,6 +425,25 @@ export function isDeprioritizedSeed(s: Symbol): boolean {
 }
 
 /**
+ * dogfood 0.21.1 (A5): product-vs-deprioritized is a LEXICOGRAPHIC tier for exact/qualified
+ * symbol resolution, NOT a score bonus. Among the name-matching candidates, any product-path
+ * symbol outranks EVERY test/example/docs/vendored namesake BEFORE owner-match, container
+ * qualifier, kind, body-size, or search-count scoring runs. This makes the test-path demotion
+ * decisive on the qualified path too: an inherited product method whose owner ≠ the queried
+ * receiver (undici `Pool.dispatch` → `dispatcher-base.js`, class DispatcherBase) still beats a
+ * test-file method whose path the container qualifier happens to match (`test/pool.js` contains
+ * "pool"), and one product class beats sixteen fixture namesakes (oclif bare `Command`). A
+ * deprioritized candidate is returned only when NO product candidate matches; `includeTests`
+ * collapses the tiers (the caller asked for tests). Codegen/type-declaration demotion stays a
+ * soft score in {@link scoreExactCandidate}.
+ */
+export function productTier(candidates: Symbol[], includeTests = false): Symbol[] {
+  if (includeTests) return candidates;
+  const product = candidates.filter((s) => !isDeprioritizedSeedPath(s.filePath));
+  return product.length > 0 ? product : candidates;
+}
+
+/**
  * HOR-430: a deprioritized (test/example/demo/docs) candidate is normally hard-demoted below
  * every real candidate (HOR-376) so core code outranks demo/test code on a *shared keyword*.
  * But a STRONG, ANCHORED exact match in such a file must still be able to surface — the
@@ -523,14 +542,17 @@ function scoreExactCandidate(query: string, symbol: Symbol, includeTests: boolea
 export function rankExactCandidates(query: string, symbols: Symbol[]): Symbol[] {
   const q = query.toLowerCase();
   const exact = symbols.filter((s) => s.name.toLowerCase() === q);
-  const scored = exact.map((symbol, i) => ({
-    symbol,
-    score: scoreExactCandidate(query, symbol, false),
-    i,
-  }));
-  return scored
-    .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
-    .map((s) => s.symbol);
+  // A5: product candidates form the dominant lexicographic tier — a deprioritized namesake is
+  // still returned (callers render the full "N symbols named X" list) but never leads when any
+  // product candidate matches, regardless of body size or how many fixture namesakes there are.
+  const tier = productTier(exact, false);
+  const inTier = new Set(tier.map((s) => s.id));
+  const rank = (pool: Symbol[]): Symbol[] =>
+    pool
+      .map((symbol, i) => ({ symbol, score: scoreExactCandidate(query, symbol, false), i }))
+      .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
+      .map((s) => s.symbol);
+  return [...rank(tier), ...rank(exact.filter((s) => !inTier.has(s.id)))];
 }
 
 // ---------------------------------------------------------------------------
@@ -617,10 +639,17 @@ export function resolveSymbolQuery(
   const target = (qualifier?.symbol ?? query.trim()).toLowerCase();
 
   const exactAll = symbols.filter((s) => s.name.toLowerCase() === target);
+  // A5: the product-vs-deprioritized split is a lexicographic tier decided BEFORE the container
+  // qualifier — a test-file namesake the qualifier happens to match (undici `test/pool.js` for
+  // `Pool.dispatch`) must not pull the resolution off the product method, even when the product
+  // method is inherited and its owner ≠ the queried receiver. So restrict the qualified subset to
+  // the dominant product tier: a deprioritized candidate can only be qualified when there is NO
+  // product candidate at all.
+  const nameTier = productTier(exactAll, includeTests);
   const qualified =
-    qualifier !== null ? exactAll.filter((s) => qualifierBoost(s, qualifier) >= 40) : [];
+    qualifier !== null ? nameTier.filter((s) => qualifierBoost(s, qualifier) >= 40) : [];
 
-  const tier = qualified.length > 0 ? qualified : exactAll;
+  const tier = qualified.length > 0 ? qualified : nameTier;
   const kind: ResolutionKind =
     qualified.length > 0
       ? 'exact-qualified'

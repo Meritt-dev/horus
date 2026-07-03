@@ -156,6 +156,43 @@ describe('resolveSymbolQuery — dogfood repros', () => {
     expect(res1.candidates[0]).toBe(a); // stable input-order tie-break, never a silent flip
   });
 
+  it('undici: `Pool.dispatch` picks the INHERITED product method over a test namesake the path-qualifier matches (JS)', () => {
+    // The real method is inherited from DispatcherBase (owner ≠ Pool), so the container qualifier
+    // does NOT match it; the test namesake in `test/pool.js` DOES container-match (path contains
+    // "pool") + owner-matches nothing. The product tier must dominate the qualified path so the
+    // test file can never win.
+    const inherited = sym('method', 'lib/dispatcher/dispatcher-base.js', 'dispatch', { className: 'DispatcherBase', startLine: 150, endLine: 210 });
+    const fake = sym('method', 'test/pool.js', 'dispatch', { className: 'FakeClient' });
+    const res = resolveSymbolQuery('Pool.dispatch', [fake, inherited]); // host ranked the test first
+    expect(res.candidates[0]).toBe(inherited);
+    expect(res.kind).toBe('exact'); // inherited ⇒ matched by name, container is an ancestor class
+  });
+
+  it('oclif: bare `Command` picks the 1 product class over MANY fixture namesakes (count never beats product-ness)', () => {
+    const product = sym('class', 'src/command.ts', 'Command', { endLine: 120 });
+    const fixtures = Array.from({ length: 16 }, (_, i) =>
+      sym('class', `test/fixtures/cmd-${i}/command.ts`, 'Command', { endLine: 200 }),
+    );
+    const res = resolveSymbolQuery('Command', [...fixtures, product]); // 16 fixtures ranked first
+    expect(res.kind).toBe('exact');
+    expect(res.candidates[0]).toBe(product);
+  });
+
+  it('hono: `Hono.get` prefers the product method over the co-located `src/hono.test.ts` namesake (JS)', () => {
+    const method = sym('method', 'src/hono-base.ts', 'get', { className: 'Hono', endLine: 60 });
+    const coLocated = sym('method', 'src/hono.test.ts', 'get', { className: 'Hono' });
+    const res = resolveSymbolQuery('Hono.get', [coLocated, method]);
+    expect(res.kind).toBe('exact-qualified');
+    expect(res.candidates[0]).toBe(method);
+  });
+
+  it('pino: a `.tst.ts` type-test namesake is demoted like any test file (JS)', () => {
+    const product = sym('method', 'lib/pino.js', 'child', { className: 'Pino', endLine: 90 });
+    const typeTest = sym('function', 'test/types/pino.tst.ts', 'child', {});
+    const res = resolveSymbolQuery('pino.child', [typeTest, product]);
+    expect(res.candidates[0]).toBe(product);
+  });
+
   it('product-over-tests lifts with includeTests', () => {
     const lib = sym('method', 'lib/application.js', 'use', { className: 'app' });
     const test = sym('function', 'test/app.use.js', 'use', { endLine: 500 });
