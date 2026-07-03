@@ -189,10 +189,12 @@ export class SourceHttpClient {
     return res.results;
   }
 
-  impact(nodeId: string, depth = 3): Promise<SourceImpactResult> {
+  /** Blast radius. Product-only by default; `includeTests` restores test/docs/example callers. */
+  impact(nodeId: string, depth = 3, opts?: { includeTests?: boolean }): Promise<SourceImpactResult> {
+    const includeTests = opts?.includeTests ? '&include_tests=true' : '';
     return this.request<SourceImpactResult>(
       'GET',
-      `/api/impact/${encodeNodePath(nodeId)}?depth=${depth}`,
+      `/api/impact/${encodeNodePath(nodeId)}?depth=${depth}${includeTests}`,
     );
   }
 
@@ -248,9 +250,11 @@ export class SourceHttpClient {
     return res.lines ?? {};
   }
 
-  /** Process flows a symbol participates in, with each flow's named ordered steps. */
-  flows(nodeId: string): Promise<SourceFlowsResult> {
-    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeNodePath(nodeId)}`);
+  /** Process flows a symbol participates in, with each flow's named ordered steps.
+   *  Product-only by default; `includeTests` restores steps living in test files. */
+  flows(nodeId: string, opts?: { includeTests?: boolean }): Promise<SourceFlowsResult> {
+    const includeTests = opts?.includeTests ? '?include_tests=true' : '';
+    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeNodePath(nodeId)}${includeTests}`);
   }
 
   /** Method symbols of `className` defined in `file`, ordered by start line. */

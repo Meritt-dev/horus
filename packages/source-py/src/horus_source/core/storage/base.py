@@ -123,12 +123,20 @@ class StorageBackend(Protocol):
         ...
 
     def traverse_with_depth(
-        self, start_id: str, depth: int, direction: str = "callers"
+        self,
+        start_id: str,
+        depth: int,
+        direction: str = "callers",
+        *,
+        product_only: bool = False,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs.
 
         Same semantics as :meth:`traverse` but preserves the hop distance
-        (1-based) so callers can group results by proximity.
+        (1-based) so callers can group results by proximity. With
+        ``product_only=True``, non-product nodes (per
+        :mod:`horus_source.core.classify`) are neither reported nor traversed
+        through — a test node cuts the walk.
         """
         ...
 

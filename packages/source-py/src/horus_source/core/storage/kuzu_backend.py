@@ -23,6 +23,7 @@ from typing import Any
 
 import kuzu
 
+from horus_source.core.classify import is_product
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.storage.base import NodeEmbedding, SearchResult
@@ -510,7 +511,12 @@ class KuzuBackend:
         return [node for node, _ in self.traverse_with_depth(start_id, depth, direction)]
 
     def traverse_with_depth(
-        self, start_id: str, depth: int, direction: str = "callers"
+        self,
+        start_id: str,
+        depth: int,
+        direction: str = "callers",
+        *,
+        product_only: bool = False,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs.
 
@@ -519,6 +525,9 @@ class KuzuBackend:
         Args:
             direction: ``"callers"`` follows incoming CALLS (blast radius),
                        ``"callees"`` follows outgoing CALLS (dependencies).
+            product_only: When True, non-product nodes (tests/docs/examples per
+                the shared classifier) are neither reported nor expanded — the
+                traversal is CUT at a test node, it cannot tunnel through one.
         """
         self._require_conn()
         depth = min(depth, self._MAX_BFS_DEPTH)
@@ -538,6 +547,8 @@ class KuzuBackend:
             if current_id != start_id:
                 node = self.get_node(current_id)
                 if node is not None:
+                    if product_only and not is_product(node.file_path or ""):
+                        continue  # cut: neither reported nor expanded through
                     result_list.append((node, current_depth))
 
             if current_depth < depth:

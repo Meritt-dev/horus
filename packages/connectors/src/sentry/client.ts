@@ -21,14 +21,26 @@ import { fetchWithRetry, type HttpRequestOptions } from '../http.js';
 export interface SentryClientOpts {
   /** API auth token (sent as `Authorization: Bearer <authToken>`). */
   authToken: string;
-  /** Sentry org slug. */
+  /**
+   * Sentry org slug. Optional — pass `''` when only discovery calls
+   * (`listOrganizations`) are needed, before an org has been chosen.
+   */
   org: string;
-  /** Sentry project slug. */
+  /**
+   * Sentry project slug. Optional — pass `''` for org/project discovery
+   * (`listOrganizations` / `listProjects`); required for issue queries.
+   */
   project: string;
   /** Base URL (default https://sentry.io). Configurable for self-hosted. */
   baseUrl?: string;
   /** Transport overrides (timeout / retry) forwarded to fetchWithRetry. */
   http?: HttpRequestOptions;
+}
+
+/** An org or project the token can access — the fields the connect picker needs. */
+export interface SentryNamedResource {
+  slug: string;
+  name: string;
 }
 
 /** A grouped Sentry issue, trimmed to the fields Horus turns into evidence. */
@@ -163,6 +175,31 @@ export class SentryClient {
   }
 
   /**
+   * List the organizations this token can access — powers the interactive org
+   * picker in `horus connect sentry` (so the user never types a slug). Transport/
+   * auth failures PROPAGATE (like {@link listIssues}) so the caller can fall back
+   * to manual entry with an honest reason. Returns the first page; a token with
+   * more orgs than one page can still enter the slug manually.
+   */
+  async listOrganizations(): Promise<SentryNamedResource[]> {
+    const raw = await this.request('/api/0/organizations/');
+    return parseNamedResources(raw);
+  }
+
+  /**
+   * List the projects in the configured org — powers the interactive project
+   * picker. Sentry's issues API is project-scoped, so a project MUST be chosen;
+   * this lets the user pick from a list instead of typing the slug. Requires the
+   * client to be constructed with a non-empty `org`.
+   */
+  async listProjects(): Promise<SentryNamedResource[]> {
+    const raw = await this.request(
+      `/api/0/organizations/${encodeURIComponent(this.org)}/projects/`,
+    );
+    return parseNamedResources(raw);
+  }
+
+  /**
    * Cheap reachability probe: hit the project issues endpoint with limit=1.
    * Returns a structured status; never throws.
    */
@@ -174,6 +211,19 @@ export class SentryClient {
       return { ok: false, detail: redactErrorMessage(err) };
     }
   }
+}
+
+/** Coerce a Sentry org/project list response into `{slug, name}` rows, dropping
+ *  anything without a slug. `name` falls back to the slug when absent. */
+export function parseNamedResources(raw: unknown): SentryNamedResource[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Array<Record<string, unknown>>)
+    .map((o) => {
+      const slug = typeof o['slug'] === 'string' ? o['slug'] : '';
+      const name = typeof o['name'] === 'string' && o['name'] !== '' ? o['name'] : slug;
+      return { slug, name };
+    })
+    .filter((r) => r.slug !== '');
 }
 
 /** Coerce Sentry's issue JSON (counts come back as strings) into a SentryIssue. */

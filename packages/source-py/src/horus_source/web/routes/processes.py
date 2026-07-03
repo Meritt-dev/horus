@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from horus_source.core.classify import is_test_path
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +49,17 @@ def get_processes(request: Request) -> dict:
 
 
 @router.get("/flows/{node_id:path}")
-def get_flows(node_id: str, request: Request) -> dict:
+def get_flows(
+    node_id: str,
+    request: Request,
+    include_tests: bool = Query(default=False),
+) -> dict:
     """Return the process flows a symbol participates in, with each flow's ordered steps.
 
     Unlike GET /processes, the steps carry their symbol names (and file/line), so the
-    CLI can render a flow without a second round-trip.
+    CLI can render a flow without a second round-trip. Product mode (the default)
+    omits steps living in test files — flows built by indexes predating the
+    test-entry-point filter still carry them; ``include_tests=true`` restores all.
     """
     if len(node_id) > 500:
         raise HTTPException(status_code=400, detail="Node ID too long")
@@ -65,6 +73,12 @@ def get_flows(node_id: str, request: Request) -> dict:
 
     processes = flows.get("processes", []) if flows else []
     raw_steps = flows.get("steps", []) if flows else []
+    if not include_tests:
+        raw_steps = [
+            s for s in raw_steps if not is_test_path(s.get("file_path", "") or "")
+        ]
+        if not raw_steps:
+            processes = []
     steps = [
         {
             "nodeId": s.get("id", ""),

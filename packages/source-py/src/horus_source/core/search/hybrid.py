@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from horus_source.core.classify import is_product
 from horus_source.core.storage.base import SearchResult, StorageBackend
 
 # A code-shaped token: an UPPER token (>=4 chars) of [A-Z0-9_] containing a digit or underscore
@@ -29,20 +30,6 @@ _CODE_TOKEN_RE = re.compile(r"\b(?=[A-Z0-9_]*[0-9_])[A-Z][A-Z0-9_]{3,}\b")
 # candidate tokens here is harmless — a non-matching token simply yields nothing.
 _HINT_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./:-]{2,}")
 
-# HOR-430: file paths that are example / demo / fixture / docs / test code. Their symbols hug a
-# shared keyword (an `examples/express/app.ts` hit for an express query, a `docs_src/tutorial/...`
-# hit for an ORM query) and embed with similar vectors, so they bubble up in the RRF merge ahead
-# of the real library/app source. Mirrors the TS seed-ranking penalty
-# (packages/engine/src/seeds.ts::isDeprioritizedSeedPath).
-_DEPRIORITIZED_PATH_RE = re.compile(
-    r"(^|/)(tests?|__tests__|spec)/"
-    r"|(\.|_)(test|spec)\.[jt]sx?$"
-    r"|(^|/)test_[^/]*\.py$"
-    r"|_test\.py$"
-    r"|(^|/)(examples?|samples?|demos?|fixtures?|sandbox|playground|docs|docs_src|tutorials?)(/|$)",
-    re.IGNORECASE,
-)
-
 # Soft multiplier applied to a deprioritized candidate's RRF score. < 1.0 so core code outranks
 # demo/test code on a *shared keyword*, yet > 0 so a STRONG match in such a file is only
 # down-weighted, never removed — an example-only repo still returns its examples, correctly
@@ -52,8 +39,10 @@ _DEPRIORITIZED_PATH_WEIGHT = 0.5
 
 
 def _is_deprioritized_path(file_path: str) -> bool:
-    """True when *file_path* is example / demo / fixture / docs / test code (HOR-430)."""
-    return bool(file_path) and _DEPRIORITIZED_PATH_RE.search(file_path) is not None
+    """True when *file_path* is not product code (HOR-430) — test / docs / example /
+    vendored / config, per the shared classifier. Their symbols hug a shared keyword
+    and embed with similar vectors, bubbling above the real library/app source."""
+    return bool(file_path) and not is_product(file_path)
 
 
 def hybrid_search(

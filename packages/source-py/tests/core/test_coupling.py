@@ -150,6 +150,35 @@ class TestProcessCoupling:
         assert auth_models_rel.properties["strength"] == pytest.approx(0.8)
         assert auth_models_rel.properties["co_changes"] == 4
 
+    def test_test_file_pairs_are_excluded(self) -> None:
+        """A test co-changing with the code it covers is expected, not
+        architectural coupling — no COUPLED_WITH edge involving a test file."""
+        g = KnowledgeGraph()
+        for path in ("src/auth.py", "tests/test_auth.py", "src/models.py"):
+            g.add_node(
+                GraphNode(
+                    id=generate_id(NodeLabel.FILE, path),
+                    label=NodeLabel.FILE,
+                    name=path.split("/")[-1],
+                    file_path=path,
+                )
+            )
+        commits = [
+            ["src/auth.py", "tests/test_auth.py"],
+            ["src/auth.py", "tests/test_auth.py"],
+            ["src/auth.py", "tests/test_auth.py"],
+            ["src/auth.py", "src/models.py"],
+            ["src/auth.py", "src/models.py"],
+            ["src/auth.py", "src/models.py"],
+        ]
+        count = process_coupling(
+            g, Path("/fake/repo"), min_strength=0.3, commits=commits, min_cochanges=1
+        )
+        assert count == 1  # only auth+models survives
+        rels = g.get_relationships_by_type(RelType.COUPLED_WITH)
+        test_id = generate_id(NodeLabel.FILE, "tests/test_auth.py")
+        assert all(test_id not in (r.source, r.target) for r in rels)
+
     def test_process_coupling_no_git(self, graph: KnowledgeGraph) -> None:
         count = process_coupling(
             graph,

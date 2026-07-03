@@ -224,8 +224,12 @@ export class SourceCodeProvider implements CodeProvider {
     };
   }
 
-  async impact(symbolId: string, depth = 3): Promise<ImpactResult> {
-    const r = await this.client.impact(symbolId, depth);
+  async impact(
+    symbolId: string,
+    depth = 3,
+    opts?: { includeTests?: boolean },
+  ): Promise<ImpactResult> {
+    const r = await this.client.impact(symbolId, depth, opts);
     return {
       target: this.nodeToSymbol(r.target),
       affected: r.affected,
@@ -238,11 +242,11 @@ export class SourceCodeProvider implements CodeProvider {
     };
   }
 
-  async flowsFor(symbolId: string): Promise<Flow[]> {
+  async flowsFor(symbolId: string, opts?: { includeTests?: boolean }): Promise<Flow[]> {
     // The typed flows endpoint returns the processes a symbol is a step in, plus the
     // merged ordered steps (each step carries its name/file). The host merges steps across
     // a symbol's processes, so each Flow shares that ordered step list.
-    const res = await this.degrade(this.client.flows(symbolId), { processes: [], steps: [] });
+    const res = await this.degrade(this.client.flows(symbolId, opts), { processes: [], steps: [] });
     const steps: Symbol[] = (res.steps ?? []).map((s) => {
       const sym: Symbol = { id: s.nodeId, name: s.name, filePath: s.filePath };
       if (typeof s.startLine === 'number' && s.startLine > 0) sym.startLine = s.startLine;

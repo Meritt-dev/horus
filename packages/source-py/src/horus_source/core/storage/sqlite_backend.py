@@ -34,6 +34,7 @@ except ImportError as _exc:  # pragma: no cover - exercised on musl/Alpine only
 else:
     _SQLITE_VEC_IMPORT_ERROR = None
 
+from horus_source.core.classify import is_product
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, NodeEmbedding, SearchResult
@@ -711,7 +712,12 @@ class SqliteBackend:
         return [node for node, _ in self.traverse_with_depth(start_id, depth, direction)]
 
     def traverse_with_depth(
-        self, start_id: str, depth: int, direction: str = "callers"
+        self,
+        start_id: str,
+        depth: int,
+        direction: str = "callers",
+        *,
+        product_only: bool = False,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs (1-based depth).
 
@@ -720,11 +726,19 @@ class SqliteBackend:
         outgoing CALLS (dependencies). The start node is excluded from results and
         each reachable node is reported at its shortest hop distance — matching the
         BFS semantics of :meth:`KuzuBackend.traverse_with_depth`.
+
+        With ``product_only=True`` non-product nodes (per the shared classifier)
+        are neither reported nor expanded — the traversal cannot tunnel through a
+        test node. Classification lives in Python, so this path uses a per-level
+        frontier BFS instead of the CTE.
         """
         conn = self._require_conn()
         depth = min(int(depth), self._MAX_BFS_DEPTH)
         if depth <= 0:
             return []
+
+        if product_only:
+            return self._traverse_product_only(start_id, depth, direction)
 
         if direction == "callers":
             # follow incoming CALLS: neighbour = source of an edge pointing at current
@@ -757,6 +771,48 @@ class SqliteBackend:
             node = node_map.get(node_id)
             if node is not None:
                 result.append((node, int(d)))
+        return result
+
+    def _traverse_product_only(
+        self, start_id: str, depth: int, direction: str
+    ) -> list[tuple[GraphNode, int]]:
+        """Frontier BFS that reports and expands ONLY product nodes.
+
+        The recursive CTE cannot call the Python path classifier, so product mode
+        walks one hop per query (depth <= 10, so at most 10 queries). A non-product
+        node is dropped from the frontier: depth cannot cross through a test file.
+        """
+        conn = self._require_conn()
+        step_col, match_col = (
+            ("source", "target") if direction == "callers" else ("target", "source")
+        )
+
+        visited: set[str] = {start_id}
+        frontier: list[str] = [start_id]
+        result: list[tuple[GraphNode, int]] = []
+
+        for hop in range(1, depth + 1):
+            placeholders = ",".join("?" for _ in frontier)
+            query = (
+                f"SELECT DISTINCT e.{step_col} FROM edges e "
+                f"WHERE e.rel_type = ? AND e.{match_col} IN ({placeholders})"
+            )
+            with self._lock:
+                rows = conn.execute(query, (RelType.CALLS.value, *frontier)).fetchall()
+            next_ids = sorted(r[0] for r in rows if r[0] not in visited)
+            if not next_ids:
+                break
+            visited.update(next_ids)
+            node_map = self._get_nodes_by_ids(next_ids)
+            frontier = []
+            for nid in next_ids:
+                node = node_map.get(nid)
+                if node is None or not is_product(node.file_path or ""):
+                    continue  # cut: neither reported nor expanded through
+                result.append((node, hop))
+                frontier.append(nid)
+            if not frontier:
+                break
         return result
 
     def get_inbound_cross_file_edges(

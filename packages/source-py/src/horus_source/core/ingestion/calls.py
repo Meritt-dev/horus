@@ -6,7 +6,9 @@ target symbol nodes, creating CALLS relationships with confidence scores.
 Resolution priority:
 1. Same-file exact match (confidence 1.0)
 2. Import-resolved match (confidence 1.0)
-3. Global fuzzy match (confidence 0.5)
+3. Global fuzzy match (confidence 0.5) -- guarded: refused for method-ish,
+   short, ubiquitous, many-file or cross-language names (see
+   ``_global_fuzzy_candidates``)
 4. Receiver method resolution (confidence 0.8)
 5. DI member resolution (confidence 0.8) -- ``this.<injectedField>.<method>()``
    is rewritten through the enclosing class's ``di_fields`` map (captured by the
@@ -88,6 +90,85 @@ _CALL_BLOCKLIST: frozenset[str] = frozenset({
     "useDebugValue", "useId", "useTransition", "useDeferredValue",
 })
 
+# Ubiquitous receiver-method / short verb names. Unlike _CALL_BLOCKLIST these MAY
+# resolve — but only with real evidence (same file, import, receiver type, DI).
+# A bare global fuzzy match on `.run()` / `.then()` / `.find()` linked the CLI's
+# `run` to unrelated same-named symbols across files and languages (dogfood:
+# `horus explain run` walked into the Python source-host internals).
+_UBIQUITOUS_CALL_NAMES: frozenset[str] = frozenset({
+    "then", "catch", "finally", "done", "next", "emit", "once", "off",
+    "has", "find", "push", "pop", "shift", "unshift", "slice", "splice",
+    "concat", "reduce", "some", "every", "includes", "fill", "flat",
+    "json", "text", "blob", "send", "end", "pipe", "abort",
+    "add", "delete", "remove", "clear", "reset", "flush", "start", "stop",
+    "open", "run", "exec", "test", "match", "search", "call", "apply", "bind",
+    "load", "save", "init", "create", "destroy", "build", "make",
+    "connect", "disconnect", "listen", "use", "handle", "process", "execute",
+    "query", "insert", "select", "count", "first", "last", "all", "one",
+    "copy", "clone", "begin", "commit", "rollback", "cancel", "submit",
+    "dispatch", "subscribe", "unsubscribe", "publish", "watch", "wait",
+    "toString", "valueOf", "size", "at", "peek", "take", "put", "post", "patch",
+})
+
+# Global fuzzy resolution must never cross a language boundary: a TS `run` and a
+# Python `run` sharing a name is coincidence, not a call. Real cross-language
+# calls go through IPC/HTTP, which import evidence would never show anyway.
+_LANG_FAMILIES: dict[str, str] = {
+    ".py": "python",
+    ".ts": "js", ".tsx": "js", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
+    ".go": "go",
+    ".java": "java",
+    ".rs": "rust",
+}
+
+
+def _lang_family(file_path: str) -> str | None:
+    dot = file_path.rfind(".")
+    return _LANG_FAMILIES.get(file_path[dot:]) if dot != -1 else None
+
+
+def _same_lang_family(path_a: str, path_b: str) -> bool:
+    fam_a, fam_b = _lang_family(path_a), _lang_family(path_b)
+    return fam_a is None or fam_b is None or fam_a == fam_b
+
+
+def _global_fuzzy_candidates(
+    name: str,
+    receiver: str,
+    candidate_ids: list[str],
+    graph: KnowledgeGraph,
+    caller_file_path: str,
+) -> list[str]:
+    """Candidates eligible for the last-resort GLOBAL FUZZY match (confidence 0.5).
+
+    Fuzzy resolution is name-only guesswork, so it is refused whenever the name
+    itself is weak evidence:
+
+    - method-ish calls (any receiver): `x.run()` needs receiver/import/same-file
+      evidence — all checked before this point — never a global name match;
+    - short (<= 3 chars) or ubiquitous names (`then`, `find`, `handle`, ...);
+    - names defined in > 3 distinct files — ambiguous by construction;
+    - cross-language candidates (TS -> Python etc.) are dropped.
+    """
+    if receiver:
+        return []
+    if len(name) <= 3 or name in _UBIQUITOUS_CALL_NAMES:
+        return []
+
+    filtered: list[str] = []
+    defining_files: set[str] = set()
+    for nid in candidate_ids:
+        node = graph.get_node(nid)
+        if node is None:
+            continue
+        defining_files.add(node.file_path)
+        if _same_lang_family(caller_file_path, node.file_path):
+            filtered.append(nid)
+
+    if len(defining_files) > 3:
+        return []
+    return filtered
+
 def resolve_call(
     call: CallInfo,
     file_path: str,
@@ -104,9 +185,12 @@ def resolve_call(
        defined in the same file as the caller.
     2. **Import-resolved match** (confidence 1.0) -- the called name was
        imported into this file; find the symbol in the imported file.
-    3. **Global fuzzy match** (confidence 0.5) -- any symbol with this name
-       anywhere in the codebase.  If multiple matches exist, the one sharing
-       the longest directory prefix with the caller is preferred.
+    3. **Global fuzzy match** (confidence 0.5) -- a symbol with this name
+       elsewhere in the codebase, but ONLY when the name is strong enough
+       evidence on its own (see :func:`_global_fuzzy_candidates`): no
+       receiver, not short/ubiquitous, defined in few files, same language.
+       If multiple matches remain, the one sharing the longest directory
+       prefix with the caller is preferred.
 
     For method calls (``call.receiver`` is non-empty):
     - If the receiver is ``"self"`` or ``"this"``, look for a method with
@@ -150,7 +234,10 @@ def resolve_call(
 
     if len(candidate_ids) > 5:
         return None, 0.0
-    return _pick_closest(candidate_ids, graph, caller_file_path=file_path), 0.5
+    fuzzy_ids = _global_fuzzy_candidates(name, receiver, candidate_ids, graph, file_path)
+    if not fuzzy_ids:
+        return None, 0.0
+    return _pick_closest(fuzzy_ids, graph, caller_file_path=file_path), 0.5
 
 def _resolve_self_method(
     method_name: str,
@@ -319,7 +406,10 @@ def _resolve_receiver_method(
             if node.file_path == file_path:
                 same_file_match = nid
                 break
-            elif global_match is None:
+            elif global_match is None and _same_lang_family(file_path, node.file_path):
+                # Receiver+method name matching is decent evidence, but never
+                # across a language boundary (a TS class and a Python class
+                # sharing name+method is coincidence).
                 global_match = nid
         if same_file_match is not None:
             break

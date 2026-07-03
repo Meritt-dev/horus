@@ -595,6 +595,54 @@ def test_cfg_test_symbols_exempt() -> None:
     assert graph.get_node(fn_id).is_dead is False
 
 
+class TestTestOnlyCallers:
+    """Test usage is not product usage: a private helper whose ONLY callers are
+    tests is dead product code — while a single product caller keeps it alive."""
+
+    def _build(self, *, with_product_caller: bool) -> tuple[KnowledgeGraph, str]:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/util.py")
+        helper_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/util.py", "_normalize")
+
+        _add_file_node(graph, "tests/test_util.py")
+        test_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "tests/test_util.py", "test_normalize"
+        )
+        _add_calls_relationship(graph, test_id, helper_id)
+
+        if with_product_caller:
+            _add_file_node(graph, "src/app.py")
+            caller_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/app.py", "serve")
+            _add_calls_relationship(graph, caller_id, helper_id)
+        return graph, helper_id
+
+    def test_helper_called_only_from_tests_is_dead(self) -> None:
+        graph, helper_id = self._build(with_product_caller=False)
+        process_dead_code(graph)
+        assert graph.get_node(helper_id).is_dead is True
+
+    def test_product_caller_keeps_helper_alive(self) -> None:
+        graph, helper_id = self._build(with_product_caller=True)
+        process_dead_code(graph)
+        assert graph.get_node(helper_id).is_dead is False
+
+    def test_exported_api_never_dead_even_with_only_test_callers(self) -> None:
+        # The known false positive: public API whose usage the graph cannot
+        # trace must never be flagged merely because only tests call it.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/api.py")
+        api_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "src/api.py", "create_client", is_exported=True
+        )
+        _add_file_node(graph, "tests/test_api.py")
+        test_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "tests/test_api.py", "test_create_client"
+        )
+        _add_calls_relationship(graph, test_id, api_id)
+        process_dead_code(graph)
+        assert graph.get_node(api_id).is_dead is False
+
+
 @pytest.mark.parametrize(
     "path",
     ["docs/.vitepress/theme/index.ts", "gulpfile.js", "rollup.config.js", "sandbox/client.js", "webpack.dev.config.mjs"],

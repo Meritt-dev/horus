@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-import re
-from pathlib import PurePosixPath
 
+from horus_source.core.classify import is_product, is_test_path
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, NodeLabel, RelType
 
@@ -40,41 +39,12 @@ def _is_go_test_symbol(name: str, file_path: str) -> bool:
     )
 
 def _is_test_file(file_path: str) -> bool:
-    parts = PurePosixPath(file_path).parts
-    name = parts[-1] if parts else ""
-    return (
-        "tests" in parts
-        or "test" in parts
-        or any(p.startswith("test_") for p in parts)
-        or file_path.endswith("conftest.py")
-        or file_path.endswith("_test.go")  # Go test files
-        # JS/TS co-located tests (index.test.tsx next to index.tsx) — hono dogfood:
-        # 234 of the remaining dead flags were symbols inside *.test.* files.
-        or ".test." in name
-        or ".spec." in name
-        or any(p in _NON_PRODUCT_DIRS for p in parts)
-        or _BUILD_CONFIG_FILE_RE.search(file_path) is not None
-    )
+    """A test file / test-tree path — the shared classifier's `test` kind.
 
-# Benchmark/example/demo trees are exercised by external runners (or exist purely as
-# documentation), so "no in-repo caller" is their NORMAL state, not evidence of death —
-# hono's report was 30 symbols of pure bench/perf noise. Mirrors the test-dir exemption.
-_NON_PRODUCT_DIRS: frozenset[str] = frozenset({
-    "bench", "benches", "benchmark", "benchmarks",  # benches/ is the Rust convention
-    "example", "examples", "sample", "samples", "demo", "demos",
-    "fixtures", "e2e", "perf", "perf-measures", "runtime-tests",
-    "docs", "docs_src", "website", "sandbox",  # docs sites + scratch trees (axios dogfood)
-    "vendor", "vendors", "third_party", "third-party",  # vendored code isn't ours to flag
-})
-
-# Root-level build/tooling config files — invoked by build tools, never by repo code
-# (axios dogfood: gulpfile.js / rollup.config.js helpers flagged dead).
-_BUILD_CONFIG_FILE_RE = re.compile(
-    r"(^|/)(gulpfile|gruntfile|webpack[^/]*|rollup[^/]*|vite[^/]*|babel[^/]*|karma[^/]*"
-    r"|eslint[^/]*|prettier[^/]*|jest[^/]*|vitest[^/]*|tsup[^/]*|postcss[^/]*)"
-    r"\.(config\.)?[cm]?[jt]s$",
-    re.IGNORECASE,
-)
+    Kept as a named seam because MCP's test-impact tool imports it to find
+    AFFECTED TESTS (strictly tests, not docs/examples).
+    """
+    return is_test_path(file_path)
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__") and len(name) > 4
@@ -156,7 +126,10 @@ def _is_exempt(
         or name.startswith("test_")
         or _is_test_class(name)
         or _is_go_test_symbol(name, file_path)
-        or _is_test_file(file_path)
+        # Any non-product tree (tests, docs, examples/benches, vendored, build
+        # config): exercised by external runners or not ours to flag — "no
+        # in-repo caller" is their normal state, not evidence of death.
+        or not is_product(file_path)
         or _is_dunder(name)
         or _is_python_public_api(name, file_path)
     )
@@ -263,7 +236,10 @@ def process_dead_code(graph: KnowledgeGraph) -> int:
 
     A symbol is considered dead when **all** of the following are true:
 
-    1. It has zero incoming ``CALLS`` relationships.
+    1. It has zero incoming ``CALLS`` relationships from PRODUCT code.
+       Test-only usage is not product usage: a private helper whose only
+       callers are tests is dead product code. Public API is protected by
+       the export/entry-point exemptions (2-4, 7b), never by test callers.
     2. It is not an entry point (``is_entry_point == False``).
     3. It is not exported (``is_exported == False``).
     4. It is not a class constructor (``__init__`` / ``__new__``).
@@ -317,6 +293,19 @@ def process_dead_code(graph: KnowledgeGraph) -> int:
             and (node.file_path, node.class_name) in exported_classes
         )
 
+    def _has_product_caller(node_id: str) -> bool:
+        """True when at least one CALLS edge originates from product code.
+
+        Test usage is not product usage — a helper only tests call is dead
+        product code. A caller we cannot resolve keeps the symbol alive
+        (conservative: never flag on missing information).
+        """
+        for rel in graph.get_incoming(node_id, RelType.CALLS):
+            src = graph.get_node(rel.source)
+            if src is None or is_product(src.file_path or ""):
+                return True
+        return False
+
     for label in _SYMBOL_LABELS:
         for node in graph.get_nodes_by_label(label):
             if _is_exempt(node.name, node.is_entry_point, node.is_exported, node.file_path):
@@ -327,7 +316,7 @@ def process_dead_code(graph: KnowledgeGraph) -> int:
                 continue
             if _is_trait_impl_method(node):
                 continue
-            if graph.has_incoming(node.id, RelType.CALLS):
+            if _has_product_caller(node.id):
                 continue
             if _is_type_referenced(graph, node.id, label):
                 continue

@@ -18,6 +18,7 @@ from collections import defaultdict
 from itertools import combinations
 from pathlib import Path
 
+from horus_source.core.classify import is_test_path
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import (
     GraphNode,
@@ -171,6 +172,10 @@ def resolve_coupling(
 
     edges: list[ResolvedEdge] = []
     for (file_a, file_b), co_changes in cochange.items():
+        # A test co-changing with the code it covers is EXPECTED, not architectural
+        # coupling — those pairs dominated coupling reports on dogfooded repos.
+        if is_test_path(file_a) or is_test_path(file_b):
+            continue
         strength = calculate_coupling(file_a, file_b, co_changes, total_changes)
         if strength < min_strength:
             continue

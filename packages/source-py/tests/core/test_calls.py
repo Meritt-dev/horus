@@ -727,6 +727,164 @@ class TestAmbiguousSameFileDispatch:
         assert len(rels) == 1
 
 
+class TestCommonNameFuzzyHardening:
+    """Global fuzzy resolution (0.5) is name-only guesswork — refused for
+    method-ish / short / ubiquitous / many-file / cross-language names.
+    Dogfood: `horus explain run` linked the TS CLI's `run` to Python
+    source-host internals through a bare global name match."""
+
+    def test_dot_then_does_not_cross_link_without_imports(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/promises.ts")
+        then_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/promises.ts", "then", 1, 10)
+        _add_file_node(g, "src/api.ts")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/api.ts", "fetchUsers", 1, 20)
+
+        parse_data = [
+            FileParseData(
+                file_path="src/api.ts",
+                language="typescript",
+                parse_result=ParseResult(
+                    calls=[CallInfo(name="then", line=5, receiver="response")],
+                ),
+            ),
+        ]
+        process_calls(parse_data, g)
+        targets = {r.target for r in g.get_relationships_by_type(RelType.CALLS)}
+        assert then_id not in targets
+
+    def test_dot_run_does_not_cross_language(self) -> None:
+        # TS `program.run()` must not link to a Python `run` function.
+        g = KnowledgeGraph()
+        _add_file_node(g, "hostpy/runtime.py")
+        run_id = _add_symbol_node(g, NodeLabel.FUNCTION, "hostpy/runtime.py", "run", 1, 30)
+        _add_file_node(g, "cli/src/index.ts")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "cli/src/index.ts", "main", 1, 40)
+
+        parse_data = [
+            FileParseData(
+                file_path="cli/src/index.ts",
+                language="typescript",
+                parse_result=ParseResult(
+                    calls=[CallInfo(name="run", line=10, receiver="program")],
+                ),
+            ),
+        ]
+        process_calls(parse_data, g)
+        targets = {r.target for r in g.get_relationships_by_type(RelType.CALLS)}
+        assert run_id not in targets
+
+    def test_bare_ubiquitous_name_is_not_fuzzy_resolved(self) -> None:
+        # Even receiver-less: `handle(x)` must not link to another file's
+        # `handle` without import evidence.
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/other.py")
+        handle_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/other.py", "handle", 1, 10)
+        _add_file_node(g, "src/app.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "loop", 1, 20)
+
+        parse_data = [
+            FileParseData(
+                file_path="src/app.py",
+                language="python",
+                parse_result=ParseResult(calls=[CallInfo(name="handle", line=5)]),
+            ),
+        ]
+        process_calls(parse_data, g)
+        targets = {r.target for r in g.get_relationships_by_type(RelType.CALLS)}
+        assert handle_id not in targets
+
+    def test_ubiquitous_name_still_resolves_with_import_evidence(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/other.py")
+        handle_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/other.py", "handle", 1, 10)
+        _add_file_node(g, "src/app.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "loop", 1, 20)
+
+        app_file_id = generate_id(NodeLabel.FILE, "src/app.py")
+        other_file_id = generate_id(NodeLabel.FILE, "src/other.py")
+        g.add_relationship(
+            GraphRelationship(
+                id=f"imports:{app_file_id}->{other_file_id}",
+                type=RelType.IMPORTS,
+                source=app_file_id,
+                target=other_file_id,
+                properties={"symbols": "handle"},
+            )
+        )
+
+        index = build_name_index(g, _CALLABLE_LABELS)
+        target_id, confidence = resolve_call(
+            CallInfo(name="handle", line=5), "src/app.py", index, g
+        )
+        assert target_id == handle_id
+        assert confidence == 1.0
+
+    def test_ubiquitous_name_still_resolves_same_file(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/app.py")
+        handle_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "handle", 12, 20)
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "loop", 1, 10)
+
+        index = build_name_index(g, _CALLABLE_LABELS)
+        target_id, confidence = resolve_call(
+            CallInfo(name="handle", line=5), "src/app.py", index, g
+        )
+        assert target_id == handle_id
+        assert confidence == 1.0
+
+    def test_name_defined_in_many_files_is_ambiguous(self) -> None:
+        # A distinctive name defined in >3 distinct files is ambiguous by
+        # construction — no fuzzy edge.
+        g = KnowledgeGraph()
+        for i in range(4):
+            path = f"src/mod{i}.py"
+            _add_file_node(g, path)
+            _add_symbol_node(g, NodeLabel.FUNCTION, path, "serialize_payload", 1, 10)
+        _add_file_node(g, "src/app.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "caller_fn", 1, 20)
+
+        index = build_name_index(g, _CALLABLE_LABELS)
+        target_id, confidence = resolve_call(
+            CallInfo(name="serialize_payload", line=5), "src/app.py", index, g
+        )
+        assert target_id is None
+        assert confidence == 0.0
+
+    def test_distinctive_same_language_name_still_fuzzy_resolves(self) -> None:
+        # The pre-existing behaviour (TestResolveCallGlobal) survives the
+        # guard: distinctive name, single defining file, same language.
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/auth.py")
+        validate_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/auth.py", "validate_token", 1, 10)
+        _add_file_node(g, "src/app.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.py", "login", 1, 20)
+
+        index = build_name_index(g, _CALLABLE_LABELS)
+        target_id, confidence = resolve_call(
+            CallInfo(name="validate_token", line=5), "src/app.py", index, g
+        )
+        assert target_id == validate_id
+        assert confidence == 0.5
+
+    def test_bare_distinctive_name_does_not_cross_language(self) -> None:
+        # A distinctive TS symbol is NOT the target of a bare Python call.
+        g = KnowledgeGraph()
+        _add_file_node(g, "web/src/telemetry.ts")
+        ts_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "web/src/telemetry.ts", "flush_spans", 1, 10
+        )
+        _add_file_node(g, "worker/tasks.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "worker/tasks.py", "drain", 1, 20)
+
+        index = build_name_index(g, _CALLABLE_LABELS)
+        target_id, confidence = resolve_call(
+            CallInfo(name="flush_spans", line=5), "worker/tasks.py", index, g
+        )
+        assert target_id is None
+        assert confidence == 0.0
+
+
 def test_module_scope_reference_falls_back_to_file_source() -> None:
     """Dogfood cycle-4 (lodash): `Hash.prototype.get = hashGet` at anonymous-IIFE /
     module scope has no containing symbol — the reference was dropped and hashGet

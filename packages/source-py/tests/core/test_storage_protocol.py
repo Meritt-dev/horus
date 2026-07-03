@@ -252,6 +252,41 @@ class TestTraverse:
         assert {n.name for n, _ in pairs} == {"b"}
 
 
+class TestTraverseProductOnly:
+    """product_only traversal: test nodes are neither reported nor tunneled through."""
+
+    def _mixed_callers(self, backend: StorageBackend) -> tuple[str, str, str, str]:
+        # target <- prod_caller ; target <- test_caller <- deep_prod
+        target = _make_node(name="target", file_path="src/core.py")
+        prod_caller = _make_node(name="prod_caller", file_path="src/app.py")
+        test_caller = _make_node(name="test_caller", file_path="tests/test_core.py")
+        deep_prod = _make_node(name="deep_prod", file_path="src/deep.py")
+        backend.add_nodes([target, prod_caller, test_caller, deep_prod])
+        backend.add_relationships([
+            _make_rel(prod_caller.id, target.id),
+            _make_rel(test_caller.id, target.id),
+            _make_rel(deep_prod.id, test_caller.id),
+        ])
+        return target.id, prod_caller.id, test_caller.id, deep_prod.id
+
+    def test_product_only_drops_test_callers_and_cuts_through_them(
+        self, backend: StorageBackend
+    ) -> None:
+        target_id, *_ = self._mixed_callers(backend)
+        pairs = backend.traverse_with_depth(
+            target_id, depth=3, direction="callers", product_only=True
+        )
+        # test_caller is gone AND deep_prod (reachable only THROUGH it) is cut.
+        assert {n.name for n, _ in pairs} == {"prod_caller"}
+
+    def test_default_traversal_still_returns_everything(
+        self, backend: StorageBackend
+    ) -> None:
+        target_id, *_ = self._mixed_callers(backend)
+        pairs = backend.traverse_with_depth(target_id, depth=3, direction="callers")
+        assert {n.name for n, _ in pairs} == {"prod_caller", "test_caller", "deep_prod"}
+
+
 class TestRemoveNodesByFile:
     def test_removes_matching(self, backend: StorageBackend) -> None:
         n1 = _make_node(name="f1", file_path="src/a.py")

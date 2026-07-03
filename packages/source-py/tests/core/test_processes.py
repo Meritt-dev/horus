@@ -139,6 +139,26 @@ class TestFindEntryPointsFramework:
         ep_names = {n.name for n in entry_points}
         assert "test_something" in ep_names
 
+    def test_test_file_symbols_are_never_entry_points(self) -> None:
+        # A flow starting in a test file is a test run, not a product execution
+        # path — even when the symbol matches a framework/name pattern.
+        g = KnowledgeGraph()
+        _add_function(g, "test_checkout", file_path="tests/test_checkout.py")
+        _add_function(g, "main", file_path="src/checkout.test.ts", language="typescript")
+
+        entry_points = find_entry_points(g)
+        assert entry_points == []
+
+    def test_no_process_built_from_test_entry_point(self) -> None:
+        g = KnowledgeGraph()
+        test_fn = _add_function(g, "test_flow", file_path="tests/test_flow.py")
+        step = _add_function(g, "helper_under_test", file_path="src/helpers.py")
+        # helper has an incoming call, so it is not an entry point itself.
+        _add_call(g, test_fn, step)
+
+        count = process_processes(g)
+        assert count == 0
+
     def test_decorator_pattern_entry_point(self) -> None:
         g = KnowledgeGraph()
         _add_function(

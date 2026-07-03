@@ -499,6 +499,57 @@ class TestCliReadPathEndpoints:
             }
         ]
 
+    def test_flows_product_mode_drops_test_file_steps(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        mock_storage.flows_for_symbol.return_value = {
+            "processes": [{"id": "process::Checkout", "name": "Checkout"}],
+            "steps": [
+                {
+                    "id": "function:src/a.py:caller",
+                    "name": "caller",
+                    "file_path": "src/a.py",
+                    "start_line": 10,
+                    "step_number": 1,
+                },
+                {
+                    "id": "function:tests/test_a.py:test_caller",
+                    "name": "test_caller",
+                    "file_path": "tests/test_a.py",
+                    "start_line": 5,
+                    "step_number": 2,
+                },
+            ],
+        }
+        response = client.get("/flows/function:src/a.py:caller")
+        assert response.status_code == 200
+        data = response.json()
+        assert [s["nodeId"] for s in data["steps"]] == ["function:src/a.py:caller"]
+
+        # include_tests=true restores everything.
+        response = client.get("/flows/function:src/a.py:caller?include_tests=true")
+        assert len(response.json()["steps"]) == 2
+
+    def test_flows_all_steps_test_only_returns_empty(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        mock_storage.flows_for_symbol.return_value = {
+            "processes": [{"id": "process::T", "name": "T"}],
+            "steps": [
+                {
+                    "id": "function:tests/test_a.py:test_x",
+                    "name": "test_x",
+                    "file_path": "tests/test_a.py",
+                    "start_line": 1,
+                    "step_number": 0,
+                }
+            ],
+        }
+        response = client.get("/flows/function:tests/test_a.py:test_x")
+        data = response.json()
+        assert data["steps"] == []
+        assert data["processes"] == []
+
     def test_class_methods(self, mock_storage: MagicMock, client: TestClient) -> None:
         method = _sample_node(
             node_id="method:src/svc.py:OrderService.run",
@@ -1126,6 +1177,30 @@ class TestImpactEndpoint:
         assert "depths" in data
         assert data["affected"] == 1
         assert data["target"]["name"] == "main"
+
+    def test_impact_defaults_to_product_only(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        mock_storage.get_node.return_value = _sample_node()
+        mock_storage.traverse_with_depth.return_value = []
+
+        response = client.get("/impact/function:src/app.py:main")
+        assert response.status_code == 200
+        mock_storage.traverse_with_depth.assert_called_once_with(
+            "function:src/app.py:main", 3, direction="callers", product_only=True
+        )
+
+    def test_impact_include_tests_opt_in(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        mock_storage.get_node.return_value = _sample_node()
+        mock_storage.traverse_with_depth.return_value = []
+
+        response = client.get("/impact/function:src/app.py:main?include_tests=true")
+        assert response.status_code == 200
+        mock_storage.traverse_with_depth.assert_called_once_with(
+            "function:src/app.py:main", 3, direction="callers", product_only=False
+        )
 
 
 class TestEventsEndpoint:

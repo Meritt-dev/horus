@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   SentryClient,
   parseIssue,
+  parseNamedResources,
   extractTopInAppFrame,
 } from './index.js';
 
@@ -254,5 +255,67 @@ describe('extractTopInAppFrame (top in-app frame from a sample event)', () => {
     });
     expect(frame!.filename).toBe('/app/src/x.ts');
     expect(frame!.lineno).toBe(99);
+  });
+});
+
+describe('SentryClient.listOrganizations / listProjects (connect pickers)', () => {
+  it('GETs /api/0/organizations/ and maps to {slug,name}', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit): Promise<Response> =>
+      new Response(
+        JSON.stringify([
+          { id: '1', slug: 'acme', name: 'Acme Inc' },
+          { id: '2', slug: 'beta' }, // no name → falls back to slug
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    // org/project empty is legal for discovery.
+    const client = new SentryClient({ authToken: 't', org: '', project: '', baseUrl: 'https://sentry.example.com' });
+    const orgs = await client.listOrganizations();
+    expect(String(fetchMock.mock.calls[0]![0])).toBe('https://sentry.example.com/api/0/organizations/');
+    expect(orgs).toEqual([
+      { slug: 'acme', name: 'Acme Inc' },
+      { slug: 'beta', name: 'beta' },
+    ]);
+  });
+
+  it('GETs the org-scoped projects endpoint using the configured org', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify([{ id: '9', slug: 'web', name: 'Web App' }]), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new SentryClient({ authToken: 't', org: 'acme', project: '' });
+    const projects = await client.listProjects();
+    expect(String(fetchMock.mock.calls[0]![0])).toMatch(/\/api\/0\/organizations\/acme\/projects\/$/);
+    expect(projects).toEqual([{ slug: 'web', name: 'Web App' }]);
+  });
+
+  it('THROWS on non-2xx so the picker can fall back to manual entry with an honest reason', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
+    const client = new SentryClient({ authToken: 't', org: 'acme', project: '' });
+    await expect(client.listProjects()).rejects.toThrow(/-> 403/);
+  });
+});
+
+describe('parseNamedResources', () => {
+  it('drops rows without a slug and defaults name to the slug', () => {
+    expect(
+      parseNamedResources([
+        { slug: 'a', name: 'Alpha' },
+        { slug: 'b' },
+        { name: 'no slug' },
+        { slug: '' },
+        'garbage',
+      ]),
+    ).toEqual([
+      { slug: 'a', name: 'Alpha' },
+      { slug: 'b', name: 'b' },
+    ]);
+  });
+
+  it('returns [] for non-array input', () => {
+    expect(parseNamedResources(null)).toEqual([]);
+    expect(parseNamedResources({ slug: 'x' })).toEqual([]);
   });
 });

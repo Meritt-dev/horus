@@ -27,8 +27,9 @@ export interface Provider {
 export interface CodeProvider extends Provider {
   searchSymbols(query: string, limit?: number): Promise<Symbol[]>;
   context(symbolId: string): Promise<SymbolContext>;
-  impact(symbolId: string, depth?: number): Promise<ImpactResult>;
-  flowsFor(symbolId: string): Promise<Flow[]>;
+  /** Product-only by default; `opts.includeTests` restores test/docs/example callers. */
+  impact(symbolId: string, depth?: number, opts?: { includeTests?: boolean }): Promise<ImpactResult>;
+  flowsFor(symbolId: string, opts?: { includeTests?: boolean }): Promise<Flow[]>;
   /** Method symbols of a class, for class-seed walkthroughs (typed /api/class-methods). */
   classMethods?(file: string, className: string): Promise<Symbol[]>;
   detectChanges(diff: { base: string; compare: string }): Promise<ChangeSet>;

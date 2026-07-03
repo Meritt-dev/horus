@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 
+from horus_source.core.classify import is_test_path
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import (
     GraphNode,
@@ -58,6 +59,11 @@ def find_entry_points(graph: KnowledgeGraph) -> list[GraphNode]:
     return entry_points
 
 def _is_entry_point(node: GraphNode, graph: KnowledgeGraph) -> bool:
+    # A flow that STARTS in a test file is a test run, not a product execution
+    # path — `horus architecture` key flows were dominated by them.
+    if is_test_path(node.file_path):
+        return False
+
     if _matches_framework_pattern(node):
         return True
 

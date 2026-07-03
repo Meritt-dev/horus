@@ -22,15 +22,27 @@ _reindex_lock = threading.Lock()
 
 
 @router.get("/impact/{node_id:path}")
-def get_impact(node_id: str, request: Request, depth: int = Query(default=3, ge=1, le=5)) -> dict:
-    """Analyse the blast radius of a node by traversing callers up to *depth* hops."""
+def get_impact(
+    node_id: str,
+    request: Request,
+    depth: int = Query(default=3, ge=1, le=5),
+    include_tests: bool = Query(default=False),
+) -> dict:
+    """Analyse the blast radius of a node by traversing callers up to *depth* hops.
+
+    Product-only by default: test/docs/example callers neither appear nor extend
+    the traversal (a broad symbol's blast radius was dominated by test files).
+    ``include_tests=true`` restores the full graph walk.
+    """
     storage = request.app.state.storage
 
     node = storage.get_node(node_id)
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
 
-    affected_with_depth = storage.traverse_with_depth(node_id, depth, direction="callers")
+    affected_with_depth = storage.traverse_with_depth(
+        node_id, depth, direction="callers", product_only=not include_tests
+    )
 
     depths: dict[str, list[dict]] = defaultdict(list)
     for affected_node, hop in affected_with_depth:

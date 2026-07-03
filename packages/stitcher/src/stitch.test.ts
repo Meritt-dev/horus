@@ -140,6 +140,61 @@ describe('stitch — project scoping (HOR-38)', () => {
     });
   });
 
+  it('write-path hygiene: refuses implausible names and fixture-only edges at persist time', async () => {
+    // One real queue, one fixture-only queue (both endpoints in test trees), and a
+    // template-placeholder literal in product code. Only the real queue may persist,
+    // and the summary (which feeds the "Stitched N queue edge(s)…" log line) must
+    // count kept edges only.
+    const client = {
+      contentSearch: vi.fn(async (tokens: string[]) => {
+        if (tokens.includes('@InjectQueue(')) {
+          return [
+            {
+              nodeId: 'class:src/webhook.service.ts:WebhookService',
+              name: 'WebhookService',
+              filePath: 'src/webhook.service.ts',
+              content:
+                "constructor(@InjectQueue('brand-webhooks') private q: Queue, @InjectQueue('<name>') private t: Queue) {}",
+            },
+            {
+              nodeId: 'class:tests/fixtures/fake.service.ts:FakeService',
+              name: 'FakeService',
+              filePath: 'tests/fixtures/fake.service.ts',
+              content: "constructor(@InjectQueue('fixture-queue') private q: Queue) {}",
+            },
+          ];
+        }
+        if (tokens.includes('@Processor(')) {
+          return [
+            {
+              nodeId: 'class:src/webhook.processor.ts:WebhookProcessor',
+              name: 'WebhookProcessor',
+              filePath: 'src/webhook.processor.ts',
+              content: "@Processor('brand-webhooks')\nexport class WebhookProcessor {}",
+            },
+            {
+              nodeId: 'class:__tests__/fake.processor.ts:FakeProcessor',
+              name: 'FakeProcessor',
+              filePath: '__tests__/fake.processor.ts',
+              content: "@Processor('fixture-queue')\nexport class FakeProcessor {}",
+            },
+          ];
+        }
+        return [];
+      }),
+    } as unknown as SourceHttpClient;
+
+    const summary = await stitch(client, fakeDb, { project: 'hygiene-test' });
+
+    const [, edges] = replaceSpy.mock.calls[0] as [unknown, Array<{ queueName: string }>];
+    expect(edges.length).toBeGreaterThan(0);
+    for (const e of edges) {
+      expect(e.queueName).toBe('brand-webhooks');
+    }
+    expect(summary.edges).toBe(edges.length);
+    expect(summary.queues).toBe(1);
+  });
+
   it('indexing A then B calls replaceQueueEdges twice with distinct projects', async () => {
     const clientA = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
     const clientB = makeSourceClient(
