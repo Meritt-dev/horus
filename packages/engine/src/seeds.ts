@@ -438,6 +438,59 @@ export function isAnchoredExactSeed(
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Exact-name collision ranking (dogfood P1). `explain <Name>` picked whichever
+// same-named hit search scored first: hono `explain "Hono"` showed a 10-line
+// preset subclass over the 545-line base class; clap `explain "Command"` showed a
+// 1-line METHOD `command` over the central `Command` struct. Among candidates
+// matching the query, prefer exact case, declaration kinds, real (non-test)
+// paths, and larger bodies — the "N symbols named X" list then leads with the
+// symbol the user almost certainly meant.
+// ---------------------------------------------------------------------------
+
+/** Graph kind (the id's `<kind>:` prefix) weight for an exact-name explain query. */
+function explainKindWeight(s: Symbol): number {
+  const kind = s.id.split(':', 1)[0] ?? '';
+  switch (kind.toLowerCase()) {
+    case 'class':
+      return 4; // structs/classes — the usual referent of a bare Name query
+    case 'interface':
+    case 'enum':
+      return 3;
+    case 'function':
+      return 2;
+    case 'type_alias':
+    case 'typealias':
+      return 1;
+    default:
+      return 0; // methods & unknown kinds
+  }
+}
+
+/**
+ * Rank same-named candidates for an exact-name query (`explain Foo`). Returns the
+ * candidates matching `query` case-insensitively, best first; empty when none match
+ * exactly (callers keep their fuzzy-fallback behavior).
+ */
+export function rankExactCandidates(query: string, symbols: Symbol[]): Symbol[] {
+  const q = query.toLowerCase();
+  const exact = symbols.filter((s) => s.name.toLowerCase() === q);
+  const scored = exact.map((symbol, i) => {
+    let score = 0;
+    if (symbol.name === query) score += 8; // exact case: Command ≠ command
+    score += explainKindWeight(symbol);
+    if (isDeprioritizedSeedPath(symbol.filePath) || isCodegenPath(symbol.filePath)) score -= 6;
+    // Body size as a centrality proxy, log-dampened: a 545-line class beats a
+    // 10-line re-export subclass, but 5000 lines doesn't beat everything forever.
+    const loc = (symbol.endLine ?? 0) - (symbol.startLine ?? 0);
+    if (loc > 0) score += Math.min(4, Math.log2(loc + 1));
+    return { symbol, score, i };
+  });
+  return scored
+    .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
+    .map((s) => s.symbol);
+}
+
 export function rankSeeds(
   seeds: Symbol[],
   hintTokens?: string[],

@@ -2,7 +2,7 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
-import { symbolDisplayName, route, formatRouteStep, type RouteStep } from '@horus/engine';
+import { symbolDisplayName, route, formatRouteStep, rankExactCandidates, type RouteStep } from '@horus/engine';
 import { openDb, listQueueEdges } from '@horus/db';
 
 /** Print the router's suggestions as human "Suggested next:" lines (HOR-386). */
@@ -30,7 +30,15 @@ export async function runExplain(
     return 1;
   }
 
-  const symbols = await code.searchSymbols(query, 5);
+  // 10, not 5: exact-name collisions (4 `Hono`s, `Command` vs `command`) must all be
+  // in the pool for ranking — a cut-off collision can't be ranked or disclosed.
+  const searched = await code.searchSymbols(query, 10);
+  // Among candidates matching the query exactly, pick by importance (exact case,
+  // declaration kind, real path, body size) — NOT by raw search order, which put a
+  // 10-line preset subclass above the real 545-line class (dogfood P1). No exact
+  // match → keep the original search-ranked fuzzy fallback.
+  const ranked = rankExactCandidates(query, searched);
+  const symbols = ranked.length > 0 ? [...ranked, ...searched.filter((s) => !ranked.includes(s))] : searched;
   if (symbols.length === 0) {
     if (await isQueueBoundary(config, query)) {
       console.log(`No symbol found for: ${pc.bold(query)}`);
@@ -71,8 +79,11 @@ export async function runExplain(
   // and a test factory all named `createCompany`). We explain the highest-ranked match
   // and DISCLOSE the collisions so the user can re-query to target another — rather than
   // silently guessing which one they meant (and risking, say, a test factory over the
-  // production symbol).
-  const siblings = symbols.filter((s) => s.name === top.name && s.id !== top.id);
+  // production symbol). Case-insensitive: `Command` (struct) and `command` (method)
+  // collide for the query "command" and both must be disclosed.
+  const siblings = symbols.filter(
+    (s) => s.name.toLowerCase() === top.name.toLowerCase() && s.id !== top.id,
+  );
 
   const [ctx, impact, flows] = await Promise.all([
     code.context(top.id),

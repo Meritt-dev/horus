@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Symbol } from '@horus/core';
 import {
   rankSeeds,
+  rankExactCandidates,
   seedRole,
   scoreSeed,
   executableBaseName,
@@ -495,5 +496,42 @@ describe('HOR-447 — codegen + type-declaration seed demotion', () => {
     const q = parseSeedQualifier('src/graphql/generated.tsx:Cart')!;
     const ranked = rankSeeds([cartType, cartReducer], ['cart'], undefined, false, q);
     expect(ranked[0]?.symbol.name).toBe('Cart');
+  });
+});
+
+
+describe('rankExactCandidates (dogfood P1 — explain disambiguation)', () => {
+  const sym = (
+    id: string,
+    name: string,
+    filePath: string,
+    startLine = 1,
+    endLine = 1,
+  ): Symbol => ({ id, name, filePath, startLine, endLine });
+
+  it('hono: the 545-line base class outranks the 10-line preset subclass', () => {
+    const preset = sym('class:src/preset/tiny.ts:Hono', 'Hono', 'src/preset/tiny.ts', 11, 20);
+    const base = sym('class:src/hono-base.ts:Hono', 'Hono', 'src/hono-base.ts', 98, 543);
+    const ranked = rankExactCandidates('Hono', [preset, base]);
+    expect(ranked[0]?.id).toBe('class:src/hono-base.ts:Hono');
+  });
+
+  it('clap: the Command struct outranks a 1-line method `command` (case + kind)', () => {
+    const method = sym('method:clap_builder/src/derive.rs:command', 'command', 'clap_builder/src/derive.rs', 120, 120);
+    const struct = sym('class:clap_builder/src/builder/command.rs:Command', 'Command', 'clap_builder/src/builder/command.rs', 54, 260);
+    const ranked = rankExactCandidates('Command', [method, struct]);
+    expect(ranked[0]?.name).toBe('Command');
+    // Both collide case-insensitively — the method is still IN the ranking.
+    expect(ranked).toHaveLength(2);
+  });
+
+  it('test/example paths lose to real code of the same size', () => {
+    const testDouble = sym('class:tests/fake.ts:Widget', 'Widget', 'tests/fake.ts', 1, 100);
+    const real = sym('class:src/widget.ts:Widget', 'Widget', 'src/widget.ts', 1, 100);
+    expect(rankExactCandidates('Widget', [testDouble, real])[0]?.id).toBe('class:src/widget.ts:Widget');
+  });
+
+  it('returns empty when nothing matches the query exactly (fuzzy fallback preserved)', () => {
+    expect(rankExactCandidates('HonoBase', [sym('class:a.ts:Hono', 'Hono', 'a.ts')])).toEqual([]);
   });
 });
