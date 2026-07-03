@@ -28,6 +28,7 @@ from horus_source.core.parsers.base import (
     LanguageParser,
     ParseResult,
     SymbolInfo,
+    TypeRef,
 )
 
 JAVA_LANGUAGE = Language(tsjava.language())
@@ -39,6 +40,13 @@ _TYPE_DECLS = {
     "interface_declaration": "interface",
 }
 
+
+# JDK/java.lang staples — never repo symbols, skip as type-ref noise.
+_JAVA_COMMON_TYPES: frozenset[str] = frozenset({
+    "String", "Object", "Integer", "Long", "Boolean", "Double", "Float",
+    "Character", "Byte", "Short", "Void", "List", "Map", "Set", "Collection",
+    "Optional", "Iterable", "Iterator", "Exception", "RuntimeException",
+})
 
 class JavaParser(LanguageParser):
     """Parse Java source files via tree-sitter."""
@@ -66,6 +74,13 @@ class JavaParser(LanguageParser):
             self._extract_import(node, result)
         elif ntype == "method_invocation":
             self._extract_call(node, result)
+        elif ntype == "object_creation_expression":
+            # `new Owner(...)` is a call to the class — without it constructor usage
+            # produced no edge at all (dogfood cycle-2 N7: petclinic had ZERO
+            # uses_type edges and controllers showed 0 callers/impact).
+            self._extract_new(node, result)
+        elif ntype in ("formal_parameter", "field_declaration", "local_variable_declaration"):
+            self._extract_declared_types(node, result)
 
         for child in node.children:
             self._walk(child, result, visited)
@@ -186,6 +201,10 @@ class JavaParser(LanguageParser):
             return
         name = name_node.text.decode()
         decorators, decorator_args = self._extract_annotations(node)
+        # Return-type reference (params/fields are dispatched from _walk).
+        return_type = node.child_by_field_name("type")
+        if return_type is not None:
+            self._emit_type_refs(return_type, "return", result)
         result.symbols.append(
             SymbolInfo(
                 name=name,
@@ -210,6 +229,47 @@ class JavaParser(LanguageParser):
         text = node.text.decode()
         head = text.split("{", 1)[0]
         return " ".join(head.split()).strip()
+
+    def _collect_type_identifiers(self, node: Node) -> list[Node]:
+        """All type_identifier descendants (including *node* itself)."""
+        found: list[Node] = []
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.type == "type_identifier":
+                found.append(n)
+            stack.extend(n.children)
+        return found
+
+    def _emit_type_refs(self, node: Node, kind: str, result: ParseResult) -> None:
+        for ident in self._collect_type_identifiers(node):
+            name = ident.text.decode()
+            if name in _JAVA_COMMON_TYPES:
+                continue
+            result.type_refs.append(
+                TypeRef(name=name, kind=kind, line=ident.start_point[0] + 1)
+            )
+
+    def _extract_declared_types(self, node: Node, result: ParseResult) -> None:
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            kind = "param" if node.type == "formal_parameter" else "variable"
+            self._emit_type_refs(type_node, kind, result)
+
+    def _extract_new(self, node: Node, result: ParseResult) -> None:
+        """``new ClassName(args)`` — a CALL to the class + a type usage."""
+        type_node = node.child_by_field_name("type")
+        if type_node is None:
+            return
+        idents = self._collect_type_identifiers(type_node)
+        if not idents:
+            return
+        # `new a.b.Owner()` — the class is the LAST identifier.
+        name = idents[-1].text.decode()
+        if name in _JAVA_COMMON_TYPES:
+            return
+        result.calls.append(CallInfo(name=name, line=node.start_point[0] + 1))
+        self._emit_type_refs(type_node, "variable", result)
 
     # -- imports --------------------------------------------------------------
 

@@ -32,10 +32,19 @@ from horus_source.core.parsers.base import (
     LanguageParser,
     ParseResult,
     SymbolInfo,
+    TypeRef,
 )
 
 GO_LANGUAGE = Language(tsgo.language())
 
+
+# Go predeclared types — never repo symbols, skip as type-ref noise.
+_GO_BUILTIN_TYPES: frozenset[str] = frozenset({
+    "string", "bool", "byte", "rune", "error", "any",
+    "int", "int8", "int16", "int32", "int64",
+    "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+    "float32", "float64", "complex64", "complex128",
+})
 
 def _is_exported(name: str) -> bool:
     """Go visibility: a symbol is exported iff its first letter is uppercase."""
@@ -90,6 +99,14 @@ class GoParser(LanguageParser):
             self._extract_import(node, result)
         elif ntype == "call_expression":
             self._extract_call(node, result)
+        elif ntype == "composite_literal":
+            # `Form{}` / `var Form = formBinding{}` — Go's dominant way of USING a
+            # type. Without this edge, private-but-used types read as dead and
+            # impact on structs is empty (dogfood cycle-2 N7).
+            self._extract_composite_literal_type(node, result)
+        elif ntype in ("parameter_declaration", "field_declaration"):
+            # func params/results + struct fields — type-annotation references.
+            self._extract_declared_types(node, result)
 
         for child in node.children:
             self._walk(child, source, result, visited)
@@ -106,6 +123,7 @@ class GoParser(LanguageParser):
         if name_node is None:
             return
         name = name_node.text.decode()
+        self._extract_result_types(node, result)
         result.symbols.append(
             SymbolInfo(
                 name=name,
@@ -124,6 +142,7 @@ class GoParser(LanguageParser):
         receiver_node = node.child_by_field_name("receiver")
         if name_node is None:
             return
+        self._extract_result_types(node, result)
         name = name_node.text.decode()
         owner = _receiver_type(receiver_node.text.decode()) if receiver_node else ""
         result.symbols.append(
@@ -171,6 +190,46 @@ class GoParser(LanguageParser):
             )
             if _is_exported(name):
                 result.exports.append(name)
+
+    def _collect_type_identifiers(self, node: Node) -> list[Node]:
+        """All type_identifier descendants (including *node* itself)."""
+        found: list[Node] = []
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.type == "type_identifier":
+                found.append(n)
+            stack.extend(n.children)
+        return found
+
+    def _emit_type_refs(self, node: Node, kind: str, result: ParseResult) -> None:
+        for ident in self._collect_type_identifiers(node):
+            name = ident.text.decode()
+            if name in _GO_BUILTIN_TYPES:
+                continue
+            result.type_refs.append(
+                TypeRef(name=name, kind=kind, line=ident.start_point[0] + 1)
+            )
+
+    def _extract_result_types(self, node: Node, result: ParseResult) -> None:
+        """Return types: a bare `*Engine` result is NOT a parameter_declaration, so the
+        _walk dispatch never sees it — emit from the function's `result` field. (A
+        parenthesized result list IS parameter_declarations; those are deduped by the
+        uses_type edge id, so double-emission is harmless.)"""
+        result_node = node.child_by_field_name("result")
+        if result_node is not None:
+            self._emit_type_refs(result_node, "return", result)
+
+    def _extract_composite_literal_type(self, node: Node, result: ParseResult) -> None:
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            self._emit_type_refs(type_node, "variable", result)
+
+    def _extract_declared_types(self, node: Node, result: ParseResult) -> None:
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            kind = "param" if node.type == "parameter_declaration" else "variable"
+            self._emit_type_refs(type_node, kind, result)
 
     # -- imports --------------------------------------------------------------
 

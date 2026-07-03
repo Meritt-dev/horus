@@ -183,3 +183,37 @@ public interface Codec {
     exports = set(result.exports)
     assert "encode" in exports
     assert "decode" in exports
+
+
+class TestJavaTypeUsage:
+    """Dogfood cycle-2 N7: petclinic had ZERO uses_type edges — no param/return/
+    field/new() type references were extracted at all."""
+
+    def test_params_return_fields_and_new(self) -> None:
+        parser = JavaParser()
+        code = (
+            "class OwnerController {\n"
+            "    private final OwnerRepository owners;\n"
+            "    public Owner findOwner(OwnerQuery q) {\n"
+            "        return new Owner();\n"
+            "    }\n"
+            "}\n"
+        )
+        result = parser.parse(code, "OwnerController.java")
+        refs = {(r.name, r.kind) for r in result.type_refs}
+        assert ("OwnerRepository", "variable") in refs  # field
+        assert ("OwnerQuery", "param") in refs
+        assert ("Owner", "return") in refs
+        # `new Owner()` is a CALL to the class.
+        assert any(c.name == "Owner" for c in result.calls)
+
+    def test_jdk_staples_skipped(self) -> None:
+        parser = JavaParser()
+        code = (
+            "class X {\n"
+            "    public String hello(List<String> xs) { return new String(); }\n"
+            "}\n"
+        )
+        result = parser.parse(code, "X.java")
+        assert result.type_refs == []
+        assert not any(c.name == "String" for c in result.calls)
