@@ -541,3 +541,17 @@ describe('rankExactCandidates (dogfood P1 — explain disambiguation)', () => {
     expect(rankExactCandidates('Axios', [dts, impl])[0]?.filePath).toBe('lib/core/Axios.js');
   });
 });
+
+describe('cross-command exact-symbol consistency (dogfood: investigate vs search/explain)', () => {
+  it('an exact camelCase mention in an incident hint beats a nearby false friend', () => {
+    // `investigate "runOneInvestigation timeout"` must seed runOneInvestigation —
+    // the same symbol `search`/`explain` resolve — not a token-overlapping sibling.
+    const falseFriend = sym('runInvestigationLoop', 'src/run.ts');
+    const exact = sym('runOneInvestigation', 'src/run.ts');
+    const hint = 'runOneInvestigation timeout';
+    const named = parseNamedSymbols(hint);
+    expect(named[0]).toBe('runOneInvestigation');
+    const ranked = rankSeeds([falseFriend, exact], ['runoneinvestigation', 'timeout'], undefined, false, null, named[0]);
+    expect(ranked[0]?.symbol.name).toBe('runOneInvestigation');
+  });
+});

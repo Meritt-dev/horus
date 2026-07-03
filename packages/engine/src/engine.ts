@@ -1448,8 +1448,13 @@ export async function investigate(
   // never from the alert wording (which would re-anchor the very bias this defuses).
   const alertSuggestedCategories = parseSuggestedCauses(hint);
   const sourceImpactHint = intent === 'source-impact';
-  const preferNamed =
-    sourceImpactHint && namedSymbols.length > 0 ? namedSymbols[0] : undefined;
+  // A camelCase/PascalCase/quoted symbol in the hint is the USER NAMING THE SYMBOL —
+  // in every mode. Previously the decisive exact-name boost applied only to
+  // source-impact prompts, so `investigate "runOneInvestigation timeout"` could seed a
+  // nearby false friend that `search`/`explain` would never pick (dogfood cycle-2 UX).
+  // The boost is bounded (+40 in scoreSeed) and only fires on an EXACT name match, and
+  // the re-search/adopt pass below guarantees the named symbol is at least considered.
+  const preferNamed = namedSymbols.length > 0 ? namedSymbols[0] : undefined;
 
   // Evidence accumulator + factory. ids double as the persisted PKs.
   const evidence: Evidence[] = [];
