@@ -86,6 +86,20 @@ export function buildRuntimeSourceStatus(
     connectors.postgres ||
     connectors.shopify
   );
+  // Failed only on an EXPLICIT collection failure with nothing contributed — strict
+  // `=== false` so old reports lacking the flags (undefined) still read 'empty', and
+  // a partial success (one provider threw, another contributed) reads 'contributed'.
+  const shopifyFailed = !!connectors.shopify && connectors.shopifyCollected === false;
+  const stateFailed =
+    stateConfigured && stateCount === 0 && (connectors.stateCollected === false || shopifyFailed);
+  const stateDetailParts = [
+    ...(connectors.stateFailureReason ? [connectors.stateFailureReason] : []),
+    ...(shopifyFailed && connectors.shopifyFailureReason
+      ? [`shopify: ${connectors.shopifyFailureReason}`]
+      : []),
+  ];
+  const stateDetail =
+    stateFailed && stateDetailParts.length > 0 ? stateDetailParts.join('; ') : undefined;
 
   // Queue: configured when the BullMQ/queues connector is wired up (HOR-205) —
   // not merely when queue evidence happens to exist. An investigation whose hint
@@ -94,13 +108,22 @@ export function buildRuntimeSourceStatus(
   // Fall back to evidence presence for pre-HOR-205 reports lacking the flag.
   const queueConfigured = connectors.queue ?? evidence.some((e) => e.source === 'queue');
   const queueCount = evidence.filter((e) => e.kind === 'queue-state').length;
+  const queueFailed = !!connectors.queue && queueCount === 0 && connectors.queueCollected === false;
 
   return {
     sources: [
-      buildEntry('logs', logsConfigured, logsCount, logsFailed, connectors.logsCompatibilityError),
-      buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed),
-      buildEntry('state', stateConfigured, stateCount, false),
-      buildEntry('queue', queueConfigured, queueCount, false),
+      // Compatibility error keeps precedence over the generic failure category (its
+      // docstring guarantees the more specific mapping diagnosis wins).
+      buildEntry(
+        'logs',
+        logsConfigured,
+        logsCount,
+        logsFailed,
+        connectors.logsCompatibilityError ?? connectors.logsFailureReason,
+      ),
+      buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed, connectors.metricsFailureReason),
+      buildEntry('state', stateConfigured, stateCount, stateFailed, stateDetail),
+      buildEntry('queue', queueConfigured, queueCount, queueFailed, queueFailed ? connectors.queueFailureReason : undefined),
     ],
   };
 }

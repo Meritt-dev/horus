@@ -18,6 +18,7 @@
  */
 
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage, redactSecrets, redactUpstreamBody } from '@horus/core';
 
 export interface ShopifyClientOpts {
   /** Store subdomain, e.g. "my-store" — `.myshopify.com` is added internally (a full domain also works). */
@@ -122,7 +123,9 @@ export class ShopifyAdminClient {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Shopify token exchange -> ${res.status}: ${text.slice(0, 200)}`);
+      // Redact + cap: this body is the OAuth endpoint's response to a request
+      // carrying client_id + client_secret — it can echo them back.
+      throw new Error(`Shopify token exchange -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
     const json = (await res.json()) as { access_token?: string; expires_in?: number };
     if (!json.access_token) {
@@ -176,7 +179,7 @@ export class ShopifyAdminClient {
       }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`Shopify GraphQL -> ${res.status}: ${text.slice(0, 200)}`);
+        throw new Error(`Shopify GraphQL -> ${res.status}: ${redactUpstreamBody(text)}`);
       }
 
       const result = (await res.json()) as ShopifyGraphQLResult;
@@ -200,11 +203,12 @@ export class ShopifyAdminClient {
     try {
       const result = await this.graphql('{ shop { name } }');
       if (result.errors !== undefined && result.errors.length > 0) {
-        return { ok: false, detail: result.errors[0]!.message };
+        // GraphQL error text is upstream-controlled — redact before display.
+        return { ok: false, detail: redactSecrets(result.errors[0]!.message) };
       }
       return { ok: true, detail: `shopify reachable (${this.store})` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 }

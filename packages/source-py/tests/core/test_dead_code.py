@@ -427,3 +427,45 @@ class TestProtocolConformance:
         partial_method = g.get_node(partial_method_id)
         assert partial_method is not None
         assert partial_method.is_dead is True
+
+
+class TestMultiLanguageExemptions:
+    """Go/Java/Rust symbols must not be flagged dead just because the
+    Python-centric heuristics don't recognize their conventions (HS-6)."""
+
+    def test_main_is_never_dead(self) -> None:
+        # Go/Rust/Java program entry point — parsers don't all set is_entry_point.
+        for path in ("cmd/app/main.go", "src/main.rs", "Main.java"):
+            g = KnowledgeGraph()
+            node_id = _add_symbol_node(g, NodeLabel.FUNCTION, path, "main")
+            process_dead_code(g)
+            assert g.get_node(node_id).is_dead is False, path
+
+    def test_go_test_and_benchmark_funcs_are_exempt(self) -> None:
+        g = KnowledgeGraph()
+        ids = [
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "TestSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "BenchmarkSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "ExampleSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "FuzzSync"),
+        ]
+        process_dead_code(g)
+        for nid in ids:
+            assert g.get_node(nid).is_dead is False
+
+    def test_exported_symbol_is_exempt(self) -> None:
+        # is_exported is set by the parsers (Go uppercase, Rust pub, Java public).
+        g = KnowledgeGraph()
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "pkg/svc.go", "DoThing", is_exported=True
+        )
+        process_dead_code(g)
+        assert g.get_node(node_id).is_dead is False
+
+    def test_go_test_prefixes_do_not_over_exempt_other_languages(self) -> None:
+        # A non-.go class named like a Go example must still be flagged dead —
+        # the Benchmark/Example/Fuzz exemption is gated to .go files.
+        g = KnowledgeGraph()
+        node_id = _add_symbol_node(g, NodeLabel.CLASS, "src/widgets.py", "ExampleWidget")
+        process_dead_code(g)
+        assert g.get_node(node_id).is_dead is True

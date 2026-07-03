@@ -28,8 +28,9 @@ import type { LogsProvider, LogRecord, LogAnalysis } from '@horus/connectors';
 import type { MetricsProvider } from '@horus/connectors';
 import type { QueueRuntimeProvider, QueueRuntimeState } from '@horus/connectors';
 import type { StateProvider, StateAnalysis } from '@horus/connectors';
+import type { RedisStateProvider } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
-import { investigate } from './engine.js';
+import { connectorFailureReason, investigate } from './engine.js';
 
 // ---------------------------------------------------------------------------
 // Shared fake code provider
@@ -313,6 +314,19 @@ describe('HOR-108 connector fallback — Scenario D: queue analyzeQueues throws'
     );
     expect(JSON.stringify(report)).not.toContain('127.0.0.1:6379');
   });
+
+  it('queue gap reports the FAILURE (with leak-safe reason), not just missing collection', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDbWithQueues, queue: throwingQueue },
+    );
+    const queueGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'queue runtime state');
+    expect(queueGap).toBeDefined();
+    expect(queueGap!.why).toContain('failed');
+    expect(queueGap!.why).toContain('connection failed');
+    // The classified reason must never carry the raw connection string.
+    expect(JSON.stringify(report)).not.toContain('127.0.0.1:6379');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -397,6 +411,73 @@ describe('HOR-108 connector fallback — Scenario F: MongoDB analyzeState throws
     );
     expect(report.confidence).toBeGreaterThanOrEqual(0);
     expect(report.confidence).toBeLessThanOrEqual(1);
+  });
+
+  it('surfaces an application-state gap naming mongodb and marks the state source failed', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, mongo: throwingMongo },
+    );
+    const stateGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'application state');
+    expect(stateGap).toBeDefined();
+    expect(stateGap!.why).toContain('mongodb');
+    const stateEntry = report.sourceStatus?.sources.find((s) => s.source === 'state');
+    expect(stateEntry?.status).toBe('failed');
+    // Reason is a category only — never the raw connection detail.
+    expect(JSON.stringify(report)).not.toContain('mongo.internal');
+    expect(JSON.stringify(report)).not.toContain('27017');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario F2: Postgres state connector throws — same state dimension, its own prefix
+// ---------------------------------------------------------------------------
+
+describe('HOR-108 connector fallback — Scenario F2: Postgres analyzeState throws', () => {
+  const throwingPostgres: StateProvider = {
+    id: 'postgres',
+    kind: 'state',
+    async health() { return { ok: false, detail: 'Postgres unreachable' }; },
+    async analyzeState(): Promise<StateAnalysis> {
+      throw new Error('ETIMEDOUT connecting to pg.internal:5432');
+    },
+    toEvidence() { return []; },
+    async close() {},
+  };
+
+  it('surfaces an application-state gap with a postgres-prefixed reason, no leak', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, postgres: throwingPostgres },
+    );
+    const stateGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'application state');
+    expect(stateGap).toBeDefined();
+    expect(stateGap!.why).toContain('postgres: timeout');
+    expect(JSON.stringify(report)).not.toContain('pg.internal');
+    expect(JSON.stringify(report)).not.toContain('5432');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario F3: Redis state provider throws — folds into the same state dimension
+// ---------------------------------------------------------------------------
+
+describe('HOR-108 connector fallback — Scenario F3: Redis analyzeRedisState throws', () => {
+  const throwingRedisState = {
+    async analyzeRedisState() {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:6379');
+    },
+  } as unknown as RedisStateProvider;
+
+  it('surfaces an application-state gap with a redis-prefixed reason, no leak', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, redisState: throwingRedisState },
+    );
+    const stateGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'application state');
+    expect(stateGap).toBeDefined();
+    expect(stateGap!.why).toContain('redis: connection failed');
+    expect(JSON.stringify(report)).not.toContain('127.0.0.1:6379');
   });
 });
 
@@ -503,6 +584,97 @@ describe('HOR-108 connector fallback — Scenario G: multiple simultaneous failu
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain('ECONNREFUSED');
   });
+
+  it('logs, queue, and application-state gaps coexist when every connector fails', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      {
+        code: fakeCode,
+        db: fakeDbWithQueues,
+        logs: throwingLogs,
+        queue: throwingQueue,
+        mongo: throwingMongo,
+      },
+    );
+    const dims = report.gapAnalysis.gaps.map((g) => g.dimension);
+    expect(dims).toContain('logs');
+    expect(dims).toContain('queue runtime state');
+    expect(dims).toContain('application state');
+    expect(report.gapAnalysis.confidenceCeiling).toBeLessThan(1.0);
+    expect(JSON.stringify(report)).not.toContain('ECONNREFUSED');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connectorFailureReason — the leak-safe classifier every failure flag routes
+// through. Category-only output: raw messages carry hosts/ports/URLs that must
+// never reach the persisted report.
+// ---------------------------------------------------------------------------
+
+describe('connectorFailureReason', () => {
+  it('classifies connection errors', () => {
+    expect(connectorFailureReason(new Error('connect ECONNREFUSED 127.0.0.1:6379'))).toBe(
+      'connection failed',
+    );
+    expect(connectorFailureReason(new Error('getaddrinfo ENOTFOUND es.internal'))).toBe(
+      'connection failed',
+    );
+  });
+
+  it('classifies timeouts (including the metrics abort)', () => {
+    expect(connectorFailureReason(new Error('metrics timeout'))).toBe('timeout');
+    expect(connectorFailureReason(new Error('This operation was aborted'))).toBe('timeout');
+    expect(connectorFailureReason(new Error('request timed out after 30s'))).toBe('timeout');
+  });
+
+  it('classifies auth failures', () => {
+    expect(connectorFailureReason(new Error('HTTP 401 Unauthorized'))).toBe('auth failure');
+    expect(connectorFailureReason(new Error('missing authentication credentials'))).toBe(
+      'auth failure',
+    );
+  });
+
+  it('classifies rate limiting and server errors', () => {
+    expect(connectorFailureReason(new Error('429 rate limit exceeded'))).toBe('rate limited');
+    expect(connectorFailureReason(new Error('GET /api/query -> HTTP 502'))).toBe('server error');
+  });
+
+  it('falls back to a generic category for unknown errors', () => {
+    expect(connectorFailureReason(new Error('something odd happened'))).toBe('request failed');
+    expect(connectorFailureReason('not-an-error')).toBe('request failed');
+    expect(connectorFailureReason(null)).toBe('request failed');
+  });
+
+  it('never echoes host/port fragments from the input message', () => {
+    const reason = connectorFailureReason(
+      new Error('MongoServerSelectionError: connect ECONNREFUSED mongo.prod.internal:27017'),
+    );
+    expect(reason).not.toContain('mongo.prod.internal');
+    expect(reason).not.toContain('27017');
+  });
+
+  it('classifies from the anchored HTTP status, never from URL/path/body content', () => {
+    // The clients' own `-> <status>: <body>` contract wins over keyword noise.
+    expect(
+      connectorFailureReason(new Error('Elasticsearch POST /logs-*/_search -> 503: shard fail')),
+    ).toBe('server error');
+    // "auth" inside a PromQL expr must not read as an auth failure.
+    expect(
+      connectorFailureReason(
+        new Error('Grafana GET /api/ds/query?expr=rate(auth_requests_total[5m]) -> 500: boom'),
+      ),
+    ).toBe('server error');
+    // "401" inside an index/path name must not read as an auth failure.
+    expect(
+      connectorFailureReason(new Error('Elasticsearch GET /logs-401-prod/_count -> 502: bad')),
+    ).toBe('server error');
+    expect(connectorFailureReason(new Error('Sentry GET /issues/ -> 401: unauthorized'))).toBe(
+      'auth failure',
+    );
+    expect(connectorFailureReason(new Error('Shopify GraphQL -> 429: throttled'))).toBe(
+      'rate limited',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -535,5 +707,25 @@ describe('HOR-445 source-query fallback — code.impact throws (impact 404)', ()
   it('does not leak the raw source request path into the report', async () => {
     const report = await investigate({ hint: 'zoho' }, { code: impactThrowsCode, db: fakeDb });
     expect(JSON.stringify(report)).not.toContain('/api/impact');
+  });
+
+  it('a partial source failure never fabricates a source-intelligence gap dimension', async () => {
+    // Source-intel health is owned by HOR-445 degradation + report.degraded, NOT the gap
+    // detector — a thrown impact query must not add a new gap dimension (one-owner rule).
+    const report = await investigate({ hint: 'zoho' }, { code: impactThrowsCode, db: fakeDb });
+    const knownDimensions = new Set([
+      'logs',
+      'metrics',
+      'queue runtime state',
+      'application state',
+      'deployment records',
+      'ownership',
+      'traces',
+    ]);
+    for (const gap of report.gapAnalysis.gaps) {
+      expect(knownDimensions.has(gap.dimension), `unexpected gap dimension: ${gap.dimension}`).toBe(true);
+    }
+    // Partial degradation (impact only) is not total source absence.
+    expect(report.degraded).toBeUndefined();
   });
 });

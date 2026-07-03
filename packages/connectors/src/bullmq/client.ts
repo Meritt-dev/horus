@@ -5,6 +5,7 @@
 
 import { Redis, type RedisOptions } from 'ioredis';
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage } from '@horus/core';
 
 export interface BullMQClientOpts {
   url: string;
@@ -131,7 +132,8 @@ export class BullMQRedisClient {
       await this.redis.ping();
       return { ok: true, detail: `Redis reachable (prefix: ${this.prefix})` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      // ioredis errors can echo the credential-bearing connection URL.
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 

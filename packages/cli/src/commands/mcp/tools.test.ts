@@ -148,10 +148,10 @@ describe('Horus MCP knowledge tools', () => {
   });
 
   // HOR-386 — MCP self-routing surface: suggestedNextTools from the shared router.
-  it('no-index results carry a suggestedNextTools route to `horus index`', () => {
+  it('no-index results carry a suggestedNextTools route to `horus init`', () => {
     const res = tool('search_project_knowledge').handler({ query: 'x' }, emptyRoot());
     expect(res.suggestedNextTools).toEqual([
-      { nextTool: 'index', args: '', reason: expect.any(String) },
+      { nextTool: 'init', args: '', reason: expect.any(String) },
     ]);
   });
 

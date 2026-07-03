@@ -67,7 +67,7 @@ export async function runQueues(
 
       // HOR-343: a named queue with no static topology is likely dynamically registered
       // (e.g. `new Worker(enumValue)`), not unindexed — show its live state instead of
-      // dead-ending at "run horus index".
+      // dead-ending at "run horus init".
       const showLive = opts.live || (name !== undefined && rows.length === 0);
 
       // JSON: structured static topology (+ live state when requested or auto-enabled).
@@ -82,7 +82,7 @@ export async function runQueues(
       // ── Source topology ──────────────────────────────────────────────────────
       console.log(
         pc.bold('Queue topology') +
-          pc.dim('  ·  source: code / source intelligence  ·  static (run horus index to refresh)'),
+          pc.dim('  ·  source: code / source intelligence  ·  static (run horus init to refresh)'),
       );
       console.log('');
 
@@ -90,7 +90,7 @@ export async function runQueues(
         console.log(
           name !== undefined
             ? pc.dim(`  No static topology for "${name}" — it may be dynamically registered; showing live state below.`)
-            : pc.dim('  No queue edges indexed. Run: horus index'),
+            : pc.dim('  No queue edges indexed. Run: horus init'),
         );
       } else {
         const byQueue = buildQueueMap(rows);

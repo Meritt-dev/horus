@@ -179,6 +179,11 @@ describe('investigate() WITH Axiom logs provider (HOR-429)', () => {
         (e) => e.kind === 'log' && (e.payload as Record<string, unknown>)?.['source'] === 'axiom',
       ),
     ).toBe(false);
+    // With no ES configured, the logs gap is purely about Axiom and carries the
+    // classified (leak-safe) failure reason.
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    expect(logsGap?.why).toContain('Axiom log collection failed');
+    expect(logsGap?.why).toContain('(timeout)');
   });
 
   it('a configured Axiom that returns rows clears the logs gap', async () => {

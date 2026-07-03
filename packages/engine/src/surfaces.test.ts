@@ -102,7 +102,7 @@ describe('HOR-386 surfaces — one router decision, rendered everywhere', () => 
   });
 
   it('formatRouteCommand omits the args separator when args is empty', () => {
-    expect(formatRouteCommand({ nextTool: 'index', args: '', reason: 'x' })).toBe('horus index');
+    expect(formatRouteCommand({ nextTool: 'init', args: '', reason: 'x' })).toBe('horus init');
     expect(formatRouteCommand({ nextTool: 'search', args: 'Foo', reason: 'x' })).toBe(
       'horus search Foo',
     );

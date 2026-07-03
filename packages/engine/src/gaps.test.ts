@@ -358,6 +358,113 @@ describe('HOR-58 evidence gap regression', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Connector-failure gaps — application state + failure-mode queue gap and the
+// leak-safe failure-reason suffixes on the logs gap. All predicates are strict
+// `=== false` so absent flags (old reports, unconfigured providers) stay silent.
+// ---------------------------------------------------------------------------
+
+describe('connector-failure gaps', () => {
+  it('state provider failure → application state gap with reason, ceiling drops by 0.08', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const without = detectMissingEvidence(report, {});
+    const withFailure = detectMissingEvidence(report, {
+      mongodb: true,
+      stateCollected: false,
+      stateFailureReason: 'mongodb: connection failed',
+    });
+
+    const gap = withFailure.gaps.find((g) => g.dimension === 'application state');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('mongodb: connection failed');
+    expect(gap?.confidenceImpact).toBe(0.08);
+    expect(gap?.routeHint?.nextTool).toBe('connect');
+    expect(gap?.routeHint?.args).toBe('mongodb');
+    expect(withFailure.confidenceCeiling).toBeCloseTo(without.confidenceCeiling - 0.08, 2);
+  });
+
+  it('configured state provider with stateCollected undefined → NO state gap (old-report safety)', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { mongodb: true });
+    expect(result.gaps.map((g) => g.dimension)).not.toContain('application state');
+  });
+
+  it('shopify collection failure → state gap naming shopify; completed run → none', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const failed = detectMissingEvidence(report, {
+      shopify: true,
+      shopifyCollected: false,
+      shopifyFailureReason: 'auth failure',
+    });
+    const gap = failed.gaps.find((g) => g.dimension === 'application state');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('shopify: auth failure');
+    expect(gap?.routeHint?.args).toBe('shopify');
+
+    // Zero-query / zero-result runs are negative evidence, never a gap.
+    const completed = detectMissingEvidence(report, { shopify: true, shopifyCollected: true });
+    expect(completed.gaps.map((g) => g.dimension)).not.toContain('application state');
+  });
+
+  it('state evidence present suppresses the state gap even when a provider threw', () => {
+    const report = makeMinimalReport({ evidence: [makeEvidence('state')] });
+    const result = detectMissingEvidence(report, {
+      mongodb: true,
+      stateCollected: false,
+      stateFailureReason: 'mongodb: timeout',
+    });
+    expect(result.gaps.map((g) => g.dimension)).not.toContain('application state');
+  });
+
+  it('queue collection failure fires the queue gap even with NO queue topology', () => {
+    // No boundaryCrossings — pre-change this configuration was fully invisible.
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, {
+      queue: true,
+      queueCollected: false,
+      queueFailureReason: 'connection failed',
+    });
+    const gap = result.gaps.find((g) => g.dimension === 'queue runtime state');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('failed');
+    expect(gap?.why).toContain('connection failed');
+  });
+
+  it('queue collection that ran to completion with no topology → no queue gap', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { queue: true, queueCollected: true });
+    expect(result.gaps.map((g) => g.dimension)).not.toContain('queue runtime state');
+  });
+
+  it('logs / sentry / axiom failure reasons appear in the logs gap why', () => {
+    const report = makeMinimalReport({ evidence: [] });
+
+    const esGap = detectMissingEvidence(report, {
+      elasticsearch: true,
+      logsCollected: false,
+      logsFailureReason: 'timeout',
+    }).gaps.find((g) => g.dimension === 'logs');
+    expect(esGap?.why).toContain('failed');
+    expect(esGap?.why).toContain('(timeout)');
+
+    const sentryGap = detectMissingEvidence(report, {
+      sentry: true,
+      sentryCollected: false,
+      sentryFailureReason: 'auth failure',
+    }).gaps.find((g) => g.dimension === 'logs');
+    expect(sentryGap?.why).toContain('Sentry collection failed');
+    expect(sentryGap?.why).toContain('(auth failure)');
+
+    const axiomGap = detectMissingEvidence(report, {
+      axiom: true,
+      axiomCollected: false,
+      axiomFailureReason: 'rate limited',
+    }).gaps.find((g) => g.dimension === 'logs');
+    expect(axiomGap?.why).toContain('Axiom log collection failed');
+    expect(axiomGap?.why).toContain('(rate limited)');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // gapNextActions — HOR-106
 // ---------------------------------------------------------------------------
 

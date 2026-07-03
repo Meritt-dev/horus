@@ -35,7 +35,7 @@ _SQL_COMMENT_PATTERN = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 # case-insensitively against the comment-stripped query.
 SQL_WRITE_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|REPLACE|TRUNCATE|ATTACH|DETACH|"
-    r"PRAGMA|VACUUM|REINDEX|MERGE|GRANT|REVOKE|SET)\b",
+    r"PRAGMA|VACUUM|REINDEX|MERGE|GRANT|REVOKE|SET|load_extension)\b",
     re.IGNORECASE,
 )
 

@@ -143,13 +143,24 @@ describe('RedisStateRuntimeProvider', () => {
     expect(a.signals.some((s) => /lock key/.test(s.title))).toBe(true);
   });
 
-  it('skips unreachable DBs without throwing', async () => {
+  it('THROWS when EVERY configured DB fails its health check (total outage is a gap, not empty)', async () => {
     const provider = new RedisStateRuntimeProvider(
       [db({ db: 0 })],
       () => fakeClient({ ok: false, detail: 'WRONGPASS', keyCount: 0, prefixes: [] }),
     );
+    await expect(provider.analyzeRedisState()).rejects.toThrow(/redis state collection failed/);
+  });
+
+  it('skips an unhealthy DB but keeps results when another DB is healthy', async () => {
+    const provider = new RedisStateRuntimeProvider(
+      [db({ db: 0 }), db({ db: 1 })],
+      (d) =>
+        d.db === 0
+          ? fakeClient({ ok: false, detail: 'WRONGPASS', keyCount: 0, prefixes: [] })
+          : fakeClient({ ok: true, detail: 'ok', keyCount: 3, prefixes: [] }),
+    );
     const a = await provider.analyzeRedisState();
-    expect(a.databases).toHaveLength(0);
-    expect(a.signals).toHaveLength(0);
+    expect(a.databases).toHaveLength(1);
+    expect(a.databases[0]!.db).toBe(1);
   });
 });

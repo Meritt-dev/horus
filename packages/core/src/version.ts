@@ -7,5 +7,16 @@ export const HORUS_VERSION: string = typeof __HORUS_VERSION__ !== 'undefined' ? 
  * The exact source-intelligence backend version Horus is validated and pinned against.
  * The source provider asserts the running backend matches this (see architecture.md §1,
  * risk R4). A drifted build must fail loudly rather than silently mis-map results.
+ *
+ * The backend ships INSIDE the horus bundle (built from packages/source-py at release
+ * time, installed from the bundled wheel — no PyPI), so the pin IS the horus version:
+ * one bundle, one version.
  */
-export const PINNED_SOURCE_VERSION = '2.1.0';
+export const PINNED_SOURCE_VERSION: string = HORUS_VERSION;
+
+/**
+ * Whether the pin is enforceable. In unbundled dev/test runs HORUS_VERSION is 'dev',
+ * which matches no real backend — enforcing it would block every dev-mode host spawn
+ * and reuse. Compatibility checks treat an unenforced pin as matching.
+ */
+export const SOURCE_PIN_ENFORCED: boolean = HORUS_VERSION !== 'dev';

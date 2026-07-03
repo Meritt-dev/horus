@@ -1,36 +1,40 @@
-# source-py — vendored horus-source (HOR-450, step A)
+# source-py — the source-intelligence backend (canonical since HOR-450 step B)
 
-This directory is the **horus-source** Python backend (tree-sitter source intelligence:
-FastAPI host, SQLite+sqlite-vec+FTS5, local embeddings), vendored into the monorepo so
-the CLI and the backend live in **one repo** — atomic cross-boundary changes, one issue
-tracker, one CI, and the end of the version-drift surface that the HOR-436 version-pin
-guard exists to manage.
+This directory **IS the single source of truth** for the horus-source Python backend
+(tree-sitter source intelligence: FastAPI host, SQLite+sqlite-vec+FTS5, local
+embeddings). The standalone `Meritt-dev/horus-source` repo is **archived** and PyPI
+releases are **retired** — do not edit or release from either.
 
-## What this is (step A) vs. what's deferred (step B)
+## One bundle, one version, one codebase
 
-This PR does **step A only** — the monorepo move:
-
-- The Python tree is vendored here (`src/`, `tests/`, `pyproject.toml`, `uv.lock`).
-- Its test suite runs in CI as a dedicated `source-py` job (uv + pytest).
-- It is **additive and reversible** — nothing in the existing TS packages changes, and
-  the standalone `horus-source` repo is untouched. Nothing is released.
-
-**Deferred to step B** (a separate, release-touching change — intentionally NOT done here
-because it reshapes the release pipeline and can't be validated without releasing):
-
-- Build a self-contained horus-source binary (PyInstaller/pex) per platform and publish
-  it as a GitHub Release asset.
-- Point `install.sh` / the npm postinstall at the bundled binary and drop the user-facing
-  PyPI install path.
-- Single version + single changelog; retire the paired-version dance + the HOR-436 pin guard.
+- The backend ships **inside the horus release bundle**: `scripts/release/
+  build-source-wheel.sh` builds the frontend + wheel from this directory, verifies it
+  (`scripts/verify_wheel.py`), and stages `dist/horus_source.whl`, which the apps/horus
+  tsup build copies next to `index.cjs`. It lands in the npm package, the Homebrew
+  platform archives, and as a GitHub release asset for the curl installer.
+- The wheel's version is stamped to the horus release version by `scripts/release.sh` /
+  the Release workflow (`pyproject.toml` + `uv.lock` self-version). The CLI's
+  `PINNED_SOURCE_VERSION` is `HORUS_VERSION` — the pin is "same bundle" by construction.
+- `horus init` and `horus update` install the backend from the bundled wheel via
+  `uv tool install` (the wheel's third-party dependencies still resolve from PyPI as a
+  normal package install; that is dependency resolution, not a deployment of our code).
+- The backend's own PyPI update notifier is removed — the horus CLI owns updates.
 
 ## Working in here
 
 ```bash
 cd packages/source-py
 uv sync --extra dev
-uv run --extra dev pytest tests/ -q
+uv run pytest -q
+uvx ruff check src/ tests/
 ```
 
-Source of truth until step B lands: the standalone `Meritt-dev/horus-source` repo. Keep
-this copy in sync there until the cutover.
+CI (`.github/workflows/ci.yml`, `source-py` job) gates every PR on ruff,
+`uv lock --check`, and the full pytest suite.
+
+## History
+
+Step A (HOR-450) vendored the tree from the standalone repo while that repo remained
+canonical. Step B (this state) made the vendored tree canonical, archived the standalone
+repo, retired PyPI, and folded the backend into the horus release bundle — ending the
+paired-version dance the HOR-436 pin guard existed to manage.

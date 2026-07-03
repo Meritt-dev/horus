@@ -527,7 +527,7 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
     // tmpDir has no .horus/config.json and no config/horus.config.* — an un-set-up repo.
     delete process.env['HORUS_CONFIG'];
     await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/No Horus config found/);
-    await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/horus index/);
+    await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/horus init/);
   });
 
   it('throws a clear error when .js config has no default export', async () => {

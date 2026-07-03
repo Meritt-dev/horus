@@ -6,13 +6,17 @@
  * direct seed for the investigation engine alongside Elasticsearch / Sentry.
  *
  * Safety: only read endpoints are used (dataset listing + APL queries; the `_apl`
- * endpoint is read-only). Auth is `Authorization: Bearer <token>`. Every request is
- * bounded by an 8s AbortSignal.timeout. The client never throws past its callers —
+ * endpoint is read-only, which is what makes retrying its POST safe). Auth is
+ * `Authorization: Bearer <token>`. Transport goes through the shared fetchWithRetry
+ * helper — every request is bounded by an 8s per-attempt timeout with bounded retry
+ * on 429/5xx/network errors. The client never throws past its callers —
  * `listDatasets`/`query` return [] on any failure and `health()` returns a structured
  * `{ ok, detail }`. No `@axiomhq/*` SDK — `fetch` only.
  */
 
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage, redactUpstreamBody } from '@horus/core';
+import { fetchWithRetry, type HttpRequestOptions } from '../http.js';
 
 export interface AxiomClientOpts {
   /** API token (sent as `Authorization: Bearer <token>`). */
@@ -24,6 +28,8 @@ export interface AxiomClientOpts {
    * https://api.eu.axiom.co for the EU region. Trailing slash is trimmed.
    */
   baseUrl?: string;
+  /** Transport overrides (timeout / retry) forwarded to fetchWithRetry. */
+  http?: HttpRequestOptions;
 }
 
 /** A dataset descriptor, trimmed to what Horus needs. */
@@ -40,36 +46,36 @@ export interface AxiomLogRecord {
   fields: Record<string, unknown>;
 }
 
-const REQUEST_TIMEOUT_MS = 8000;
 const APL_PATH = '/v1/datasets/_apl?format=tabular';
 
 export class AxiomClient {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly dataset: string;
+  private readonly http: HttpRequestOptions;
 
   constructor(opts: AxiomClientOpts) {
     this.baseUrl = (opts.baseUrl ?? 'https://api.axiom.co').replace(/\/$/, '');
     this.token = opts.token;
     this.dataset = opts.dataset;
+    this.http = opts.http ?? {};
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    const init: RequestInit = {
+    const init: Omit<RequestInit, 'signal'> = {
       method,
       headers: {
         Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     };
     if (body !== undefined) init.body = JSON.stringify(body);
 
-    const res = await fetch(url, init);
+    const res = await fetchWithRetry(url, init, this.http);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Axiom ${method} ${path} -> ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Axiom ${method} ${path} -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
     return res.json();
   }
@@ -90,16 +96,14 @@ export class AxiomClient {
 
   /**
    * Run an APL query over the configured time window. `startTime`/`endTime` are ISO
-   * strings and bound the query server-side. Returns parsed log records, or [] on any
-   * failure (never throws past here).
+   * strings and bound the query server-side. Transport/auth failures PROPAGATE so
+   * the engine can distinguish "Axiom is down/misconfigured" from "no rows matched";
+   * callers that need degrade-to-[] wrap this themselves (provider.queryEvidence,
+   * provider.analyzeDurations).
    */
   async query(apl: string, startTime: string, endTime: string): Promise<AxiomLogRecord[]> {
-    try {
-      const raw = await this.request('POST', APL_PATH, { apl, startTime, endTime });
-      return parseTabular(raw);
-    } catch {
-      return [];
-    }
+    const raw = await this.request('POST', APL_PATH, { apl, startTime, endTime });
+    return parseTabular(raw);
   }
 
   /**
@@ -110,7 +114,7 @@ export class AxiomClient {
       await this.request('GET', '/v1/datasets');
       return { ok: true, detail: `axiom reachable (${this.dataset})` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 }

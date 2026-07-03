@@ -409,7 +409,7 @@ fi
 
 # ── § 2  ONBOARDING ───────────────────────────────────────────────────────────
 
-section ONBOARD "Onboarding smoke (init → index → doctor → investigate → explain)"
+section ONBOARD "Onboarding smoke (init → doctor → investigate → explain)"
 
 # 2a. Clean state (unless --keep-config)
 if [ "${KEEP_CONFIG}" -eq 0 ]; then
@@ -419,54 +419,49 @@ if [ "${KEEP_CONFIG}" -eq 0 ]; then
   fi
 fi
 
-# 2b. horus init — required; must create .horus/config.json
-INIT_OUT="$(cd "${REPO_PATH}" && "${HORUS[@]}" init 2>&1 || true)"
-_write_cmd_file "horus init" 0 0 "${INIT_OUT}"
+# 2b. horus init — required; writes/registers .horus/config.json, starts the
+# source-intelligence host, and indexes the repo (setup/index merged into init).
+# WARN (not fail) on indexing pieces when the source backend is absent.
+note "Running horus init (may take a while on first run)…"
+INIT_OUT="$(cd "${REPO_PATH}" && "${HORUS[@]}" init 2>&1)" && INIT_EXIT=0 || INIT_EXIT=$?
+_write_cmd_file "horus init" "${INIT_EXIT}" 0 "${INIT_OUT}"
 if printf '%s' "${INIT_OUT}" | grep -qiF '.horus'; then
   ok "horus init — .horus config created"
 else
   fail "horus init — unexpected output (expected .horus mention)"
   printf '%s\n' "${INIT_OUT}" | head -5 | sed 's/^/      /'
 fi
-
-# 2c. horus doctor (pre-index) — required; must print readiness header
-DOCTOR_PRE="$(cd "${REPO_PATH}" && "${HORUS[@]}" doctor 2>&1 || true)"
-_write_cmd_file "horus doctor (pre-index)" 0 0 "${DOCTOR_PRE}"
-if printf '%s' "${DOCTOR_PRE}" | grep -qiE 'readiness|CLI version'; then
-  ok "horus doctor (pre-index) — readiness output present"
-else
-  fail "horus doctor (pre-index) — missing readiness output"
-  printf '%s\n' "${DOCTOR_PRE}" | head -5 | sed 's/^/      /'
-fi
-
-# 2d. horus index — starts source intelligence host; WARN if source backend absent
-note "Running horus index (may take a while on first run)…"
-INDEX_OUT="$(cd "${REPO_PATH}" && "${HORUS[@]}" index 2>&1)" && INDEX_EXIT=0 || INDEX_EXIT=$?
-_write_cmd_file "horus index" "${INDEX_EXIT}" 0 "${INDEX_OUT}"
-if [ "${INDEX_EXIT}" -eq 0 ]; then
-  ok "horus index — exited 0"
-  if printf '%s' "${INDEX_OUT}" | grep -qiE 'Indexed|source-intelligence|source host'; then
-    ok "horus index — source host registered"
+if [ "${INIT_EXIT}" -eq 0 ]; then
+  ok "horus init — exited 0"
+  if printf '%s' "${INIT_OUT}" | grep -qiE 'Indexed|source-intelligence|source host'; then
+    ok "horus init — source host registered"
   else
-    warn "horus index — source host registration line not found"
-    printf '%s\n' "${INDEX_OUT}" | tail -5 | sed 's/^/      /'
+    warn "horus init — source host registration line not found"
+    printf '%s\n' "${INIT_OUT}" | tail -5 | sed 's/^/      /'
   fi
 else
-  warn "horus index — exited ${INDEX_EXIT} (source-intelligence backend may be absent)"
-  printf '%s\n' "${INDEX_OUT}" | tail -5 | sed 's/^/      /'
+  warn "horus init — exited ${INIT_EXIT} (source-intelligence backend may be absent)"
+  printf '%s\n' "${INIT_OUT}" | tail -5 | sed 's/^/      /'
 fi
 
-# 2e. horus doctor (post-index) — required check for HOR-150 regression
+# 2c. horus doctor (post-init) — required; must print readiness header, and the
+# source host must be configured after a successful init (HOR-150 regression).
 DOCTOR_POST="$(cd "${REPO_PATH}" && "${HORUS[@]}" doctor 2>&1 || true)"
-_write_cmd_file "horus doctor (post-index)" 0 0 "${DOCTOR_POST}"
-if printf '%s' "${DOCTOR_POST}" | grep -qiE 'source.*host.*http|source-intelligence.*http'; then
-  ok "horus doctor (post-index) — source host configured  [HOR-150 regression guard]"
+_write_cmd_file "horus doctor (post-init)" 0 0 "${DOCTOR_POST}"
+if printf '%s' "${DOCTOR_POST}" | grep -qiE 'readiness|CLI version'; then
+  ok "horus doctor (post-init) — readiness output present"
 else
-  if [ "${INDEX_EXIT}" -eq 0 ]; then
-    fail "horus doctor (post-index) — source host not configured after successful index  [HOR-150]"
+  fail "horus doctor (post-init) — missing readiness output"
+  printf '%s\n' "${DOCTOR_POST}" | head -5 | sed 's/^/      /'
+fi
+if printf '%s' "${DOCTOR_POST}" | grep -qiE 'source.*host.*http|source-intelligence.*http'; then
+  ok "horus doctor (post-init) — source host configured  [HOR-150 regression guard]"
+else
+  if [ "${INIT_EXIT}" -eq 0 ]; then
+    fail "horus doctor (post-init) — source host not configured after successful init  [HOR-150]"
     printf '%s\n' "${DOCTOR_POST}" | grep -i source | head -3 | sed 's/^/      /'
   else
-    warn "horus doctor (post-index) — source host not configured (index did not succeed)"
+    warn "horus doctor (post-init) — source host not configured (init did not fully succeed)"
   fi
 fi
 

@@ -1,11 +1,13 @@
 /**
- * `horus index` — build the queue map for a project (HOR-6), and (HOR-37) make it
- * the one-command setup: auto-detect the repo, ensure horus-source is hosting it,
- * stitch the queue boundaries, and (for new repos) write/register a `.horus/config.json`.
+ * The indexing flow behind `horus init` — build the queue map for a project
+ * (HOR-6), and (HOR-37) the one-command setup: auto-detect the repo, ensure
+ * horus-source is hosting it, stitch the queue boundaries, and (for new repos)
+ * write/register a `.horus/config.json`. The old standalone `horus index`
+ * command is now a hidden deprecation stub; `runIndex` is invoked by `runInit`.
  *
  * Host model: horus-source runs at most ONE host per repo (single-writer Kùzu lock),
- * but different repos run their own hosts on their own ports concurrently. So `horus
- * index` NEVER starts a second host for a repo that already has one — it reuses it
+ * but different repos run their own hosts on their own ports concurrently. So the
+ * flow NEVER starts a second host for a repo that already has one — it reuses it
  * (from the resolved config, or from `.horus/source/host.json`).
  */
 
@@ -40,6 +42,7 @@ import {
   SourceHttpClient,
   sourceAvailable,
   assertSourceVersionPinned,
+  checkSourceCompatibility,
   isAnalyzed,
   indexNeedsReanalyze,
   analyzeRepo,
@@ -115,6 +118,8 @@ export interface IndexOptions {
   name?: string;
   project?: string;
   env?: string;
+  /** Repository root (default: nearest git root, else cwd). Threaded from `horus init --path`. */
+  path?: string;
   /** Build a full project-knowledge snapshot (default mode). */
   full?: boolean;
   /** Pre-push-safe mode: only changed files, avoid heavy re-indexing. */
@@ -297,7 +302,7 @@ async function buildKnowledgeIndex(
 export async function runIndex(opts: IndexOptions): Promise<number> {
   try {
     const cwd = process.cwd();
-    const root = findRepoRoot(cwd) ?? cwd;
+    const root = opts.path !== undefined ? resolve(opts.path) : (findRepoRoot(cwd) ?? cwd);
     const dbUrlDefault =
       process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 
@@ -342,14 +347,34 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     // Candidates in priority: the configured host, then the host recorded in host.json.
     let hostUrl: string | undefined;
     let spawned = false;
+    let driftedHost: { url: string; version: string | null } | undefined;
     for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
       // Reuse a host only if it is healthy AND actually serving THIS repo — never another
       // repo's host that happens to occupy the same port (the collision that leaked one
       // repo's queue map into another's investigation).
       if (candidate && (await isHostHealthy(candidate)) && (await hostServesRepo(candidate, root))) {
+        // …AND only if it runs the pinned backend. A host left running across a
+        // `horus update` serves a graph this CLI may mis-map — the same drift the
+        // spawn path refuses via assertSourceVersionPinned. Restart it instead.
+        const compat = await checkSourceCompatibility(new SourceHttpClient({ baseUrl: candidate }));
+        if (compat.version !== null && !compat.matches) {
+          driftedHost = { url: candidate, version: compat.version };
+          continue;
+        }
         hostUrl = candidate;
         break;
       }
+    }
+
+    if (!hostUrl && driftedHost) {
+      // The old host holds the repo's single-writer store lock — stop it before
+      // the spawn path below starts a pinned replacement.
+      console.log(
+        pc.yellow(
+          `Host at ${driftedHost.url} runs backend v${driftedHost.version} (pinned ${PINNED_SOURCE_VERSION}) — restarting it with the pinned backend`,
+        ),
+      );
+      await killSpawnedHost(root);
     }
 
     if (hostUrl) {

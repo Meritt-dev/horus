@@ -103,11 +103,11 @@ export async function runHosts(opts: { reap?: boolean } = {}): Promise<number> {
   }
 
   if (projects.length === 0 && orphans.length === 0) {
-    console.log(pc.dim('No registered projects. Run `horus index` in a repo first.'));
+    console.log(pc.dim('No registered projects. Run `horus init` in a repo first.'));
     return 0;
   }
   if (!printedAny && orphans.length === 0) {
-    console.log(pc.dim('No source-intelligence hosts found. Run `horus index` to start one.'));
+    console.log(pc.dim('No source-intelligence hosts found. Run `horus init` to start one.'));
     return 0;
   }
 

@@ -69,6 +69,14 @@ for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
     fi
   done
 
+  # The bundled source-intelligence wheel (one bundle, one version — no PyPI).
+  # `horus update`/init install the backend from this sibling of the binary.
+  if [ -f "$SOURCE_DIR/horus_source.whl" ]; then
+    cp "$SOURCE_DIR/horus_source.whl" "$TMP/horus/libexec/horus_source.whl"
+  else
+    echo "Warning: bundled source wheel not found — backend install will point at the installer: $SOURCE_DIR/horus_source.whl" >&2
+  fi
+
   tar -czf "$ARTIFACT_PATH" -C "$TMP" horus
   rm -rf "$TMP"
 

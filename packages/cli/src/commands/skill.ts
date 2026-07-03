@@ -63,6 +63,22 @@ Use Horus when the user asks:
 * whether a condition, flag, enum, status, or branch is handled
 * whether code paths are connected or only coincidentally similar
 
+## Setup (once per repo)
+
+If the repo has no \`.horus/config.json\` yet (or \`horus doctor\` shows source
+intelligence missing), run the single onboarding command:
+
+\`\`\`bash
+horus init
+\`\`\`
+
+It checks prerequisites, writes and registers the config, starts the
+source-intelligence host, indexes the code, and stitches the queue map.
+Re-running it is safe (idempotent — reuses a healthy host, refreshes the index).
+Add runtime evidence sources with \`horus connect <type>\` (credentials are
+encrypted; never hand-edit them into config). The source backend ships inside
+the Horus bundle — \`horus init\` installs it automatically if missing.
+
 ## Default first steps
 
 Start small. Do not shotgun every command.
@@ -207,6 +223,8 @@ horus explain <symbol-or-hint>
 horus owner <symbol-or-hint>
 \`\`\`
 
+If \`horus doctor\` shows the repo is not set up, run \`horus init\` first.
+
 ## Change and fix workflow
 
 For write or fix tasks:
@@ -253,7 +271,7 @@ When answering after using Horus, report:
 `;
 
 function skillFrontmatter(target: SkillTarget): string {
-  const description = 'Use Horus as the grounded evidence layer for production incident investigation.';
+  const description = 'Grounded production-incident investigation with Horus — a read-only evidence layer over logs, metrics, queues, application state, and source intelligence. Use when debugging incidents, outages, regressions, or flaky/slow behavior; when asked what changed, what broke, who owns code, or the blast radius of a change; and to verify fixes against runtime evidence.';
   switch (target) {
     case 'claude':
       return `---\nname: horus\ndescription: ${description}\n---\n\n`;

@@ -53,7 +53,10 @@ export interface StateClient {
 /**
  * Shared analysis loop: count + date-age + status-bucket each container, classify
  * staleness, and flag anomalous status buckets. A single bad/missing container is
- * skipped, never aborting the whole analysis.
+ * skipped, never aborting the whole analysis — but when EVERY container fails the
+ * first error is rethrown: a completely-down database must reach the engine as a
+ * failure, not as a clean empty analysis. (Auto-discovery already throws on a down
+ * DB via listCollections.)
  */
 export async function analyzeStateWith(
   client: StateClient,
@@ -63,6 +66,7 @@ export async function analyzeStateWith(
   const staleHours = opts.staleHours;
   const legacyHours = opts.legacyHours ?? DEFAULT_LEGACY_HOURS;
   const collections: CollectionState[] = [];
+  let firstError: unknown;
 
   let targets = opts.collections;
   let autoDiscovered = false;
@@ -103,10 +107,14 @@ export async function analyzeStateWith(
       }
 
       collections.push(cs);
-    } catch {
+    } catch (err) {
       // A single bad/missing container must not abort the whole analysis.
+      firstError ??= err;
     }
   }
 
+  if (targets.length > 0 && collections.length === 0 && firstError !== undefined) {
+    throw firstError;
+  }
   return { database: opts.database, staleHours, legacyHours, collections, autoDiscovered };
 }

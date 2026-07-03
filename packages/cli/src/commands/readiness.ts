@@ -197,7 +197,7 @@ export async function runReadiness(opts?: {
             status: 'warn',
             blocking: false,
             detail: 'index has 0 embeddings — running keyword/FTS only',
-            next: 'horus index   # rebuilds embeddings (a prior index was interrupted)',
+            next: 'horus init   # rebuilds embeddings (a prior index was interrupted)',
           },
     );
   }

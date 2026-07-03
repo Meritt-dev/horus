@@ -170,7 +170,7 @@ describe('horus explain — async boundary redirect (HOR-181)', () => {
     ]);
   });
 
-  it('routes a host-down failure to `horus index`', async () => {
+  it('routes a host-down failure to `horus init`', async () => {
     mocks.codeHealth.mockResolvedValue({ ok: false, detail: 'down' });
 
     const logged: string[] = [];
@@ -181,7 +181,7 @@ describe('horus explain — async boundary redirect (HOR-181)', () => {
     errSpy.mockRestore();
 
     expect(code).toBe(1);
-    expect(logged.join('\n')).toContain('horus index');
+    expect(logged.join('\n')).toContain('horus init');
   });
 
   it('falls through to fuzzy warning when DB is unavailable', async () => {

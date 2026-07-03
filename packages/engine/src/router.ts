@@ -7,7 +7,7 @@
  *
  * Honesty invariants (see spec §5):
  *   - Suggests, never runs. A `RouteStep` is advisory data only.
- *   - Never fabricates. Every `nextTool` is a REAL shipped command (`index`, `search`,
+ *   - Never fabricates. Every `nextTool` is a REAL shipped command (`init`, `search`,
  *     `blast-radius`, `explain`, `connect <supported-type>`, `readiness`, `investigate`,
  *     `what-changed`, `owner`, `logs`, `metrics`, `queues`) or a real MCP knowledge tool
  *     (`search_project_knowledge`). There is NO `connect tracing`/`connect source` — those
@@ -93,9 +93,9 @@ const RULES: RouteRule[] = [
     when: (c) => Boolean(c.hostUnreachable || c.staleIndex || c.degradedSourceIntelligence),
     steps: () => [
       {
-        nextTool: 'index',
+        nextTool: 'init',
         args: '',
-        reason: 'Source-intelligence host unreachable / index stale — run `horus index`.',
+        reason: 'Source-intelligence host unreachable / index stale — run `horus init`.',
       },
     ],
   },

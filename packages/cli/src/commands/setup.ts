@@ -1,29 +1,48 @@
 /**
- * `horus setup` — verify the prerequisites are in place (HOR-37, HOR-84): the Horus
- * source-intelligence backend and the Horus Postgres. Guides the user to fix
- * anything missing. Does not modify the system.
+ * Prerequisite checks for `horus init` (HOR-37, HOR-84): the Horus
+ * source-intelligence backend and the Horus Postgres. Advisory only — the
+ * checks print status lines and guide fixes, but never gate init's exit code
+ * (config write and indexing degrade gracefully instead).
+ *
+ * The old standalone `horus setup` command was merged into `horus init`; its
+ * registration is now a hidden deprecation stub.
  */
 
 import pc from 'picocolors';
-import { loadConfig, PINNED_SOURCE_VERSION } from '@horus/core';
-import { getSourceVersion, SourceHttpClient } from '@horus/connectors';
+import { loadConfig, PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED } from '@horus/core';
+import { getSourceVersion } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
-export async function runSetup(opts: {
-  config?: string;
-  write?: (line: string) => void;
-}): Promise<number> {
-  const write = opts.write ?? ((line: string) => console.log(line));
-  let ok = true;
+export interface PrereqStatus {
+  /** horus-source binary responded with a version. */
+  backendPresent: boolean;
+  /** Version matches the pin (false when absent or drifted). */
+  backendVersionOk: boolean;
+  dbReachable: boolean;
+  schemaReady: boolean;
+}
 
-  write(pc.bold('\nHorus setup\n'));
+export async function checkPrerequisites(
+  opts: { config?: string; write?: (line: string) => void } = {},
+): Promise<PrereqStatus> {
+  const write = opts.write ?? ((line: string) => console.log(line));
+  const status: PrereqStatus = {
+    backendPresent: false,
+    backendVersionOk: false,
+    dbReachable: false,
+    schemaReady: false,
+  };
 
   // 1. Source-intelligence backend — presence and version.
-  const backendVersion = await getSourceVersion();
+  let backendVersion: string | null = null;
+  try {
+    backendVersion = await getSourceVersion();
+  } catch {
+    // Probe failure reads as "not found" — advisory either way.
+  }
   if (backendVersion === null) {
-    ok = false;
     write(`  ${pc.red('●')} Horus source-intelligence backend not found`);
     write(
       pc.dim(
@@ -32,8 +51,8 @@ export async function runSetup(opts: {
         `      ensure ~/.local/bin is on your PATH`,
       ),
     );
-  } else if (backendVersion !== PINNED_SOURCE_VERSION) {
-    ok = false;
+  } else if (SOURCE_PIN_ENFORCED && backendVersion !== PINNED_SOURCE_VERSION) {
+    status.backendPresent = true;
     write(
       `  ${pc.yellow('●')} Horus source-intelligence backend version mismatch` +
       pc.dim(` (installed: ${backendVersion}, required: ${PINNED_SOURCE_VERSION})`),
@@ -45,6 +64,8 @@ export async function runSetup(opts: {
       ),
     );
   } else {
+    status.backendPresent = true;
+    status.backendVersionOk = true;
     write(
       `  ${pc.green('●')} Horus source-intelligence backend ` +
       pc.dim(`(${backendVersion})`),
@@ -53,18 +74,23 @@ export async function runSetup(opts: {
 
   // 2. Horus's own Postgres.
   let dbUrl = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
-  let config: Awaited<ReturnType<typeof loadConfig>> | null = null;
   try {
-    config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config);
     dbUrl = config.database.url;
   } catch {
     // No config resolvable — fall back to the default DB URL.
   }
-  const db = await checkDatabase(dbUrl);
+  let db: { reachable: boolean; schemaReady: boolean; schemaDetail: string };
+  try {
+    db = await checkDatabase(dbUrl);
+  } catch {
+    db = { reachable: false, schemaReady: false, schemaDetail: '' };
+  }
   if (db.reachable) {
+    status.dbReachable = true;
+    status.schemaReady = db.schemaReady;
     write(`  ${pc.green('●')} Postgres reachable ${pc.dim(`(${db.schemaDetail})`)}`);
     if (!db.schemaReady) {
-      ok = false;
       write(
         pc.dim(
           `      schema not applied — run migrations:\n` +
@@ -74,8 +100,7 @@ export async function runSetup(opts: {
       );
     }
   } else {
-    ok = false;
-    write(`  ${pc.red('●')} Postgres unreachable`);
+    write(`  ${pc.red('●')} Postgres unreachable ${pc.dim('(needed for `horus investigate`, not for init)')}`);
     write(
       pc.dim(
         `      start a local instance:\n` +
@@ -87,65 +112,5 @@ export async function runSetup(opts: {
     );
   }
 
-  // 3. Source intelligence host reachability and repo indexing — per configured repository.
-  if (config && config.projects.length > 0) {
-    for (const project of config.projects) {
-      for (const repo of project.repositories) {
-        const repoHostUrl = repo.source?.hostUrl;
-        if (!repoHostUrl) {
-          continue;
-        }
-        const client = new SourceHttpClient({
-          baseUrl: repoHostUrl,
-          timeoutMs: 3000,
-          maxRetries: 0,
-        });
-        const health = await client.health();
-        if (!health.ok) {
-          ok = false;
-          write(
-            `  ${pc.red('●')} Source intelligence host unreachable for ${pc.bold(repo.name)} ` +
-            pc.dim(`(${repoHostUrl})`),
-          );
-          write(
-            pc.dim(
-              `      start the source intelligence host:\n` +
-              `        cd ${repo.path}\n` +
-              `        horus index`,
-            ),
-          );
-        } else {
-          const count = await client.nodeCount().catch(() => 0);
-          if (count === 0) {
-            ok = false;
-            write(
-              `  ${pc.yellow('●')} Source intelligence host running but ${pc.bold(repo.name)} is not indexed`,
-            );
-            write(
-              pc.dim(
-                `      index the repo:\n` +
-                `        cd ${repo.path}\n` +
-                `        horus index`,
-              ),
-            );
-          } else {
-            write(
-              `  ${pc.green('●')} ${pc.bold(repo.name)} — ${count} nodes indexed ` +
-              pc.dim(`(${repoHostUrl})`),
-            );
-          }
-        }
-      }
-    }
-  }
-
-  write('');
-  if (ok) {
-    write(
-      pc.green('Ready.') + ' Next: `cd` into a repo and run `horus index`, then `horus investigate "<hint>"`.',
-    );
-  } else {
-    write(pc.yellow('Resolve the items above, then re-run `horus setup`.'));
-  }
-  return ok ? 0 : 1;
+  return status;
 }

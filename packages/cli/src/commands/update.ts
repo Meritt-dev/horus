@@ -6,7 +6,7 @@ import {
   chmodSync,
   realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -14,49 +14,54 @@ import { promisify } from 'node:util';
 import pc from 'picocolors';
 import { HORUS_VERSION, PINNED_SOURCE_VERSION } from '@horus/core';
 import { getSourceVersion } from '@horus/connectors';
+import { installBundledBackend } from '../lib/bundled-backend.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Keep the source-intelligence backend in lockstep with the CLI (HOR-350). A CLI that is
- * newer than its pinned `horus-source` builds a graph it cannot map (and refuses to index),
- * so after updating the CLI we bring the backend to {@link PINNED_SOURCE_VERSION} too. The
- * backend is installed via `uv tool` (see install.sh), so we upgrade the same way. Best-effort:
- * never fails the update — falls back to pointing at the installer.
+ * Keep the source-intelligence backend in lockstep with the CLI (HOR-350). The backend
+ * ships as a wheel inside this bundle — one bundle, one version (no PyPI). A CLI that is
+ * newer than its pinned backend builds a graph it cannot map (and refuses to index), so
+ * after updating the CLI we install the bundled wheel via `uv tool`. Best-effort: never
+ * fails the update — falls back to pointing at the installer.
  */
-async function ensureBackendPinned(write: (line: string) => void): Promise<void> {
+async function ensureBackendPinned(
+  write: (line: string) => void,
+  // After a self-update the binary is replaced but THIS process is still the old
+  // one, so the compiled-in PINNED_SOURCE_VERSION is stale. Callers past a binary
+  // swap must pass the freshly-downloaded release version instead (HOR-350).
+  targetVersion: string = PINNED_SOURCE_VERSION,
+  // A wheel CONFIRMED to be `targetVersion` (e.g. just downloaded from that
+  // release). Required whenever targetVersion differs from the compiled-in pin:
+  // the sibling horus_source.whl is only trustworthy for THIS binary's own pin —
+  // staging it under any other version would install stale backend bits that
+  // then wrongly PASS the pin check (PR #35 review, discussion_r3513589546).
+  confirmedWheelPath?: string,
+): Promise<void> {
   let installed: string | null = null;
   try {
     installed = await getSourceVersion();
   } catch {
     installed = null;
   }
-  if (installed === PINNED_SOURCE_VERSION) {
-    write(`  ${pc.green('✓')} Source backend already on pinned ${PINNED_SOURCE_VERSION}.`);
+  if (installed === targetVersion) {
+    write(`  ${pc.green('✓')} Source backend already on pinned ${targetVersion}.`);
     return;
   }
-  if (installed === null) {
-    write(
-      `  ${pc.dim('Source backend not installed — install it: curl -fsSL https://horus.sh/install.sh | bash')}`,
-    );
+  if (targetVersion !== PINNED_SOURCE_VERSION && confirmedWheelPath === undefined) {
+    // No wheel confirmed for that release — never reuse the old sibling wheel.
+    write(`  ${pc.yellow('!')} Backend wheel for ${targetVersion} wasn't downloaded — skipping backend install.`);
+    write(`    ${pc.dim('Re-run `horus update`, or: curl -fsSL https://horus.sh/install.sh | bash')}`);
     return;
   }
-  write(`  Upgrading source backend ${installed} → ${PINNED_SOURCE_VERSION}…`);
-  try {
-    await execFileAsync(
-      'uv',
-      // --refresh: a CLI update commonly lands seconds after a backend release, so uv's
-      // cached PyPI index may not list the just-published version yet and the install
-      // resolves to "unsatisfiable". Refreshing the index makes the lockstep upgrade
-      // reliable right after a release (HOR-360).
-      ['tool', 'install', '--force', '--refresh', `horus-source==${PINNED_SOURCE_VERSION}`],
-      { timeout: 300_000 },
-    );
-    write(`  ${pc.green('✓')} Source backend upgraded to ${PINNED_SOURCE_VERSION}.`);
-  } catch {
-    write(`  ${pc.yellow('!')} Couldn't auto-upgrade the source backend. Re-run the installer:`);
-    write(`    ${pc.dim('curl -fsSL https://horus.sh/install.sh | bash')}`);
-  }
+  await installBundledBackend(write, {
+    version: targetVersion,
+    ...(confirmedWheelPath !== undefined ? { _wheelPath: confirmedWheelPath } : {}),
+    label:
+      installed === null
+        ? undefined
+        : `Upgrading source backend ${installed} → ${targetVersion} (bundled wheel)…`,
+  });
 }
 
 const RELEASES_API = 'https://api.github.com/repos/meritt-dev/horus/releases/latest';
@@ -246,7 +251,49 @@ export async function runUpdate(opts: {
 
   write(`  ${pc.green('✓')} Updated: ${pc.bold(currentVersion)} → ${pc.bold(latest)}`);
   write(`  ${pc.dim(binaryPath)}`);
-  // Bring the source backend to the version this new CLI is pinned to (HOR-350).
-  await ensureBackendPinned(write);
+
+  // Refresh the bundled backend wheel from the same release so the sibling
+  // horus_source.whl matches the new binary (one bundle, one version). The
+  // running (old) process resolves the wheel from the binary's directory, so
+  // writing it there lets ensureBackendPinned install the NEW backend below.
+  const wheelAsset = release.assets.find((a) => a.name === 'horus_source.whl');
+  const siblingWheel = join(dirname(binaryPath), 'horus_source.whl');
+  let refreshedWheelPath: string | undefined;
+  try {
+    if (!wheelAsset) throw new Error('release has no horus_source.whl asset');
+    const whlRes = await _fetch(wheelAsset.browser_download_url, {
+      headers: { 'User-Agent': `horus/${HORUS_VERSION}` },
+      redirect: 'follow',
+    });
+    if (!whlRes.ok) throw new Error(`wheel download failed: ${whlRes.status}`);
+    // Write-then-rename so a crash mid-download can never leave a TORN wheel
+    // that a later process would trust by co-location.
+    const tmpWheel = `${siblingWheel}.tmp-${process.pid}`;
+    writeFileSync(tmpWheel, Buffer.from(await whlRes.arrayBuffer()));
+    renameSync(tmpWheel, siblingWheel);
+    refreshedWheelPath = siblingWheel;
+    write(`  ${pc.green('✓')} Bundled backend wheel refreshed.`);
+  } catch {
+    // The binary is already the NEW version, so the OLD sibling wheel must not
+    // survive: the next process (new compiled-in pin) would trust it by
+    // co-location and install stale backend bits under the new pin (PR #35
+    // review, discussion_r3513795163). Remove it so later `horus update`/
+    // `horus init` fall back to the installer; install-time dist-info
+    // verification is the second line of defense if this unlink fails.
+    if (existsSync(siblingWheel)) {
+      try {
+        unlinkSync(siblingWheel);
+        write(`  ${pc.yellow('!')} Backend wheel refresh failed — removed the stale bundled wheel.`);
+      } catch {
+        write(`  ${pc.yellow('!')} Backend wheel refresh failed and the stale wheel could not be removed.`);
+      }
+    }
+  }
+
+  // Bring the source backend to the version of the release we just installed —
+  // NOT the stale compiled-in pin of this still-running old process (HOR-350).
+  // Only a wheel confirmed downloaded from THIS release may be installed as
+  // `latest`; on a failed refresh this skips with the installer fallback.
+  await ensureBackendPinned(write, latest, refreshedWheelPath);
   return 0;
 }

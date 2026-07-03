@@ -369,7 +369,7 @@ function buildHonesty(
   if (freshness?.caveats) caveats.push(...freshness.caveats);
   if (freshness?.semanticSearchReady === false) {
     caveats.push(
-      'semantic search degraded to keyword/FTS (index embeddings incomplete) — recall may be reduced; re-run `horus index`',
+      'semantic search degraded to keyword/FTS (index embeddings incomplete) — recall may be reduced; re-run `horus init`',
     );
   }
 

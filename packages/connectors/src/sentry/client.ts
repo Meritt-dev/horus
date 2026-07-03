@@ -7,12 +7,16 @@
  * seed for the investigation engine.
  *
  * Safety: only read (GET) endpoints are used. Auth is `Authorization: Bearer <token>`.
- * Every request is bounded by an 8s AbortSignal.timeout. The client never throws past
- * its callers — list/event helpers return partial/empty results on any failure, and
- * `health()` returns a structured `{ ok, detail }`. No `@sentry/*` SDK — `fetch` only.
+ * Transport goes through the shared fetchWithRetry helper — every request is bounded
+ * by an 8s per-attempt timeout with bounded retry on 429/5xx/network errors. The
+ * client never throws past its callers — list/event helpers return partial/empty
+ * results on any failure, and `health()` returns a structured `{ ok, detail }`.
+ * No `@sentry/*` SDK — `fetch` only.
  */
 
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage, redactUpstreamBody } from '@horus/core';
+import { fetchWithRetry, type HttpRequestOptions } from '../http.js';
 
 export interface SentryClientOpts {
   /** API auth token (sent as `Authorization: Bearer <authToken>`). */
@@ -23,6 +27,8 @@ export interface SentryClientOpts {
   project: string;
   /** Base URL (default https://sentry.io). Configurable for self-hosted. */
   baseUrl?: string;
+  /** Transport overrides (timeout / retry) forwarded to fetchWithRetry. */
+  http?: HttpRequestOptions;
 }
 
 /** A grouped Sentry issue, trimmed to the fields Horus turns into evidence. */
@@ -56,34 +62,37 @@ export interface SentryTopFrame {
   lineno?: number;
 }
 
-const REQUEST_TIMEOUT_MS = 8000;
-
 export class SentryClient {
   private readonly baseUrl: string;
   private readonly authToken: string;
   private readonly org: string;
   private readonly project: string;
+  private readonly http: HttpRequestOptions;
 
   constructor(opts: SentryClientOpts) {
     this.baseUrl = (opts.baseUrl ?? 'https://sentry.io').replace(/\/$/, '');
     this.authToken = opts.authToken;
     this.org = opts.org;
     this.project = opts.project;
+    this.http = opts.http ?? {};
   }
 
   private async request(path: string): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${this.authToken}`,
-        'Content-Type': 'application/json',
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.authToken}`,
+          'Content-Type': 'application/json',
+        },
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+      this.http,
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Sentry GET ${path} -> ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Sentry GET ${path} -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
     return res.json();
   }
@@ -117,8 +126,11 @@ export class SentryClient {
   }
 
   /**
-   * List recent issues for the configured org/project. Returns [] on any error so the
-   * provider degrades gracefully (never throws past here).
+   * List recent issues for the configured org/project. Transport/auth failures
+   * PROPAGATE so the engine can distinguish "Sentry is down/misconfigured" from
+   * "no issues matched" — swallowing them here made an auth outage read as
+   * negative evidence. Callers that need degrade-to-[] wrap this themselves
+   * (provider.queryEvidence, watch's poll loop).
    */
   async listIssues(
     opts: {
@@ -129,13 +141,9 @@ export class SentryClient {
       limit?: number;
     } = {},
   ): Promise<SentryIssue[]> {
-    try {
-      const raw = await this.request(this.issuesPath(opts));
-      if (!Array.isArray(raw)) return [];
-      return (raw as Array<Record<string, unknown>>).map(parseIssue);
-    } catch {
-      return [];
-    }
+    const raw = await this.request(this.issuesPath(opts));
+    if (!Array.isArray(raw)) return [];
+    return (raw as Array<Record<string, unknown>>).map(parseIssue);
   }
 
   /**
@@ -163,7 +171,7 @@ export class SentryClient {
       await this.request(this.issuesPath({ limit: 1 }));
       return { ok: true, detail: `sentry reachable (${this.org}/${this.project})` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 }

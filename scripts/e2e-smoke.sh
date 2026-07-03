@@ -6,7 +6,7 @@
 # Postgres is required for the investigate → replay → postmortem chain.
 #
 # Phases:
-#   1. Startup   — version, help, setup, doctor (no Postgres needed)
+#   1. Startup   — version, help, doctor (no Postgres needed)
 #   2. User path — init, investigate (git-only), investigations, replay, postmortem
 #
 # Usage:
@@ -79,8 +79,9 @@ check_output "--version shows semver"            "0."          --version
 check_output "--help lists investigate"          "investigate" --help
 check_output "--help lists postmortem"           "postmortem"  --help
 
-step "setup"
-check_output "setup prints Horus setup header" "Horus setup" setup
+step "deprecated stubs (setup/index merged into init)"
+check_output "setup stub points to horus init" "has been merged into \`horus init\`" setup
+check_output "index stub points to horus init" "has been merged into \`horus init\`" index
 
 step "doctor (no live services required)"
 check_output "doctor prints readiness header" "Horus readiness check" doctor
@@ -151,7 +152,7 @@ else
     ok "horus investigate: full report produced"
   elif printf '%s' "$INV_OUT" | grep -qiE 'connector|evidence|source|degraded'; then
     ok "horus investigate: command runs (degraded — no source connector configured; expected in fresh env)"
-    printf '    %s\n' "$(dim "note: configure a source connector or run 'horus index' for a full report")"
+    printf '    %s\n' "$(dim "note: configure a source connector or run 'horus init' for a full report")"
   else
     fail "horus investigate: unexpected output (neither report nor known degraded message)"
     printf '    %s\n' "$(dim "$(printf '%s' "$INV_OUT" | head -4)")"

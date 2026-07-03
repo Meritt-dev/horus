@@ -68,16 +68,64 @@ describe('SentryClient auth + request', () => {
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('returns [] (never throws) when the API responds non-2xx', async () => {
+  it('THROWS when the API responds non-2xx (an outage must not read as "no issues")', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
     const client = new SentryClient({ authToken: 't', org: 'acme', project: 'web' });
-    await expect(client.listIssues()).resolves.toEqual([]);
+    await expect(client.listIssues()).rejects.toThrow(/-> 403/);
   });
 
-  it('returns [] (never throws) when fetch rejects (timeout/network)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('The operation was aborted'); }));
+  it('does not retry a 403 (exactly 1 fetch call)', async () => {
+    const fetchMock = vi.fn(async () => new Response('forbidden', { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
     const client = new SentryClient({ authToken: 't', org: 'acme', project: 'web' });
+    await expect(client.listIssues()).rejects.toThrow(/-> 403/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('THROWS when fetch rejects (timeout/network) — the engine records it as a gap', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('The operation was aborted'); }));
+    // maxRetries: 0 — a rejecting mock would otherwise be retried with real backoff.
+    const client = new SentryClient({
+      authToken: 't', org: 'acme', project: 'web', http: { maxRetries: 0 },
+    });
+    await expect(client.listIssues()).rejects.toThrow();
+  });
+
+  it('retries a 429 honoring Retry-After (seconds) then succeeds', async () => {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response('[]', { status: 200 }));
+    fetchMock.mockResolvedValueOnce(
+      new Response('slow down', { status: 429, headers: { 'retry-after': '2' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const delays: number[] = [];
+    const client = new SentryClient({
+      authToken: 't', org: 'acme', project: 'web',
+      http: { sleep: async (ms) => void delays.push(ms) },
+    });
     await expect(client.listIssues()).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([2000]);
+  });
+
+  it('retries a 500 with exponential backoff then succeeds', async () => {
+    const fetchMock = vi.fn(
+      async (): Promise<Response> =>
+        new Response(JSON.stringify([{ id: '1', title: 'boom', count: '2', userCount: '1' }]), {
+          status: 200,
+        }),
+    );
+    fetchMock.mockResolvedValueOnce(new Response('err', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const delays: number[] = [];
+    const client = new SentryClient({
+      authToken: 't', org: 'acme', project: 'web',
+      http: { sleep: async (ms) => void delays.push(ms) },
+    });
+    const issues = await client.listIssues();
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title).toBe('boom');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([300]);
   });
 
   it('health() reports ok=false with detail on failure, never throwing', async () => {

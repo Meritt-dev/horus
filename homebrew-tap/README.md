@@ -1,8 +1,15 @@
-# Meritt Dev Homebrew Tap
+# Meritt Dev Homebrew Tap (staging)
 
-This directory contains the Homebrew tap for Horus.
+This directory is a **staging area** for the Horus Homebrew formula. The live tap
+is the [`meritt-dev/homebrew-tap`](https://github.com/meritt-dev/homebrew-tap)
+repository — always trust that repo, not this directory.
 
-It is intended to be pushed to the `meritt-dev/homebrew-tap` repository so users can run:
+`Formula/horus.rb` is a **generated artifact**: `scripts/homebrew/update-formula.sh`
+regenerates it during a release (with the new version + archive checksums) and
+`scripts/release.sh` pushes it to the live tap. It is gitignored here so a stale
+copy is never committed.
+
+Users install with:
 
 ```bash
 brew tap meritt-dev/tap
@@ -24,7 +31,7 @@ Formula/
 
 ## What the formula installs
 
-- The `horus` command from the platform archive defined in [`docs/homebrew-archive-contract.md`](https://github.com/meritt-dev/horus/blob/master/docs/homebrew-archive-contract.md).
+- The `horus` command from the per-platform archives published on each GitHub release (`horus-vX.Y.Z-{darwin,linux}-{arm64,x86_64}.tar.gz`, built by `scripts/homebrew/build-archives.sh`).
 - Node.js is declared as a dependency because the Horus binary is a self-contained Node.js executable.
 
 ## Publishing

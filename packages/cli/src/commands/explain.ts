@@ -19,12 +19,12 @@ export async function runExplain(
 
   const health = await code.health();
   if (!health.ok) {
-    // HOR-386 — host down: the router points at `horus index` (the real remedy).
+    // HOR-386 — host down: the router points at `horus init` (the real remedy).
     const steps = route({ command: 'explain', hostUnreachable: true });
     if (opts.json) {
       console.log(JSON.stringify({ error: 'Source-intelligence host unreachable', nextSteps: steps }, null, 2));
     } else {
-      console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+      console.error(pc.red('Source-intelligence host unreachable — run: horus init'));
       printSuggested(steps);
     }
     return 1;

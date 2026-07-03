@@ -123,13 +123,25 @@ function applyFieldOverrides(
   };
 }
 
+// Query endpoints run heavy work (ES aggregations that auto-widen to 30d,
+// Grafana datasource-proxy queries bounded by the engine's 30s metrics budget).
+// The shared HTTP helper's 8s default is sized for point requests — before it,
+// these clients had NO timeout at all, so an 8s cap would regress slow-but-
+// healthy queries into "collection failed". Matched to the engine budget.
+const QUERY_TIMEOUT_MS = 30_000;
+
 export function logsForEnv(renv: ResolvedEnvironment): LogsProvider | null {
   const es = renv.connectors.elasticsearch;
   if (!es || !es.url) return null;
   const base = es.preset === 'ecs' ? ECS_FIELD_MAPPING : MERITT_FIELD_MAPPING;
   const fieldMapping = es.fields !== undefined ? applyFieldOverrides(base, es.fields) : base;
   return new ElasticsearchLogsProvider(
-    new ElasticsearchClient({ baseUrl: es.url, username: es.username, password: es.password }),
+    new ElasticsearchClient({
+      baseUrl: es.url,
+      username: es.username,
+      password: es.password,
+      http: { timeoutMs: QUERY_TIMEOUT_MS },
+    }),
     { indexPattern: es.indexPattern, fieldMapping },
   );
 }
@@ -142,7 +154,12 @@ export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null
   const g = renv.connectors.grafana;
   if (!g || !g.url) return null;
   return new GrafanaMetricsProvider(
-    new GrafanaClient({ baseUrl: g.url, username: g.username, password: g.password }),
+    new GrafanaClient({
+      baseUrl: g.url,
+      username: g.username,
+      password: g.password,
+      http: { timeoutMs: QUERY_TIMEOUT_MS },
+    }),
     { defaultStep: 60, dashboardUids: g.dashboards },
   );
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { parseVersion, isNewer, runUpdate } from './update.js';
 
@@ -76,9 +76,11 @@ function stubFetch(release: object, binaryContent = 'fake-binary') {
       const hash = createHash('sha256').update(binaryContent).digest('hex');
       return { ok: true, status: 200, body: true, text: async () => `${hash}  horus-v99.0.0` };
     }
-    // Binary download
+    // Binary download. NOTE: .buffer alone would return Buffer's pooled 8KB
+    // slab (wrong bytes, wrong length) — slice to the content's exact range.
     const buf = Buffer.from(binaryContent);
-    return { ok: true, status: 200, body: true, arrayBuffer: async () => buf.buffer };
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    return { ok: true, status: 200, body: true, arrayBuffer: async () => ab };
   }) as unknown as typeof fetch;
 }
 
@@ -163,5 +165,118 @@ describe('runUpdate — missing asset', () => {
     );
     expect(code).toBe(1);
     expect(lines.some((l) => l.includes('install.sh'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-update wheel refresh (PR #35 review, discussion_r3513589546)
+// ---------------------------------------------------------------------------
+
+vi.mock('../lib/bundled-backend.js', () => ({
+  installBundledBackend: vi.fn(async () => true),
+  resolveBundledWheel: vi.fn(() => null),
+}));
+vi.mock('@horus/connectors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/connectors')>();
+  return { ...actual, getSourceVersion: vi.fn(async () => '0.0.1') };
+});
+
+describe('runUpdate — self-update backend wheel refresh', () => {
+  const LATEST = '99.0.0';
+  const BIN_CONTENT = 'new-binary-bytes';
+
+  function releaseWithWheel() {
+    const r = makeRelease(LATEST, true);
+    r.assets.push({
+      name: 'horus_source.whl',
+      browser_download_url: 'https://example.com/horus_source.whl',
+    });
+    return r;
+  }
+
+  /** stubFetch + a controllable wheel-asset branch. */
+  function stubFetchWithWheel(release: object, wheelOk: boolean) {
+    const base = stubFetch(release, BIN_CONTENT);
+    return vi.fn(async (url: string) => {
+      if (String(url).includes('horus_source.whl')) {
+        return wheelOk
+          ? {
+              ok: true,
+              status: 200,
+              body: true,
+              arrayBuffer: async () => {
+                const b = Buffer.from('new-wheel-bytes');
+                return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+              },
+            }
+          : { ok: false, status: 404, body: null };
+      }
+      return (base as unknown as (u: string) => Promise<unknown>)(url);
+    }) as unknown as typeof fetch;
+  }
+
+  let dir: string;
+  let binPath: string;
+  let origArgv1: string | undefined;
+
+  beforeEach(async () => {
+    const { mkdtempSync, writeFileSync: wfs } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: j } = await import('node:path');
+    dir = mkdtempSync(j(tmpdir(), 'horus-update-'));
+    binPath = j(dir, 'horus');
+    wfs(binPath, 'old-binary');
+    // A stale sibling wheel from the PREVIOUS install — the partial-update
+    // hazard: it must never survive a failed refresh (discussion_r3513795163).
+    wfs(j(dir, 'horus_source.whl'), 'PK horus_source-0.1.16.dist-info/ old-wheel-bytes');
+    origArgv1 = process.argv[1];
+    process.argv[1] = binPath;
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    process.argv[1] = origArgv1!;
+    const { rmSync } = await import('node:fs');
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('REGRESSION: a failed wheel download never reuses the stale sibling wheel as the new version', async () => {
+    const { installBundledBackend } = await import('../lib/bundled-backend.js');
+    const { lines, code } = await capture((w) =>
+      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), false), _currentVersion: CURRENT }),
+    );
+    expect(code).toBe(0); // binary update itself succeeded
+    const out = lines.join('\n');
+    expect(out).toContain('Updated:');
+    // The pinning step must SKIP, not stage the old sibling wheel as 99.0.0.
+    expect(vi.mocked(installBundledBackend)).not.toHaveBeenCalled();
+    expect(out).toContain("wasn't downloaded — skipping backend install");
+    // And the stale sibling must be GONE, so the NEXT process (whose compiled
+    // pin is 99.0.0) can't trust it by co-location — it falls back to the
+    // installer instead of installing old backend bits under the new pin.
+    const { existsSync: ex } = await import('node:fs');
+    const { join: j2, dirname: dn2 } = await import('node:path');
+    const { realpathSync: rp } = await import('node:fs');
+    expect(ex(j2(dn2(rp(binPath)), 'horus_source.whl'))).toBe(false);
+    expect(out).toContain('removed the stale bundled wheel');
+  });
+
+  it('a confirmed wheel download is passed explicitly to the backend install', async () => {
+    const { installBundledBackend } = await import('../lib/bundled-backend.js');
+    const { readFileSync: rfs, realpathSync } = await import('node:fs');
+    const { join: j, dirname: dn } = await import('node:path');
+    const { lines, code } = await capture((w) =>
+      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), true), _currentVersion: CURRENT }),
+    );
+    expect(code).toBe(0);
+    expect(lines.join('\n')).toContain('Bundled backend wheel refreshed');
+    // resolveBinaryPath realpaths argv[1] (macOS: /var -> /private/var).
+    const expectedWheel = j(dn(realpathSync(binPath)), 'horus_source.whl');
+    expect(rfs(expectedWheel, 'utf8')).toBe('new-wheel-bytes');
+    expect(vi.mocked(installBundledBackend)).toHaveBeenCalledTimes(1);
+    const opts = vi.mocked(installBundledBackend).mock.calls[0]![1] as Record<string, unknown>;
+    expect(opts['version']).toBe(LATEST);
+    expect(opts['_wheelPath']).toBe(expectedWheel);
   });
 });

@@ -1,4 +1,4 @@
-import { readFileSync, copyFileSync, mkdirSync } from 'fs';
+import { readFileSync, copyFileSync, existsSync, mkdirSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -25,6 +25,27 @@ function copyPgliteAssets(): void {
     copyFileSync(join(pgliteDist, asset), join(outDir, asset));
   }
   console.log(`[tsup] copied ${PGLITE_ASSETS.length} pglite asset(s) into dist/`);
+}
+
+/**
+ * The source-intelligence backend ships INSIDE the bundle as a Python wheel
+ * (one bundle, one version — no PyPI). scripts/release/build-source-wheel.sh
+ * builds it into packages/source-py/dist/horus_source.whl before the app
+ * build; here we place it next to index.cjs so `files: ["dist"]` publishes it
+ * and `horus update` installs from it. Absent in plain dev builds — skipped
+ * with a note (the CLI degrades to the installer hint).
+ */
+function copyBundledSourceWheel(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const wheel = join(here, '..', '..', 'packages', 'source-py', 'dist', 'horus_source.whl');
+  const outDir = join(here, 'dist');
+  if (!existsSync(wheel)) {
+    console.log('[tsup] no bundled source wheel (dev build) — run scripts/release/build-source-wheel.sh to include it');
+    return;
+  }
+  mkdirSync(outDir, { recursive: true });
+  copyFileSync(wheel, join(outDir, 'horus_source.whl'));
+  console.log('[tsup] copied bundled source wheel into dist/');
 }
 
 export default defineConfig({
@@ -57,5 +78,6 @@ export default defineConfig({
   // Ship pglite's WASM/FS assets next to the bundle (see note above).
   async onSuccess() {
     copyPgliteAssets();
+    copyBundledSourceWheel();
   },
 });

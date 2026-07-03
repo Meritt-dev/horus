@@ -1,7 +1,7 @@
 /**
  * Project-landscape knowledge builder (HOR-293).
  *
- * The first-version `horus index` knowledge pass: derive a `RepositoryProfile`
+ * The first-version `horus init` knowledge pass: derive a `RepositoryProfile`
  * for each repo from its dependency manifest (frameworks, languages, state
  * management, auth, data sources, integrations, scripts) — local-first, no
  * source-intelligence or network required. This is the "project landscape /

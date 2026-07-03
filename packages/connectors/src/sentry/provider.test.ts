@@ -6,6 +6,7 @@ import {
   computeRelevance,
   type SentryIssue,
 } from './index.js';
+import type { HttpRequestOptions } from '../http.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -63,8 +64,13 @@ const EVENT_BRAND = {
   ],
 };
 
-function provider(): SentryProvider {
-  const client = new SentryClient({ authToken: 't', org: 'acme', project: 'web' });
+function provider(http?: HttpRequestOptions): SentryProvider {
+  const client = new SentryClient({
+    authToken: 't',
+    org: 'acme',
+    project: 'web',
+    ...(http !== undefined ? { http } : {}),
+  });
   return new SentryProvider(client, { org: 'acme', project: 'web' });
 }
 
@@ -97,6 +103,11 @@ describe('SentryProvider.queryEvidence', () => {
     await expect(provider().queryEvidence()).resolves.toEqual([]);
   });
 
+  it('collect() PROPAGATES a failing issue list so the engine records a gap', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
+    await expect(provider().collect()).rejects.toThrow(/-> 403/);
+  });
+
   it('still produces evidence when the frame fetch fails (frame omitted, no seed fields)', async () => {
     vi.stubGlobal(
       'fetch',
@@ -106,7 +117,8 @@ describe('SentryProvider.queryEvidence', () => {
         return new Response(JSON.stringify([ISSUE_BRAND]), { status: 200 });
       }),
     );
-    const ev = await provider().queryEvidence();
+    // maxRetries: 0 — the always-throwing frame mock would otherwise hit real backoff.
+    const ev = await provider({ maxRetries: 0 }).queryEvidence();
     expect(ev).toHaveLength(1);
     const p = ev[0]!.payload as Record<string, unknown>;
     expect(p['filePath']).toBeUndefined();

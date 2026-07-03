@@ -184,11 +184,11 @@ describe('buildPacket — honesty header', () => {
       now: NOW,
       freshness: {
         indexStale: true,
-        caveats: ['code index is 9d old — re-run `horus index` so analysis reflects current code'],
+        caveats: ['code index is 9d old — re-run `horus init` so analysis reflects current code'],
         semanticSearchReady: false,
       },
     });
-    expect(p.honesty.caveats).toContain('code index is 9d old — re-run `horus index` so analysis reflects current code');
+    expect(p.honesty.caveats).toContain('code index is 9d old — re-run `horus init` so analysis reflects current code');
     expect(p.honesty.caveats.some((c) => c.startsWith('semantic search degraded to keyword/FTS'))).toBe(true);
   });
 

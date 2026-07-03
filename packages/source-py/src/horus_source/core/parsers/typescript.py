@@ -785,7 +785,7 @@ class TypeScriptParser(LanguageParser):
 
         Returns ``(decorators, decorator_args)`` in source order.
         """
-        _MODIFIER_KEYWORDS = {"export", "default", "abstract", "declare", "static"}
+        _MODIFIER_KEYWORDS = {"export", "default", "abstract", "declare", "static"}  # noqa: N806 — local constant set
         decorator_nodes: list[Node] = []
 
         # Preceding-sibling decorators (methods, exported classes), collected nearest-first.

@@ -1,6 +1,6 @@
 /**
  * `horus knowledge` — query the local `.horus/index/` project-knowledge snapshot
- * built by `horus index` (HOR-294). Offline / local-only: never touches Cloud.
+ * built by `horus init` (HOR-294). Offline / local-only: never touches Cloud.
  *
  * Subcommands:
  *   status     — last indexed commit, schema version, generated time, stale/dirty
@@ -40,7 +40,7 @@ function resolveRoot(opts: KnowledgeOpts): string {
 
 function noIndexMessage(root: string): void {
   console.log(pc.yellow('No project-knowledge index found.'));
-  console.log(pc.dim(`  Expected ${root}/.horus/index/. Run ${pc.bold('horus index')} to build one.`));
+  console.log(pc.dim(`  Expected ${root}/.horus/index/. Run ${pc.bold('horus init')} to build one.`));
 }
 
 interface Loaded {
@@ -68,7 +68,7 @@ function stalenessWarnings(root: string, manifest: KnowledgeManifest | null): st
   const indexedSha = manifest?.git?.sha;
   const currentSha = getHeadSha(root) ?? undefined;
   if (indexedSha && currentSha && indexedSha !== currentSha) {
-    warnings.push(`index is stale: built at ${short(indexedSha)}, repo is now at ${short(currentSha)} — re-run \`horus index\``);
+    warnings.push(`index is stale: built at ${short(indexedSha)}, repo is now at ${short(currentSha)} — re-run \`horus init\``);
   }
   if (isWorkingTreeDirty(root) === true) {
     warnings.push('working tree is dirty (uncommitted changes) — knowledge may not reflect local edits');
@@ -139,7 +139,7 @@ export function runKnowledgeSearch(query: string, opts: KnowledgeOpts = {}): num
   const matches = searchSnapshot(loaded.snapshot, query, { limit: opts.limit ?? 25 });
   if (matches.length === 0) {
     console.log(pc.yellow(`No matches for "${query}".`));
-    console.log(pc.dim('Try a broader term, or run `horus index` if the project changed.'));
+    console.log(pc.dim('Try a broader term, or run `horus init` if the project changed.'));
     return 0;
   }
   console.log(pc.bold(`${matches.length} match(es) for "${query}":`));
@@ -297,7 +297,7 @@ export function runKnowledgeAsk(question: string, opts: KnowledgeOpts = {}): num
   console.log(pc.bold(`Q: ${question}`));
   if (hits.length === 0) {
     console.log(pc.yellow('No indexed knowledge matched this question.'));
-    console.log(pc.dim('This answer is grounded only in the local index. Run `horus index` or try `horus knowledge search`.'));
+    console.log(pc.dim('This answer is grounded only in the local index. Run `horus init` or try `horus knowledge search`.'));
     return 0;
   }
   console.log(pc.dim('Grounded in the local knowledge index (no external model):'));

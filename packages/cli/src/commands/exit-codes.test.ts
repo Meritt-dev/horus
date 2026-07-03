@@ -41,7 +41,21 @@ vi.mock('@horus/db', () => ({
   }),
   getInvestigation: vi.fn(),
   assertLocalDatabaseUrl: () => {},
+  // init's advisory prereq check — offline: unreachable, never gates exit codes.
+  checkDatabase: vi
+    .fn()
+    .mockResolvedValue({ reachable: false, schemaReady: false, schemaDetail: '' }),
 }));
+
+// init's backend probe — offline: absent, so init stays on the write-only path.
+vi.mock('@horus/connectors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/connectors')>();
+  return {
+    ...actual,
+    sourceAvailable: vi.fn().mockResolvedValue(false),
+    getSourceVersion: vi.fn().mockResolvedValue(null),
+  };
+});
 
 import { runInit } from './init.js';
 import { runReplay } from './replay.js';

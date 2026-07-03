@@ -283,7 +283,7 @@ export function isHorusGitignored(root: string): boolean {
 /**
  * Ensure the project's root `.gitignore` ignores the `.horus/` directory, so the
  * local config and machine-specific runtime state (host.json, logs, source index)
- * are never committed. Called by `horus init` / `horus index` when onboarding a repo.
+ * are never committed. Called by `horus init` when onboarding a repo.
  *
  * Behavior:
  *   - No `.git` directory under `root` → no-op (not a git repo, nothing to ignore).

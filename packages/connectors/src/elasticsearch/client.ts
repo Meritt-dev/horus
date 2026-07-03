@@ -1,19 +1,25 @@
 /**
  * Minimal Elasticsearch HTTP client for @horus/connectors (HOR-10).
- * Uses global fetch (Node 20+). No @elastic/elasticsearch dependency.
+ * Transport goes through the shared fetchWithRetry helper (per-request timeout
+ * + bounded retry on 429/5xx/network errors). No @elastic/elasticsearch dependency.
  */
 
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage, redactUpstreamBody } from '@horus/core';
+import { fetchWithRetry, type HttpRequestOptions } from '../http.js';
 
 export interface ElasticsearchClientOpts {
   baseUrl: string;
   username?: string;
   password?: string;
+  /** Transport overrides (timeout / retry) forwarded to fetchWithRetry. */
+  http?: HttpRequestOptions;
 }
 
 export class ElasticsearchClient {
   private readonly baseUrl: string;
   private readonly authHeader: string | undefined;
+  private readonly http: HttpRequestOptions;
 
   constructor(opts: ElasticsearchClientOpts) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
@@ -21,6 +27,7 @@ export class ElasticsearchClient {
       const encoded = Buffer.from(`${opts.username}:${opts.password}`).toString('base64');
       this.authHeader = `Basic ${encoded}`;
     }
+    this.http = opts.http ?? {};
   }
 
   async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -32,18 +39,20 @@ export class ElasticsearchClient {
       headers['Authorization'] = this.authHeader;
     }
 
-    const init: RequestInit = { method, headers };
+    const init: Omit<RequestInit, 'signal'> = { method, headers };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
-    if (signal !== undefined) {
-      init.signal = signal;
-    }
 
-    const res = await fetch(url, init);
+    // A caller-supplied signal composes with the helper's per-attempt timeout.
+    const res = await fetchWithRetry(url, init, {
+      ...this.http,
+      ...(signal !== undefined ? { signal } : {}),
+    });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Elasticsearch ${method} ${path} -> ${res.status}: ${text}`);
+      // Redact + cap the upstream body — security-plugin 401/403 bodies can echo request context.
+      const text = await res.text().catch(() => '');
+      throw new Error(`Elasticsearch ${method} ${path} -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
     return res.json();
   }
@@ -80,7 +89,8 @@ export class ElasticsearchClient {
       const detail = typeof status === 'string' ? status : 'ok';
       return { ok: true, detail };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      // fetch/undici errors can embed the full URL (incl. userinfo) — redact.
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 

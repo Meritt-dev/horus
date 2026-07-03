@@ -29,7 +29,7 @@ router = APIRouter(tags=["memory"])
 
 
 class MemoryUpsertRequest(BaseModel):
-    memoryId: str = Field(min_length=1)
+    memoryId: str = Field(min_length=1)  # noqa: N815 — JSON wire key from the TS client
     claim: str = Field(min_length=1)
     repo: str = Field(min_length=1)
     scope: str | None = None
@@ -42,7 +42,7 @@ class MemorySearchRequest(BaseModel):
 
 
 class MemoryRemoveRequest(BaseModel):
-    memoryId: str = Field(min_length=1)
+    memoryId: str = Field(min_length=1)  # noqa: N815 — JSON wire key from the TS client
 
 
 def _writer(request: Request) -> MemoryWriter:

@@ -47,12 +47,12 @@ export async function runBlastRadius(
 
     const health = await code.health();
     if (!health.ok) {
-      // HOR-386 — host down: the router points at `horus index`.
+      // HOR-386 — host down: the router points at `horus init`.
       const steps = route({ command: 'blast-radius', hostUnreachable: true });
       if (opts.json) {
         console.log(JSON.stringify({ error: 'Source-intelligence host unreachable', nextSteps: steps }, null, 2));
       } else {
-        console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+        console.error(pc.red('Source-intelligence host unreachable — run: horus init'));
         for (const s of steps) console.log(pc.dim('  Suggested next: ') + formatRouteStep(s));
       }
       return 1;

@@ -1,6 +1,6 @@
 """Horus source intelligence — Graph-powered code intelligence engine."""
 
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("horus-source")

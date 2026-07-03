@@ -81,7 +81,7 @@ describe('computeFreshness', () => {
       meta: { lastIndexedAt: isoAgo(STALE_INDEX_MS + 86_400_000) },
     });
     expect(f.indexStale).toBe(true);
-    expect(f.caveats.some((c) => /re-run `horus index`/.test(c))).toBe(true);
+    expect(f.caveats.some((c) => /re-run `horus init`/.test(c))).toBe(true);
   });
 
   it('caveats when index age is unknown', () => {

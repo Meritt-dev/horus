@@ -12,3 +12,7 @@ coverage/
 apps/horus/README.md
 tmp/
 .claude/
+
+# Generated at release time by scripts/homebrew/update-formula.sh; live copy lives in meritt-dev/homebrew-tap
+homebrew-tap/Formula/horus.rb
+.horus/

@@ -15,6 +15,7 @@
 
 import { Redis, type RedisOptions } from 'ioredis';
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage } from '@horus/core';
 
 export interface RedisScanClientOpts {
   /** Base server URL. The DB is selected via the `db` option, not the URL path. */
@@ -59,7 +60,9 @@ export class RedisScanClient {
       await this.redis.ping();
       return { ok: true, detail: `Redis reachable (db ${this.db})` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      // Redaction never alters WRONGPASS/NOAUTH/"invalid password" tokens, so
+      // redis/status.ts auth-failure classification keeps working on this detail.
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 

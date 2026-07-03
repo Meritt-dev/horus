@@ -116,7 +116,7 @@ export function runSecretsMigrate(opts: { dryRun?: boolean; cwd?: string } = {})
   const { root, configPath, exists } = locate(opts.cwd);
   if (!exists) {
     console.error(pc.red(`No .horus/config.json found at ${configPath}.`));
-    console.error(pc.dim('  Run `horus index` in this repo first.'));
+    console.error(pc.dim('  Run `horus init` in this repo first.'));
     return 1;
   }
 

@@ -91,7 +91,7 @@ describe('HOR-319 layer-2 — runtime-only degrade (code: null)', () => {
   it('banners the degrade in the summary and next actions', async () => {
     const report = await investigate(input, { code: null, db: makeDb(), logs: logsWithErrors });
     expect(report.summary).toContain('Runtime-only');
-    expect(report.nextActions.some((a) => a.includes('horus index'))).toBe(true);
+    expect(report.nextActions.some((a) => a.includes('horus init'))).toBe(true);
   });
 
   it('does not throw even with no runtime providers at all', async () => {

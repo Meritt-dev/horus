@@ -4,7 +4,6 @@ import { maybeNotifyUpdate } from './lib/update-notifier.js';
 import { maybePromptResolutionFeedback } from './lib/feedback-nudge.js';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
-import { runIndex } from './commands/index-repo.js';
 import {
   runKnowledgeStatus,
   runKnowledgeSearch,
@@ -57,7 +56,6 @@ import { runMetrics } from './commands/metrics.js';
 import { runState } from './commands/state.js';
 import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
-import { runSetup } from './commands/setup.js';
 import { runConnect } from './commands/connect.js';
 import { runNotify, type NotifyOptions } from './commands/notify.js';
 import { runSecretsStatus, runSecretsMigrate, runSecretsKey } from './commands/secrets.js';
@@ -135,29 +133,45 @@ Examples:
       process.exitCode = await runProvidersDoctorCommand();
     });
 
+  // Hidden deprecation stub — `setup` was merged into `init`.
   program
-    .command('setup')
-    .description('Verify prerequisites (source-intelligence backend + Postgres) and guide any fixes')
-    .option('-c, --config <path>', 'path to horus.config.ts')
-    .action(async (opts: { config?: string }) => {
-      process.exitCode = await runSetup(opts);
+    .command('setup', { hidden: true })
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(() => {
+      console.error('`horus setup` has been merged into `horus init`. Run: horus init');
+      process.exitCode = 1;
     });
 
   program
     .command('init')
-    .description('Create a local .horus/config.json for this repo and register it')
-    .option('--name <name>', 'project name (default: repo directory name)')
+    .description(
+      'Set up this repo for Horus: check prerequisites, write/register .horus config, start the source-intelligence host, and index the code',
+    )
+    .option('--name <name>', 'project name (new repo) or registered name to resolve (default: repo directory name)')
     .option('--env <name>', 'environment name (default: production)')
-    .option('--source <url>', 'source-intelligence host URL for this repo (e.g. http://127.0.0.1:8420)')
+    .option('--source <url>', 'external source-intelligence host URL — recorded verbatim, skips the local host/index')
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--project <name>', 'project name within the config')
+    .option('--full', 'build a full project-knowledge snapshot (default)')
+    .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
+    .option('--fast', 'speed hint, used with --changed')
+    .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
     .action(
-      async (opts: { name?: string; env?: string; source?: string; path?: string }) => {
-        process.exitCode = await runInit({
-          name: opts.name,
-          env: opts.env,
-          source: opts.source,
-          path: opts.path,
-        });
+      async (opts: {
+        name?: string;
+        env?: string;
+        source?: string;
+        path?: string;
+        config?: string;
+        project?: string;
+        full?: boolean;
+        changed?: boolean;
+        fast?: boolean;
+        importKb?: string;
+      }) => {
+        process.exitCode = await runInit(opts);
       },
     )
     .addHelpText('after', `
@@ -165,6 +179,8 @@ Examples:
   horus init
   horus init --name atlas-payments
   horus init --name atlas-payments --env staging
+  horus init --changed --fast          # pre-push: refresh knowledge for changed files only
+  horus init --source http://127.0.0.1:8420   # use an already-running external host
 `);
 
   program
@@ -419,31 +435,15 @@ Examples:
       },
     );
 
+  // Hidden deprecation stub — `index` was merged into `init`.
   program
-    .command('index')
-    .description('Build the queue map + local project-knowledge snapshot for a project')
-    .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name')
-    .option('--env <name>', 'environment name (e.g. production)')
-    .option('--full', 'build a full project-knowledge snapshot (default)')
-    .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
-    .option('--fast', 'speed hint, used with --changed')
-    .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
-    .action(
-      async (opts: {
-        config?: string;
-        name?: string;
-        project?: string;
-        env?: string;
-        full?: boolean;
-        changed?: boolean;
-        fast?: boolean;
-        importKb?: string;
-      }) => {
-        process.exitCode = await runIndex(opts);
-      },
-    );
+    .command('index', { hidden: true })
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(() => {
+      console.error('`horus index` has been merged into `horus init`. Run: horus init');
+      process.exitCode = 1;
+    });
 
   const knowledge = program
     .command('knowledge')

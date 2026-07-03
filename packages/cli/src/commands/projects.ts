@@ -11,7 +11,7 @@ export async function runProjects(): Promise<number> {
 
   if (names.length === 0) {
     console.log(
-      pc.dim('No registered projects. Run `horus index` (or `horus init`) inside a repo.'),
+      pc.dim('No registered projects. Run `horus init` inside a repo.'),
     );
     return 0;
   }

@@ -133,7 +133,7 @@ export function computeFreshness(opts: {
     indexStale = indexAgeMs > STALE_INDEX_MS;
     if (indexStale) {
       caveats.push(
-        `code index is ${humanAge(indexAgeMs)} old — re-run \`horus index\` so analysis reflects current code`,
+        `code index is ${humanAge(indexAgeMs)} old — re-run \`horus init\` so analysis reflects current code`,
       );
     }
   } else {
@@ -144,7 +144,7 @@ export function computeFreshness(opts: {
   // Even a recently-built index can be behind new commits; flag that explicitly.
   if (typeof commitsSinceIndex === 'number' && commitsSinceIndex > 0) {
     caveats.push(
-      `${commitsSinceIndex} commit(s) since the last index — re-run \`horus index\` so analysis reflects current code`,
+      `${commitsSinceIndex} commit(s) since the last index — re-run \`horus init\` so analysis reflects current code`,
     );
   }
 

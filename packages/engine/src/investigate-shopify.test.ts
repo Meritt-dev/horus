@@ -132,18 +132,57 @@ describe('investigate() WITH Shopify provider', () => {
     expect(ev?.provenance.query).toBe('shopify acme.myshopify.com shop');
   });
 
-  it('a failing Shopify query never breaks the investigation', async () => {
-    const shopify = shopifyWith(async () => {
-      throw new Error('shopify 500');
+  it('a failing Shopify query among succeeding ones never breaks the investigation', async () => {
+    // One query fails, one succeeds: collect() completes with the survivor — a
+    // per-query drop, NOT a collection failure. (All-queries-failed now throws
+    // and is covered by the collection-failure test below.)
+    const shopify = shopifyWith(async (query: string) => {
+      if (query === '{ x }') throw new Error('shopify 500');
+      return { data: { shop: { name: 'Acme' } } };
     });
 
     const report = await investigate(
-      { hint: 'orders', shopifyQueries: [{ name: 'boom', query: '{ x }', kind: 'state' }] },
+      {
+        hint: 'orders',
+        shopifyQueries: [
+          { name: 'boom', query: '{ x }', kind: 'state' },
+          { name: 'shop', query: '{ shop { name } }', kind: 'state' },
+        ],
+      },
       { code: fakeCode, db: fakeDb, shopify },
     );
 
     expect(report).toBeDefined();
-    expect(findShopifyEvidence(report.evidence)).toBeUndefined();
+    const ev = findShopifyEvidence(report.evidence);
+    expect(ev?.provenance.query).toBe('shopify acme.myshopify.com shop');
+    // Per-query drop — no application-state gap fires.
+    expect(report.gapAnalysis.gaps.map((g) => g.dimension)).not.toContain('application state');
+    // The raw query error text must never reach the persisted report.
+    expect(JSON.stringify(report)).not.toContain('shopify 500');
+  });
+
+  it('a Shopify COLLECTION failure surfaces as an application-state gap + failed source', async () => {
+    // collect() itself throwing (auth/transport dead before any query runs) is the total
+    // failure the engine catch labels — unlike the per-query drop above.
+    const throwingShopify = {
+      async collect() {
+        throw new Error('shopify admin API 500 internal server error at acme.myshopify.com');
+      },
+    } as unknown as ShopifyProvider;
+
+    const report = await investigate(
+      { hint: 'orders', shopifyQueries: [{ name: 'boom', query: '{ x }', kind: 'state' }] },
+      { code: fakeCode, db: fakeDb, shopify: throwingShopify },
+    );
+
+    const stateGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'application state');
+    expect(stateGap).toBeDefined();
+    expect(stateGap!.why).toContain('shopify: server error');
+    const stateEntry = report.sourceStatus?.sources.find((s) => s.source === 'state');
+    expect(stateEntry?.status).toBe('failed');
+    expect(stateEntry?.detail).toContain('shopify');
+    // Only the leak-safe category reaches the report — never the raw error/host.
+    expect(JSON.stringify(report)).not.toContain('acme.myshopify.com');
   });
 });
 

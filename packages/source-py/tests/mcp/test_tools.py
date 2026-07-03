@@ -445,7 +445,7 @@ class TestConfidenceInContext:
         assert "login_handler" in result
         # There should be no "(?)" for the high-confidence caller
         lines = result.split("\n")
-        caller_line = [l for l in lines if "login_handler" in l][0]
+        caller_line = [ln for ln in lines if "login_handler" in ln][0]
         assert "(?)" not in caller_line
         assert "(~)" not in caller_line
 
@@ -516,7 +516,7 @@ class TestFormatQueryResults:
         output = _format_query_results(results, {})
         # Snippet in output should be at most 200 chars
         lines = output.split("\n")
-        snippet_lines = [l for l in lines if l.strip().startswith("xxx")]
+        snippet_lines = [ln for ln in lines if ln.strip().startswith("xxx")]
         for line in snippet_lines:
             assert len(line.strip()) <= 200
 

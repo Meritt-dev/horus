@@ -28,8 +28,9 @@ from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, NodeEmbedding
 
 def test_embed_thread_count_pinned_and_overridable() -> None:
     """HOR-374: reproducible default, env override, garbage falls back."""
-    from horus_source.core.embeddings.embedder import _embed_thread_count
     import os
+
+    from horus_source.core.embeddings.embedder import _embed_thread_count
 
     saved = os.environ.pop("HORUS_EMBED_THREADS", None)
     try:
@@ -477,7 +478,7 @@ class TestEmbedGraphNomic:
         mock_model = MagicMock()
         mock_model.passage_embed.return_value = iter([_vec768([0.1]), _vec768([0.2])])
         mock_te_cls.return_value = mock_model
-        results = embed_graph(sample_graph)
+        embed_graph(sample_graph)
         mock_model.passage_embed.assert_called_once()
         mock_model.embed.assert_not_called()
 
@@ -497,7 +498,7 @@ class TestEmbedQueryNomic:
         mock_model = MagicMock()
         mock_model.query_embed.return_value = iter([np.array([0.5] * 768)])
         mock_te_cls.return_value = mock_model
-        result = embed_query("test query")
+        embed_query("test query")
         mock_model.query_embed.assert_called_once()
         mock_model.embed.assert_not_called()
 

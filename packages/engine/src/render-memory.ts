@@ -24,7 +24,7 @@ export function renderMemoryView(v: MemoryView): string {
   lines.push(v.summary);
   lines.push('');
   if (!v.sourceAvailable) {
-    lines.push('> ⚠ Source-intelligence host unreachable — run `horus index`.');
+    lines.push('> ⚠ Source-intelligence host unreachable — run `horus init`.');
     lines.push(
       '> Showing **incident memory only**; code structure (owned areas, runtime paths, external systems) is unavailable, not absent.',
     );
@@ -38,7 +38,7 @@ export function renderMemoryView(v: MemoryView): string {
     lines.push(
       v.sourceAvailable
         ? 'No scope-matched subsystems.'
-        : '_Unavailable — source host unreachable (run `horus index`)._',
+        : '_Unavailable — source host unreachable (run `horus init`)._',
     );
   } else {
     for (const s of v.ownedAreas.subsystems) {

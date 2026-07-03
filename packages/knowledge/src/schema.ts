@@ -2,7 +2,7 @@
  * Local project-knowledge index schema (HOR-291).
  *
  * Defines the first-version contract for the `.horus/index/` knowledge layer that
- * `horus index`, `horus knowledge`, and Horus MCP build against. This is the
+ * `horus init`, `horus knowledge`, and Horus MCP build against. This is the
  * PROJECT-KNOWLEDGE layer — distinct from:
  *
  *   - SOURCE INTELLIGENCE: the raw code graph in `.horus/source/` (Kùzu),

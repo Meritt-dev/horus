@@ -79,6 +79,73 @@ describe('buildRuntimeSourceStatus — failed', () => {
     expect(metrics.status).toBe('failed');
     expect(metrics.configured).toBe(true);
   });
+
+  it('attaches metricsFailureReason as detail on the failed metrics entry', () => {
+    const report = buildRuntimeSourceStatus([], {
+      grafana: true,
+      metricsCollected: false,
+      metricsFailureReason: 'timeout',
+    });
+    const metrics = report.sources.find((s) => s.source === 'metrics')!;
+    expect(metrics.status).toBe('failed');
+    expect(metrics.detail).toBe('timeout');
+  });
+
+  it('attaches logsFailureReason as detail when there is no compatibility error', () => {
+    const report = buildRuntimeSourceStatus([], {
+      elasticsearch: true,
+      logsCollected: false,
+      logsFailureReason: 'connection failed',
+    });
+    const logs = report.sources.find((s) => s.source === 'logs')!;
+    expect(logs.status).toBe('failed');
+    expect(logs.detail).toBe('connection failed');
+  });
+
+  it('compatibility error keeps precedence over logsFailureReason', () => {
+    const report = buildRuntimeSourceStatus([], {
+      elasticsearch: true,
+      logsCollected: false,
+      logsCompatibilityError: 'field @timestamp missing',
+      logsFailureReason: 'request failed',
+    });
+    const logs = report.sources.find((s) => s.source === 'logs')!;
+    expect(logs.detail).toBe('field @timestamp missing');
+  });
+
+  it('marks state as failed with detail when a state provider threw (stateCollected false)', () => {
+    const report = buildRuntimeSourceStatus([], {
+      mongodb: true,
+      stateCollected: false,
+      stateFailureReason: 'mongodb: connection failed',
+    });
+    const state = report.sources.find((s) => s.source === 'state')!;
+    expect(state.status).toBe('failed');
+    expect(state.detail).toBe('mongodb: connection failed');
+  });
+
+  it('marks state as failed when a configured Shopify collection failed', () => {
+    const report = buildRuntimeSourceStatus([], {
+      shopify: true,
+      shopifyCollected: false,
+      shopifyFailureReason: 'auth failure',
+    });
+    const state = report.sources.find((s) => s.source === 'state')!;
+    expect(state.status).toBe('failed');
+    expect(state.detail).toBe('shopify: auth failure');
+  });
+
+  it('marks queue as failed with detail when queue is configured but queueCollected is false', () => {
+    const report = buildRuntimeSourceStatus([], {
+      queue: true,
+      queueCollected: false,
+      queueFailureReason: 'connection failed',
+    });
+    const queue = report.sources.find((s) => s.source === 'queue')!;
+    expect(queue.status).toBe('failed');
+    expect(queue.configured).toBe(true);
+    expect(queue.detail).toBe('connection failed');
+  });
 });
 
 describe('buildRuntimeSourceStatus — empty', () => {
@@ -107,6 +174,26 @@ describe('buildRuntimeSourceStatus — empty', () => {
     const report = buildRuntimeSourceStatus([], { redis: true });
     const state = report.sources.find((s) => s.source === 'state')!;
     expect(state.status).toBe('empty');
+  });
+
+  it('state stays empty when stateCollected is absent (old reports never read failed)', () => {
+    const report = buildRuntimeSourceStatus([], { mongodb: true });
+    const state = report.sources.find((s) => s.source === 'state')!;
+    expect(state.status).toBe('empty');
+    expect(state.detail).toBeUndefined();
+  });
+
+  it('queue stays empty when queueCollected is absent (old reports never read failed)', () => {
+    const report = buildRuntimeSourceStatus([], { queue: true });
+    const queue = report.sources.find((s) => s.source === 'queue')!;
+    expect(queue.status).toBe('empty');
+    expect(queue.detail).toBeUndefined();
+  });
+
+  it('queue stays not-configured when the connector is absent, even with queueCollected false', () => {
+    const report = buildRuntimeSourceStatus([], { queueCollected: false });
+    const queue = report.sources.find((s) => s.source === 'queue')!;
+    expect(queue.status).toBe('not-configured');
   });
 });
 

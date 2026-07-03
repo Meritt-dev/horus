@@ -124,6 +124,28 @@ node -e "
 "
 ok "  apps/horus/package.json → ${VERSION}"
 
+# The backend ships inside the bundle — one bundle, one version. Stamp the
+# python package (and its lockfile's self-version) with the same number.
+SOURCE_PY="$ROOT/packages/source-py"
+python3 - "$VERSION" "$SOURCE_PY" <<'PYEOF'
+import re, sys
+version = sys.argv[1]
+src = sys.argv[2]
+pp = f"{src}/pyproject.toml"
+s = open(pp).read()
+s, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', s, count=1, flags=re.M)
+assert n == 1, "pyproject version line not found"
+open(pp, "w").write(s)
+lock = f"{src}/uv.lock"
+s = open(lock).read()
+s, n = re.subn(
+    r'(name = "horus-source"\nversion = ")[^"]+(")',
+    rf'\g<1>{version}\g<2>', s, count=1)
+assert n == 1, "uv.lock horus-source entry not found"
+open(lock, "w").write(s)
+PYEOF
+ok "  packages/source-py pyproject.toml + uv.lock → ${VERSION}"
+
 # ── 2. install ────────────────────────────────────────────────────────────────
 
 info "Installing dependencies"
@@ -136,8 +158,15 @@ pnpm typecheck
 
 # ── 4. build ──────────────────────────────────────────────────────────────────
 
+info "Building bundled source-intelligence wheel (frontend + uv build + verify)"
+"$ROOT/scripts/release/build-source-wheel.sh"
+ok "  Wheel staged: packages/source-py/dist/horus_source.whl"
+
 info "Building self-contained binary: apps/horus/dist/index.cjs"
 pnpm --filter ./apps/horus build
+
+[ -f "$APP_DIR/dist/horus_source.whl" ] \
+  || die "Bundled wheel missing from apps/horus/dist — tsup did not copy it."
 
 DIST_FILE="$APP_DIR/dist/index.cjs"
 [ -f "$DIST_FILE" ] || die "Build output not found: $DIST_FILE"
@@ -153,7 +182,7 @@ ok "Smoke test passed"
 
 info "Committing and tagging ${TAG}"
 
-git -C "$ROOT" add apps/horus/package.json
+git -C "$ROOT" add apps/horus/package.json packages/source-py/pyproject.toml packages/source-py/uv.lock
 git -C "$ROOT" commit -m "chore: release ${TAG}"
 git -C "$ROOT" tag -a "$TAG" -m "Horus ${TAG}"
 ok "  Committed and tagged ${TAG}"
@@ -227,6 +256,7 @@ $(cat "$CHECKSUM_FILE")  horus-${TAG}
 \`\`\`" \
   "$ARTIFACT_FILE" \
   "$CHECKSUM_FILE" \
+  "$APP_DIR/dist/horus_source.whl" \
   "${ARCHIVES_DIR}/horus-${TAG}-darwin-arm64.tar.gz" \
   "${ARCHIVES_DIR}/horus-${TAG}-darwin-arm64.tar.gz.sha256" \
   "${ARCHIVES_DIR}/horus-${TAG}-darwin-x86_64.tar.gz" \

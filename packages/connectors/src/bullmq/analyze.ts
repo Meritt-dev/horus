@@ -7,6 +7,7 @@
  */
 
 import type { Evidence } from '@horus/core';
+import { redactSecrets } from '@horus/core';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -188,21 +189,28 @@ export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
         top.lastFailedAgeMs !== undefined
           ? `, last failed ${fmtMs(top.lastFailedAgeMs)} ago${stale ? ' [STALE]' : ''}`
           : '';
+      // failedReason is a raw application error string (routinely a driver message
+      // with a connection URL). It reaches reports/postmortems/AI input via the
+      // title AND the payload (engine reads payload.topReason into cause titles),
+      // so redact every copy.
+      const safeReason = redactSecrets(top.reason);
       signals.push({
         queueName: q.queueName,
         kind: 'failed-breakdown',
-        title: `${q.queueName}: ${pct}% of recently sampled failures (${top.count}/${sampleTotal} sampled) are "${top.reason}"${ageStr}`,
+        title: `${q.queueName}: ${pct}% of recently sampled failures (${top.count}/${sampleTotal} sampled) are "${safeReason}"${ageStr}`,
         // Demote a stale-only breakdown so a days-old error isn't read as live (HOR-217).
         relevance: stale ? 0.5 : 0.82,
         payload: {
           queueName: q.queueName,
-          topReason: top.reason,
+          topReason: safeReason,
           topCount: top.count,
           topPct: pct,
           totalFailed: q.failed,
           topLastFailedAgeMs: top.lastFailedAgeMs ?? null,
           topStale: stale,
-          breakdown: q.failedBreakdown.slice(0, 3),
+          breakdown: q.failedBreakdown
+            .slice(0, 3)
+            .map((b) => ({ ...b, reason: redactSecrets(b.reason) })),
         },
       });
     }

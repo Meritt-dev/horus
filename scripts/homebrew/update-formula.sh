@@ -16,6 +16,7 @@ VERSION="${1:-$(node -e "const {version}=JSON.parse(require('fs').readFileSync('
 TAG="v${VERSION}"
 OUTDIR="$ROOT/.homebrew-archives"
 FORMULA="$ROOT/homebrew-tap/Formula/horus.rb"
+mkdir -p "$(dirname "$FORMULA")"   # Formula/ holds only this generated (gitignored) file
 
 get_sha() {
   local file="$OUTDIR/horus-${TAG}-${1}.tar.gz.sha256"

@@ -153,16 +153,35 @@ describe('AxiomClient auth + request', () => {
     expect(body.endTime).toBe('2026-06-22T12:00:00Z');
   });
 
-  it('query() returns [] (never throws) when the API responds non-2xx', async () => {
+  it('query() THROWS when the API responds non-2xx (an outage must not read as "no rows")', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
     const client = new AxiomClient({ token: 't', dataset: 'logs' });
-    await expect(client.query('q', 'a', 'b')).resolves.toEqual([]);
+    await expect(client.query('q', 'a', 'b')).rejects.toThrow(/-> 403/);
   });
 
   it('listDatasets() returns [] (never throws) when fetch rejects (timeout/network)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('The operation was aborted'); }));
-    const client = new AxiomClient({ token: 't', dataset: 'logs' });
+    // maxRetries: 0 — a rejecting mock would otherwise be retried with real backoff.
+    const client = new AxiomClient({ token: 't', dataset: 'logs', http: { maxRetries: 0 } });
     await expect(client.listDatasets()).resolves.toEqual([]);
+  });
+
+  it('retries a 500 with exponential backoff then succeeds', async () => {
+    const fetchMock = vi.fn(
+      async (): Promise<Response> =>
+        new Response(JSON.stringify([{ name: 'logs' }]), { status: 200 }),
+    );
+    fetchMock.mockResolvedValueOnce(new Response('err', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const delays: number[] = [];
+    const client = new AxiomClient({
+      token: 't', dataset: 'logs',
+      http: { sleep: async (ms) => void delays.push(ms) },
+    });
+    const ds = await client.listDatasets();
+    expect(ds.map((d) => d.name)).toEqual(['logs']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([300]);
   });
 
   it('listDatasets() parses the datasets array', async () => {

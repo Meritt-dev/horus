@@ -959,51 +959,6 @@ class KuzuBackend:
         out.sort(key=lambda d: (d["file_path"], d["start_line"], d["id"]))
         return out[:limit]
 
-    def exact_name_search(self, name: str, limit: int = 5) -> list[SearchResult]:
-        """Search for nodes with an exact name match across all searchable tables.
-
-        Returns results sorted by label priority (functions/methods first),
-        preferring source files over test files.
-        """
-        conn = self._require_conn()
-        limit = int(limit)
-        candidates: list[SearchResult] = []
-
-        for table in _SEARCHABLE_TABLES:
-            cypher = (
-                f"MATCH (n:{table}) WHERE n.name = $name "
-                f"RETURN n.id, n.name, n.file_path, n.content, n.signature "
-                f"LIMIT {limit}"
-            )
-            try:
-                with self._lock:
-                    result = conn.execute(cypher, parameters={"name": name})
-                while result.has_next():
-                    row = result.get_next()
-                    node_id = row[0] or ""
-                    node_name = row[1] or ""
-                    file_path = row[2] or ""
-                    content = row[3] or ""
-                    signature = row[4] or ""
-                    label_prefix = node_id.split(":", 1)[0] if node_id else ""
-                    snippet = content[:200] if content else signature[:200]
-                    score = 2.0 if "/tests/" not in file_path else 1.0
-                    candidates.append(
-                        SearchResult(
-                            node_id=node_id,
-                            score=score,
-                            node_name=node_name,
-                            file_path=file_path,
-                            label=label_prefix,
-                            snippet=snippet,
-                        )
-                    )
-            except Exception:
-                logger.debug("exact_name_search failed on table %s", table, exc_info=True)
-
-        candidates.sort(key=lambda r: (-r.score, r.node_id))
-        return candidates[:limit]
-
     def fts_search(self, query: str, limit: int) -> list[SearchResult]:
         """BM25 full-text search using KuzuDB's native FTS extension.
 

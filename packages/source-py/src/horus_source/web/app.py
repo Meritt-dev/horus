@@ -13,10 +13,11 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Request
-from httpx import ReadError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from httpx import ReadError
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.routing import Route
 
 from horus_source import __version__
@@ -51,6 +52,7 @@ def create_app(
     host_url: str | None = None,
     mcp_url: str | None = None,
     mount_frontend: bool = True,
+    strict_host: bool = True,
 ) -> FastAPI:
     """Build and return a fully configured FastAPI application.
 
@@ -129,10 +131,25 @@ def create_app(
     app.state.mcp_url = runtime.mcp_url
     app.state.mode = "host" if mount_mcp else "standalone"
 
+    # Host-header validation (DNS-rebinding defense). A browser page on an
+    # attacker domain that resolves to 127.0.0.1 sends its OWN domain as the Host
+    # header; rejecting non-loopback Host values stops it from driving the API or
+    # the mounted /mcp transport. Skipped when the operator explicitly binds a
+    # public interface (strict_host=False) — they have opted into LAN exposure.
+    if strict_host:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"],
+        )
+
+    # CORS is only relevant for the Vite dev server (localhost:5173 -> :8420); the
+    # shipped UI is same-origin. No credentials are used (the API has no cookie/
+    # auth), so allow_credentials stays off — a malicious localhost:* page cannot
+    # make credentialed calls.
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"https?://localhost(:\d+)?",
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Accept"],
     )

@@ -48,8 +48,10 @@ export class SentryProvider implements Provider {
   ) {}
 
   /**
-   * Collect recent issues and resolve each one's top in-app frame. Best-effort:
-   * a failing frame fetch yields `frame: null`; a failing list yields []. Never throws.
+   * Collect recent issues and resolve each one's top in-app frame. Frame fetches
+   * stay best-effort (`frame: null`), but a failing issue LIST throws so the
+   * engine records the failure as an evidence gap instead of reading an outage
+   * as "no issues matched". Use queryEvidence() for the degrade-to-[] contract.
    */
   async collect(
     opts: { from?: string; to?: string; hintTerms?: string[] } = {},

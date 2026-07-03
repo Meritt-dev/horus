@@ -16,7 +16,7 @@ const SERVER_INSTRUCTIONS =
   'the whole repo to answer project-level questions (what owns a feature, which operation/type/' +
   'enum/auth rule applies, which frontend pattern exists, which worker/queue handles a job), ' +
   'call these Horus knowledge tools first. Every result includes provenance and a staleness flag; ' +
-  'if the index is stale, suggest re-running `horus index`.';
+  'if the index is stale, suggest re-running `horus init`.';
 
 /** Build (but do not connect) the Horus MCP server for a repo root. Testable. */
 export function buildMcpServer(root: string): McpServer {

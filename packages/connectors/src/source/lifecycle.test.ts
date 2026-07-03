@@ -9,6 +9,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PINNED_SOURCE_VERSION } from '@horus/core';
 
+// The pin is HORUS_VERSION, which is 'dev' (unenforced) in unbundled test runs —
+// enforce it here so the guard's throw paths are actually exercised. The dev-mode
+// no-op is covered separately in lifecycle.devpin.test.ts.
+vi.mock('@horus/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/core')>();
+  return { ...actual, PINNED_SOURCE_VERSION: '1.2.3', SOURCE_PIN_ENFORCED: true };
+});
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   spawn: vi.fn(),
@@ -112,7 +120,10 @@ describe('assertSourceVersionPinned', () => {
       msg = (e as Error).message;
     }
     expect(msg).toContain('horus update');
-    expect(msg).toContain(`uv tool install horus-source==${PINNED_SOURCE_VERSION}`);
+    // The backend ships inside the bundle — the remediation is `horus update`,
+    // never a PyPI install.
+    expect(msg).toContain('bundled');
+    expect(msg).not.toContain('uv tool install');
   });
 
   it('resolves when the installed version matches the pin', async () => {

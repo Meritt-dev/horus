@@ -154,7 +154,7 @@ if command -v horus-source &>/dev/null; then
     SOURCE_OK=1
   else
     warn "source-intelligence host not running"
-    hint "Start: cd /path/to/your-repo && horus index"
+    hint "Start: cd /path/to/your-repo && horus init"
   fi
 else
   warn "source-intelligence backend not installed (source features will be unavailable)"
@@ -202,9 +202,9 @@ if [ "$DEMO_READY" -eq 0 ]; then
   printf '  Postgres is up and migrations are applied.\n'
   if [ "$SOURCE_OK" -eq 1 ]; then
     printf '  Source-intelligence host is running — run %s then use the demo commands above.\n\n' \
-      "$(bold 'horus index')"
+      "$(bold 'horus init')"
   else
-    printf '  Source intelligence is not configured — run horus index in your repo for richer investigation results.\n\n'
+    printf '  Source intelligence is not configured — run horus init in your repo for richer investigation results.\n\n'
   fi
   exit 0
 else

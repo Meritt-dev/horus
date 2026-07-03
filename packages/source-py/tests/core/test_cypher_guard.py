@@ -39,6 +39,7 @@ def test_accepts_read_only(query: str) -> None:
         "SELECT 1; SELECT 2",  # multiple statements
         "MATCH (n) RETURN n",  # cypher, not SQL SELECT/WITH
         "/* harmless */ CREATE TABLE evil (x)",  # write keyword outside comment
+        "SELECT load_extension('evil.so')",  # code loading disguised as a SELECT
     ],
 )
 def test_rejects_writes_and_non_select(query: str) -> None:

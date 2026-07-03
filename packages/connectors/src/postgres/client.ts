@@ -10,6 +10,7 @@
 
 import pg from 'pg';
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage } from '@horus/core';
 import type { StateClient } from '../state/provider.js';
 import type { StatusCount } from '../state/analyze.js';
 
@@ -127,7 +128,8 @@ export class PostgresStateClient implements StateClient {
       await c.query('SELECT 1');
       return { ok: true, detail: 'postgres reachable' };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      // node-postgres connection failures can wrap the credential-bearing URL.
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from horus_source.core.embeddings.embedder import embed_query, embed_graph, _DEFAULT_DIMENSIONS
+from horus_source.core.embeddings.embedder import _DEFAULT_DIMENSIONS, embed_graph, embed_query
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, NodeLabel
 

@@ -1,6 +1,6 @@
 [project]
 name = "horus-source"
-version = "2.0.2"
+version = "0.20.0"
 description = "Graph-powered code intelligence engine — indexes codebases into a knowledge graph, exposed via MCP tools for AI agents and a CLI for developers."
 readme = "README.md"
 license = "MIT"
@@ -93,6 +93,11 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+# E501 (line-too-long) is deferred: the tree predates enforcement with ~76
+# long lines, and `ruff format` would rewrite thousands of unrelated lines
+# (it explodes collection literals). Re-enable after a dedicated formatting
+# pass. Every bug-catching rule (F/N/W and the rest of E) stays enforced.
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

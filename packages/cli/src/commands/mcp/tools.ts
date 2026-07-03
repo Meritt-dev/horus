@@ -35,7 +35,7 @@ export interface ToolResult {
    * HOR-386 — deterministic next-tool suggestions from the SHARED router (`route()`),
    * the same module the CLI human/--json surfaces use. Populated on the no-index/0-match/
    * stale-index conditions; absent otherwise. Targets are sibling MCP knowledge tools
-   * (`search_project_knowledge`) or `horus index` — never a fabricated tool.
+   * (`search_project_knowledge`) or `horus init` — never a fabricated tool.
    */
   suggestedNextTools?: RouteStep[];
 }
@@ -75,7 +75,7 @@ function load(root: string): Ctx | null {
 
 const NO_INDEX: ToolResult = {
   ok: false,
-  summary: 'No local project-knowledge index found. Build it with `horus index` (or import one).',
+  summary: 'No local project-knowledge index found. Build it with `horus init` (or import one).',
   // No index at all ⇒ the router's index remedy (rule #1 fires on `staleIndex`).
   suggestedNextTools: route({ command: 'mcp.search', staleIndex: true }),
 };
@@ -83,7 +83,7 @@ const NO_INDEX: ToolResult = {
 /**
  * HOR-386 — build next-tool suggestions for an MCP handler from the SHARED router. Empty
  * (0 matches / 0-hit lookup) routes to `search_project_knowledge`; a stale index adds the
- * `horus index` remedy. Returns `undefined` when the router has nothing to add, so a
+ * `horus init` remedy. Returns `undefined` when the router has nothing to add, so a
  * healthy result stays clean (no empty array on the wire).
  */
 function suggest(

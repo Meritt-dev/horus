@@ -835,7 +835,7 @@ const CONFIG_EXAMPLES: Record<string, string> = {
   'projects.*.repositories.*.name': 'e.g. name: "my-api"',
   'projects.*.repositories.*.path': 'e.g. path: "/absolute/path/to/repo"',
   'projects.*.repositories.*.source.hostUrl':
-    'e.g. "http://127.0.0.1:8420"  (start one with: horus index)',
+    'e.g. "http://127.0.0.1:8420"  (start one with: horus init)',
   'projects.*.environments': 'e.g. [{ name: "production", connectors: {} }]',
   'projects.*.environments.*.name': 'e.g. name: "production"',
   'projects.*.environments.*.connectors.elasticsearch.indexPattern':
@@ -994,7 +994,7 @@ export async function loadConfig(
     const entry = lookupProject(opts.name);
     if (entry === null) {
       throw new Error(
-        `Unknown project "${opts.name}". Run \`horus index --name ${opts.name}\` in its repo, ` +
+        `Unknown project "${opts.name}". Run \`horus init --name ${opts.name}\` in its repo, ` +
           `or list registered projects with \`horus projects\`.`,
       );
     }
@@ -1015,7 +1015,7 @@ export async function loadConfig(
       // (the recurring "Cannot find module .../config/horus.config.ts").
       if (!existsSync(jsPath) && !existsSync(tsPath)) {
         throw new Error(
-          `No Horus config found for ${cwd}. Run \`horus index\` in this repo to set it up, ` +
+          `No Horus config found for ${cwd}. Run \`horus init\` in this repo to set it up, ` +
             `or pass --config <path> / --name <project>.`,
         );
       }

@@ -232,7 +232,7 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
     }
 
     // Always keep `.horus/` out of Git — covers repos where Git was initialized
-    // after `horus index`, so the secrets file can never be committed.
+    // after `horus init`, so the secrets file can never be committed.
     ensureProjectGitignore(root);
 
     if (secretPatch.length > 0) {

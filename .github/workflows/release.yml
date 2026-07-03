@@ -69,9 +69,40 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: pnpm test
 
+      - name: Stamp source-py version (one bundle, one version)
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - "$RELEASE_VERSION" packages/source-py <<'PYEOF'
+          import re, sys
+          version, src = sys.argv[1], sys.argv[2]
+          pp = f"{src}/pyproject.toml"
+          t = open(pp).read()
+          t, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', t, count=1, flags=re.M)
+          assert n == 1
+          open(pp, "w").write(t)
+          lock = f"{src}/uv.lock"
+          t = open(lock).read()
+          t, n = re.subn(r'(name = "horus-source"\nversion = ")[^"]+(")', rf'\g<1>{version}\g<2>', t, count=1)
+          assert n == 1
+          open(lock, "w").write(t)
+          PYEOF
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.check.outputs.exists == 'false'
+
+      - name: Build bundled source-intelligence wheel
+        if: steps.check.outputs.exists == 'false'
+        run: bash ./scripts/release/build-source-wheel.sh
+
       - name: Build CLI
         if: steps.check.outputs.exists == 'false'
         run: pnpm --filter ./apps/horus build
+
+      - name: Assert bundled wheel is in dist
+        if: steps.check.outputs.exists == 'false'
+        run: test -f apps/horus/dist/horus_source.whl
 
       - name: Smoke test
         if: steps.check.outputs.exists == 'false'
@@ -139,6 +170,7 @@ jobs:
             --notes-file /tmp/release-notes.md \
             "apps/horus/dist/horus-${RELEASE_TAG}" \
             "apps/horus/dist/horus-${RELEASE_TAG}.sha256" \
+            "apps/horus/dist/horus_source.whl" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz.sha256" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-x86_64.tar.gz" \

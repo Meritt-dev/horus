@@ -19,7 +19,7 @@ import type { InvestigationReport } from './types.js';
  * `packages/cli/src/index.ts` (.command(...)) + the SUPPORTED connector types in connect.ts.
  */
 const REAL_TOOLS = new Set([
-  'index',
+  'init',
   'search',
   'blast-radius',
   'explain',
@@ -55,14 +55,14 @@ function assertRealSteps(conds: RouterConditions): ReturnType<typeof route> {
 }
 
 describe('route() — every rule resolves to a real command', () => {
-  it('host unreachable / stale index / degraded → index', () => {
+  it('host unreachable / stale index / degraded → init', () => {
     for (const c of [
       { command: 'investigate', hostUnreachable: true },
       { command: 'explain', staleIndex: true },
       { command: 'blast-radius', degradedSourceIntelligence: true },
     ] as RouterConditions[]) {
       const steps = assertRealSteps(c);
-      expect(steps[0]!.nextTool).toBe('index');
+      expect(steps[0]!.nextTool).toBe('init');
     }
   });
 
@@ -136,7 +136,7 @@ describe('route() — determinism & isolation', () => {
       staleIndex: true,
       seedName: 'X',
     });
-    expect(steps.map((s) => s.nextTool)).toEqual(['index', 'blast-radius']);
+    expect(steps.map((s) => s.nextTool)).toEqual(['init', 'blast-radius']);
   });
 
   it('unknown / unmatched conditions → no fabricated steps', () => {

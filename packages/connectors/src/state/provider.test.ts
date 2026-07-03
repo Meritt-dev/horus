@@ -66,4 +66,17 @@ describe('analyzeStateWith (shared by mongo + postgres)', () => {
     const a = await analyzeStateWith(client, { database: 'db', collections: ['good', 'bad'], staleHours: 24 }, now);
     expect(a.collections.map((c) => c.collection)).toEqual(['good']);
   });
+
+  it('THROWS when EVERY configured container fails — a down DB is a gap, not a clean empty', async () => {
+    const base = fakeClient({ containers: ['a', 'b'] });
+    const client: StateClient = {
+      ...base,
+      async count() {
+        throw new Error('connection refused');
+      },
+    };
+    await expect(
+      analyzeStateWith(client, { database: 'db', collections: ['a', 'b'], staleHours: 24 }, now),
+    ).rejects.toThrow(/connection refused/);
+  });
 });

@@ -60,8 +60,9 @@ export class AxiomProvider implements Provider {
    *
    * Signatures lead so high-volume errors aren't crowded out. When NO error-level row
    * matches (neither query returns anything) it broadens to the all-levels fallback so
-   * non-error datasets still produce evidence. Best-effort: a failing query yields [].
-   * Never throws.
+   * non-error datasets still produce evidence. A failing query THROWS so the engine
+   * records the failure as an evidence gap instead of reading an outage as "no rows
+   * matched". Use queryEvidence() for the degrade-to-[] contract.
    */
   async collect(
     opts: { from?: string; to?: string; hintTerms?: string[] } = {},

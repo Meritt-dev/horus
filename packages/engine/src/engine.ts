@@ -303,6 +303,43 @@ function relevanceForKind(kind: EvidenceKind): number {
 }
 
 /**
+ * Classify a thrown connector error into a short, leak-safe failure category.
+ * Returns ONLY the category — never the raw message — because raw connector
+ * errors embed hosts/ports/URLs ('connect ECONNREFUSED 127.0.0.1:6379') and
+ * the category flows into the persisted report (gap.why, sourceStatus.detail).
+ */
+export function connectorFailureReason(err: unknown): string {
+  const e = err as { name?: unknown; message?: unknown } | null | undefined;
+  const text = [
+    typeof e?.name === 'string' ? e.name : '',
+    typeof e?.message === 'string' ? e.message : '',
+  ].join(' ');
+  if (/abort|timed?\s*out|timeout|ETIMEDOUT/i.test(text)) return 'timeout';
+  if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EPIPE|socket|network|fetch failed/i.test(text)) {
+    return 'connection failed';
+  }
+  // All HTTP connector clients throw `<Name> <METHOD> <path> -> <status>: <body>`;
+  // classify from that anchored status FIRST so URL/path/body content (a PromQL
+  // expr containing "auth", a "401" in an index name) can never override it.
+  // `HTTP <status>` (no arrow) covers driver-style messages.
+  const status = (/->\s*(?:HTTP\s+)?(\d{3})\b/.exec(text) ?? /\bHTTP\s+(\d{3})\b/.exec(text))?.[1];
+  if (status !== undefined) {
+    if (status === '401' || status === '403') return 'auth failure';
+    if (status === '429') return 'rate limited';
+    if (status.startsWith('5')) return 'server error';
+    return 'request failed';
+  }
+  // Keyword fallbacks for non-HTTP errors (DB/queue drivers). Bare "auth" and
+  // unanchored status digits are deliberately absent — too collision-prone.
+  if (/unauthoriz|forbidden|WRONGPASS|NOAUTH|authenticat|invalid[^']*(token|key|credential|password)/i.test(text)) {
+    return 'auth failure';
+  }
+  if (/rate.?limit|too many requests/i.test(text)) return 'rate limited';
+  if (/internal server error/i.test(text)) return 'server error';
+  return 'request failed';
+}
+
+/**
  * Compute the start of the log query window from `since`.
  * Accepts duration strings like 24h, 7d, 30m, 90s; anything else defaults to
  * 7 days ago. Returns an ISO-8601 timestamp.
@@ -1977,6 +2014,7 @@ export async function investigate(
   const entitySummaries: string[] = [];
   let logsCollected = false;
   let logsCompatibilityError: string | undefined;
+  let logsFailureReason: string | undefined;
 
   if (deps.logs) {
     try {
@@ -2370,9 +2408,11 @@ export async function investigate(
           }
         }
       }
-    } catch {
+    } catch (logsErr) {
       // Logs failure must never break the investigation — continue without log evidence.
+      // logsCollected stays false — gap detector will report the failure + reason.
       analysis = null;
+      logsFailureReason = connectorFailureReason(logsErr);
     }
   }
 
@@ -2383,6 +2423,7 @@ export async function investigate(
   // Optional; a configured-but-empty Sentry is negative evidence (not a gap). One failing
   // provider must never abort the investigation.
   let sentryCollected = false;
+  let sentryFailureReason: string | undefined;
   let sentryIssueCount = 0;
   if (deps.sentry) {
     try {
@@ -2479,9 +2520,10 @@ export async function investigate(
           ambientLogEvIds.push(ev.id);
         }
       }
-    } catch {
+    } catch (sentryErr) {
       // Sentry failure must never break the investigation — continue without it.
       sentryCollected = false;
+      sentryFailureReason = connectorFailureReason(sentryErr);
     }
   }
 
@@ -2492,6 +2534,7 @@ export async function investigate(
   // configured-but-empty Axiom is negative evidence (not a gap). One failing provider
   // must never abort the investigation.
   let axiomCollected = false;
+  let axiomFailureReason: string | undefined;
   if (deps.axiom) {
     try {
       const from = logWindowFrom(input.logsSince ?? input.since);
@@ -2552,9 +2595,10 @@ export async function investigate(
           ambientLogEvIds.push(ev.id);
         }
       }
-    } catch {
+    } catch (axiomErr) {
       // Axiom failure must never break the investigation — continue without it.
       axiomCollected = false;
+      axiomFailureReason = connectorFailureReason(axiomErr);
     }
   }
 
@@ -2639,10 +2683,17 @@ export async function investigate(
 
   // Any configured state provider (Mongo and/or Postgres) contributes the same
   // state-evidence shape; one provider failing must not abort the others.
-  const stateProviders = [deps.mongo, deps.postgres].filter(
-    (p): p is StateProvider => p != null,
-  );
-  for (const provider of stateProviders) {
+  const stateProviders: Array<{ name: 'mongodb' | 'postgres'; provider: StateProvider }> = [
+    ...(deps.mongo ? [{ name: 'mongodb' as const, provider: deps.mongo }] : []),
+    ...(deps.postgres ? [{ name: 'postgres' as const, provider: deps.postgres }] : []),
+  ];
+  // Undefined when NO state provider (Mongo/Postgres/Redis state) is configured, so old
+  // reports and provider-less runs never fire the 'application state' gap; false when at
+  // least one configured provider threw. Failures carry only leak-safe categories.
+  let stateCollected: boolean | undefined =
+    stateProviders.length > 0 || deps.redisState != null ? true : undefined;
+  const stateFailures: string[] = [];
+  for (const { name, provider } of stateProviders) {
     try {
       const analysis = await provider.analyzeState();
       stateAnalysis = analysis;
@@ -2659,8 +2710,10 @@ export async function investigate(
           dataAnomalyCollections.push(s.collection);
         }
       }
-    } catch {
+    } catch (stateErr) {
       // Leave any prior provider's analysis intact.
+      stateCollected = false;
+      stateFailures.push(`${name}: ${connectorFailureReason(stateErr)}`);
     }
   }
 
@@ -2680,10 +2733,16 @@ export async function investigate(
         const ev = mkEv('redis-key', s.title, s.payload, {}, redisStateAnalysis.collectedAt, relevance);
         redisStateEvIds.push(ev.id);
       }
-    } catch {
+    } catch (redisErr) {
       redisStateAnalysis = null;
+      // Redis-key evidence maps to the same 'state' source (sourceForKind), so a Redis
+      // failure folds into the state dimension exactly like a Mongo/Postgres throw.
+      stateCollected = false;
+      stateFailures.push(`redis: ${connectorFailureReason(redisErr)}`);
     }
   }
+  const stateFailureReason =
+    stateFailures.length > 0 ? stateFailures.join('; ').slice(0, 160) : undefined;
 
   // e0c. QUEUE RUNTIME STATE (HOR-12) — backlog, failures, starvation as evidence.
   // Scoped to the queues that appear in the stitcher edges so we only query what's
@@ -2705,6 +2764,10 @@ export async function investigate(
     count: number;
     stale: boolean;
   }[] = [];
+  // False + queue configured means live collection was attempted but failed — the gap
+  // detector keys on the strict false so provider-less runs / old reports stay silent.
+  let queueCollected = false;
+  let queueFailureReason: string | undefined;
 
   if (deps.queue) {
     try {
@@ -2716,6 +2779,9 @@ export async function investigate(
       // sync job) even when a queue was hit. Discovery is best-effort: a failure
       // falls back to the static names so a flaky scan never drops known queues.
       const staticNames = [...new Set(queueHits.map((e) => e.queueName))];
+      // Follow-up: a discovery failure with zero static names silently skips live
+      // collection — surfacing that case is deferred (the analyzeQueues catch below
+      // covers explicit collection failures).
       const discovered = await deps.queue.discoverQueues().catch(() => [] as string[]);
       const queueNames = [...new Set([...staticNames, ...discovered])];
       if (queueNames.length > 0) {
@@ -2749,8 +2815,12 @@ export async function investigate(
           }
         }
       }
-    } catch {
+      // Set only after the full collection + analysis loop completes without error.
+      queueCollected = true;
+    } catch (queueErr) {
+      // queueCollected stays false — gap detector will report the failure + reason.
       queueRuntimeState = null;
+      queueFailureReason = connectorFailureReason(queueErr);
     }
   }
 
@@ -2912,7 +2982,9 @@ export async function investigate(
     } catch (metricsErr) {
       // Metrics failure (including timeout) must never break the investigation.
       // metricsCollected stays false — gap detector will report the failure + reason.
-      metricsFailureReason = (metricsErr as Error)?.message?.slice(0, 120) ?? 'unknown error';
+      // Category only — a raw Grafana error can embed the instance URL, which must
+      // never land verbatim in gap.why / the persisted report.
+      metricsFailureReason = connectorFailureReason(metricsErr);
     } finally {
       // Always clear the timer to prevent it from firing after a fast response
       // and to release the reference regardless of the outcome.
@@ -2944,6 +3016,7 @@ export async function investigate(
   // exactly like the log/Sentry/Axiom blocks. Best-effort: a failing query contributes nothing
   // and never aborts the investigation.
   let shopifyCollected = false;
+  let shopifyFailureReason: string | undefined;
   if (deps.shopify) {
     try {
       const from = logWindowFrom(input.logsSince ?? input.since);
@@ -2968,9 +3041,10 @@ export async function investigate(
         ev.id = globalThis.crypto.randomUUID();
         evidence.push(ev);
       }
-    } catch {
+    } catch (shopifyErr) {
       // Shopify failure must never break the investigation — continue without it.
       shopifyCollected = false;
+      shopifyFailureReason = connectorFailureReason(shopifyErr);
     }
   }
 
@@ -3951,7 +4025,7 @@ export async function investigate(
   }
   if (degradedNoSource) {
     nextActions.unshift(
-      'Source intelligence was unavailable — run `horus index` to enable code-aware analysis, then re-run for a full investigation.',
+      'Source intelligence was unavailable — run `horus init` to enable code-aware analysis, then re-run for a full investigation.',
     );
   }
 
@@ -4004,18 +4078,26 @@ export async function investigate(
         // its collection ran (distinguishes "no open issues" from "collection failed").
         sentry: deps.sentry != null,
         sentryCollected,
+        sentryFailureReason,
         // Axiom is configured iff a provider was built; axiomCollected tracks whether its
         // collection ran (distinguishes "no matching rows" from "collection failed").
         axiom: deps.axiom != null,
         axiomCollected,
+        axiomFailureReason,
         // Shopify is configured iff a provider was built (auth present); shopifyCollected
         // tracks whether its query collection ran (vs "no queries supplied / failed").
         shopify: deps.shopify != null,
         shopifyCollected,
+        shopifyFailureReason,
         metricsCollected,
         metricsFailureReason,
         logsCollected,
         logsCompatibilityError,
+        logsFailureReason,
+        stateCollected,
+        stateFailureReason,
+        queueCollected,
+        queueFailureReason,
         sinceProvided: input.since !== undefined,
       }
     : {
@@ -4024,16 +4106,27 @@ export async function investigate(
         postgres: deps.postgres != null,
         sentry: deps.sentry != null,
         sentryCollected,
+        sentryFailureReason,
         axiom: deps.axiom != null,
         axiomCollected,
+        axiomFailureReason,
         shopify: deps.shopify != null,
         shopifyCollected,
+        shopifyFailureReason,
         grafana: deps.metrics != null,
+        // Without CLI-supplied flags, redis is configured iff a Redis state provider was
+        // built — the queue-gap routeHint and state-configured checks depend on it.
+        redis: deps.redisState != null,
         queue: deps.queue != null,
         metricsCollected,
         metricsFailureReason,
         logsCollected,
         logsCompatibilityError,
+        logsFailureReason,
+        stateCollected,
+        stateFailureReason,
+        queueCollected,
+        queueFailureReason,
         sinceProvided: input.since !== undefined,
       };
   // HOR-385: in source-impact mode the gap detector suppresses the runtime gaps and forces the

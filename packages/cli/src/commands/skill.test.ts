@@ -49,6 +49,8 @@ describe('generateSkillContent', () => {
   it('includes all required command recipes', () => {
     const content = generateSkillContent('generic');
     const required = [
+      'horus init',
+      'horus connect',
       'horus explain',
       'horus investigate',
       'horus queues',
@@ -65,6 +67,18 @@ describe('generateSkillContent', () => {
     for (const cmd of required) {
       expect(content, `missing: ${cmd}`).toContain(cmd);
     }
+  });
+
+  it('never references the removed setup/index commands', () => {
+    const content = generateSkillContent('generic');
+    expect(content).not.toMatch(/horus setup\b/);
+    expect(content).not.toMatch(/horus index\b/);
+  });
+
+  it('documents the single onboarding command and idempotent re-runs', () => {
+    const content = generateSkillContent('generic');
+    expect(content).toContain('horus init');
+    expect(content).toContain('idempotent');
   });
 
   it('distinguishes deterministic evidence from AI reasoning', () => {

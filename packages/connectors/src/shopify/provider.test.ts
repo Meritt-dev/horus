@@ -102,6 +102,27 @@ describe('ShopifyProvider.collect + toEvidence', () => {
     });
     expect(records.map((r) => r.name)).toEqual(['good']);
   });
+
+  it('THROWS when EVERY query fails — a total outage must reach the engine as a failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> => new Response('boom', { status: 500 })));
+    const provider = new ShopifyProvider(stubClient(), { store: 'acme' });
+    await expect(
+      provider.collect({
+        queries: [
+          { name: 'a', query: 'A', kind: 'state' },
+          { name: 'b', query: 'B', kind: 'state' },
+        ],
+      }),
+    ).rejects.toThrow(/-> 500/);
+  });
+
+  it('queryEvidence still degrades to [] when every query fails (CLI-safe entry point)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> => new Response('boom', { status: 500 })));
+    const provider = new ShopifyProvider(stubClient(), { store: 'acme' });
+    await expect(
+      provider.queryEvidence({ queries: [{ name: 'a', query: 'A', kind: 'state' }] }),
+    ).resolves.toEqual([]);
+  });
 });
 
 describe('buildTitle', () => {

@@ -45,9 +45,7 @@ Horus is not another dashboard, alerting tool, or log viewer. It sits on top of 
 ## Getting started
 
 ```bash
-horus setup
 horus init
-horus index
 horus connect elasticsearch   # optional runtime connectors
 horus investigate "checkout latency spike"
 horus investigations          # list saved IDs
@@ -151,7 +149,7 @@ Horus is organized in four layers:
 
 **Source Intelligence**
 
-- Horus source intelligence backend — code graph, semantic search, impact analysis, ownership across TypeScript/JavaScript and Python (tree-sitter).
+- Horus source intelligence backend (`packages/source-py`, ships inside the bundle) — code graph, semantic search, impact analysis, ownership across TypeScript/JavaScript, Python, Go, Java, and Rust (tree-sitter).
 
 **Runtime Evidence**
 
@@ -183,7 +181,7 @@ The **only** code-intelligence gap Horus owns is **queue-boundary stitching**: t
 
 > If the Horus source intelligence backend is unavailable, Horus can still collect runtime evidence, but source context, impact analysis, change analysis, and queue stitching become degraded.
 
-Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI shell-outs for queries). Run `horus index` in a repository to start and register its source intelligence host.
+Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI shell-outs for queries). Run `horus init` in a repository to start and register its source intelligence host.
 
 ## Configuration
 
@@ -232,28 +230,28 @@ export default defineConfig({
 
 **No connector runs without an explicit project/env scope** — there are no global connector defaults.
 
-**Secrets are never committed.** Connector credentials are read from environment variables at runtime. Keep them in a gitignored file (e.g. `~/.horus.env`) and `source` it before running. For a full reference on which Horus files to commit and which to gitignore, see **[docs/gitignore-guide.md](./docs/gitignore-guide.md)**.
+**Secrets are never committed.** `horus connect` encrypts connector credentials at rest into `.horus/secrets.local.json` (AES-256-GCM, never `config.json`) and auto-adds `.horus/` to `.gitignore`; environment variables are also supported at runtime. For the full secrets and gitignore model, see **[horus.sh/docs/security](https://horus.sh/docs/security)**.
 
 ## Install
 
-See **[docs/install.md](./docs/install.md)** for full install, update, and uninstall instructions.
+See **[horus.sh/docs/installation](https://horus.sh/docs/installation)** for full install, update, and uninstall instructions.
 
 ```bash
 curl -fsSL https://horus.sh/install.sh | bash
 npm install -g @merittdev/horus
 brew install meritt-dev/tap/horus
 horus --version
-horus setup
+horus init
 ```
 
-The curl installer downloads the Horus CLI from GitHub Releases and attempts to install the Horus source intelligence backend. All three channels install the same `horus` binary.
+The curl installer downloads the Horus CLI from GitHub Releases and installs the source intelligence backend from the wheel **bundled in the same release** — one bundle, one version, nothing on PyPI. All three channels ship the same `horus` binary with the backend wheel alongside it; `horus init` installs the backend automatically when it's missing.
 
 ### What the installer installs
 
 | Component | Role | Required |
 | --- | --- | --- |
 | **Horus CLI** | The `horus` command | Yes |
-| **Horus source intelligence backend** | Enables `horus index`, `horus explain`, `horus changes`, `horus architecture` | Optional |
+| **Horus source intelligence backend** | Enables `horus init`, `horus explain`, `horus changes`, `horus architecture` | Optional |
 
 ### Prerequisites
 
@@ -268,16 +266,16 @@ The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or 
 ### Direct download (without the curl installer)
 
 ```bash
-# Replace vX.Y.Z with the current release tag
-curl -fsSL https://github.com/meritt-dev/horus/releases/download/v0.12.0/horus-v0.12.0 -o horus
+# Replace vX.Y.Z with the current release tag (see github.com/meritt-dev/horus/releases)
+curl -fsSL https://github.com/meritt-dev/horus/releases/download/vX.Y.Z/horus-vX.Y.Z -o horus
 chmod +x horus
 sudo mv horus /usr/local/bin/horus
 horus --version
 ```
 
-To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)**.
+To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[horus.sh/docs/installation#uninstall](https://horus.sh/docs/installation#uninstall)**.
 
-If something goes wrong after install, see **[docs/troubleshooting.md](./docs/troubleshooting.md)**.
+If something goes wrong after install, run `horus doctor` and see **[horus.sh/docs/installation#troubleshooting](https://horus.sh/docs/installation#troubleshooting)**.
 
 ## Local development
 
@@ -287,7 +285,7 @@ docker compose up -d                  # Postgres 16 on localhost:5433
 pnpm build                            # builds apps/horus/dist/index.cjs
 
 # Per repository: start the source intelligence host and stitch queue boundaries
-horus index
+horus init
 
 source ~/.horus.env
 
@@ -316,7 +314,7 @@ horus investigate --help
 | --- | --- |
 | `horus status [--project --env]` | Per-project/env connector-health matrix |
 | `horus connect <type>` | Add/update a runtime connector — `elasticsearch` / `mongodb` / `postgres` / `sentry` / `axiom` / `grafana` / `redis` (plus `ai` to configure an AI provider) |
-| `horus index --project <p> --env <e>` | Build the queue map (stitcher) for a project |
+| `horus init --project <p> --env <e>` | Build the queue map (stitcher) for a project |
 | `horus hosts [--reap]` | List source-intelligence hosts and live status; `--reap` stops orphaned hosts |
 | `horus stop [--all]` | Stop this repo's source-intelligence host (`--all` stops every host) |
 | `horus investigate --project <p> --env <e> "<hint>"` | Full deterministic investigation report |
@@ -333,17 +331,15 @@ horus investigate --help
 A repo carries a `.horus/config.json` (discovered by walking up from the working directory, like `.git`), and a global registry (`~/.horus/registry.json`) lets `--name` resolve a project from anywhere.
 
 ```bash
-horus setup
-
 cd /repos/atlas-payments
-horus index
+horus init
 
 horus investigate "checkout latency spike"
 horus investigate --name atlas-payments "checkout latency spike"
 horus projects
 ```
 
-`horus index` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
+`horus init` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
 
 ## Layout
 

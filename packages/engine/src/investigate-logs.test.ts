@@ -1056,6 +1056,18 @@ describe('investigate() with THROWING checkCompatibility', () => {
     expect(logsGap?.why).toContain('failed');
     expect(logsGap?.why).not.toContain('incompatible');
   });
+
+  it('logs gap carries the classified failure reason, not the raw error text', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: throwingLogs },
+    );
+
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    // 'network timeout' classifies to the leak-safe 'timeout' category.
+    expect(logsGap?.why).toContain('(timeout)');
+    expect(logsGap?.why).not.toContain('network timeout');
+  });
 });
 
 // ---------------------------------------------------------------------------

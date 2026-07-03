@@ -18,8 +18,25 @@ _SYMBOL_LABELS: tuple[NodeLabel, ...] = (
 
 _CONSTRUCTOR_NAMES: frozenset[str] = frozenset({"__init__", "__new__"})
 
+# Entry-point symbol names across languages: Go/Rust/Java `main`, and Python
+# `def main()` conventions. The parsers do not all set is_entry_point for these,
+# so exempt by name to avoid flagging a program's entry point as dead.
+_ENTRY_POINT_NAMES: frozenset[str] = frozenset({"main"})
+
 def _is_test_class(name: str) -> bool:
     return len(name) > 4 and name.startswith("Test") and name[4].isupper()
+
+# Go's `go test` runner invokes these by reflection (no static CALLS edge). Gated
+# to .go files so a class like `ExampleService` in other languages isn't exempted.
+_GO_TEST_PREFIXES: tuple[str, ...] = ("Test", "Benchmark", "Example", "Fuzz")
+
+def _is_go_test_symbol(name: str, file_path: str) -> bool:
+    if not file_path.endswith(".go"):
+        return False
+    return any(
+        len(name) > len(p) and name.startswith(p) and name[len(p)].isupper()
+        for p in _GO_TEST_PREFIXES
+    )
 
 def _is_test_file(file_path: str) -> bool:
     parts = PurePosixPath(file_path).parts
@@ -28,6 +45,7 @@ def _is_test_file(file_path: str) -> bool:
         or "test" in parts
         or any(p.startswith("test_") for p in parts)
         or file_path.endswith("conftest.py")
+        or file_path.endswith("_test.go")  # Go test files
     )
 
 def _is_dunder(name: str) -> bool:
@@ -95,9 +113,11 @@ def _is_exempt(
     return (
         is_entry_point
         or is_exported
+        or name in _ENTRY_POINT_NAMES
         or name in _CONSTRUCTOR_NAMES
         or name.startswith("test_")
         or _is_test_class(name)
+        or _is_go_test_symbol(name, file_path)
         or _is_test_file(file_path)
         or _is_dunder(name)
         or _is_python_public_api(name, file_path)

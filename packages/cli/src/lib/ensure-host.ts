@@ -7,7 +7,7 @@
  *
  * This composes the canonical host-lifecycle primitives owned by HOR-SOURCE
  * (@horus/connectors) — it does NOT reimplement host management, and it never performs
- * first-time analysis (that remains the job of `horus index`).
+ * first-time analysis (that remains the job of `horus init`).
  */
 import { resolve } from 'node:path';
 import pc from 'picocolors';
@@ -59,13 +59,13 @@ export function ensureHostReasonHint(reason: EnsureHostReason | undefined): stri
     case 'version-mismatch':
       return 'the installed horus-source backend does not match the version Horus is pinned to — reinstall the pinned version (run `horus status` to see it)';
     case 'not-analyzed':
-      return 'this repo has not been indexed yet — run: horus index';
+      return 'this repo has not been indexed yet — run: horus init';
     case 'bad-url':
       return 'the configured source host URL is not a valid URL';
     case 'no-free-port':
       return 'no free localhost port was available to start this repo’s own source host';
     default:
-      return 'the host did not become healthy — run: horus index';
+      return 'the host did not become healthy — run: horus init';
   }
 }
 
@@ -234,7 +234,7 @@ export async function ensureSourceHost(
   // We can only restart a real, analyzed repo with the source backend installed.
   if (!(await sourceAvailable())) return { ok: false, reason: 'source-unavailable' };
   // Never restart a host with a drifted backend — it would re-corrupt the graph the same
-  // way `horus index` would. Mirror that guard here so self-heal can't smuggle one in.
+  // way `horus init` would. Mirror that guard here so self-heal can't smuggle one in.
   try {
     await assertSourceVersionPinned();
   } catch {

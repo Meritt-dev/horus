@@ -130,7 +130,7 @@ export async function buildInvestigationContext(
     log(
       pc.yellow(
         `Proceeding in runtime-only mode — no source intelligence. ` +
-          `Run ${pc.bold('horus index')} for a full (code-aware) investigation.`,
+          `Run ${pc.bold('horus init')} for a full (code-aware) investigation.`,
       ),
     );
   }

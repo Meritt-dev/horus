@@ -142,15 +142,17 @@ interface DiscoveredIncident {
 
 /**
  * Poll Sentry once: list recent issues, detect ones not seen before, and turn each into a
- * `DiscoveredIncident`. Degrades to [] on any error (the provider never throws past here).
+ * `DiscoveredIncident`. Degrades to [] on any error (collect() failures are caught here).
  */
 async function pollSentry(
   sentry: SentryProvider,
   seen: Set<string>,
 ): Promise<DiscoveredIncident[]> {
   // SentryProvider wraps the client; reach its issue list via collect() (frames resolved
-  // best-effort). We only need the issue metadata here, not the frames.
-  const signatures = await sentry.collect({});
+  // best-effort). We only need the issue metadata here, not the frames. collect()
+  // throws on transport/auth failure — the poll loop degrades to [] and retries
+  // next tick rather than killing the watcher.
+  const signatures = await sentry.collect({}).catch(() => []);
   const issues = signatures.map((s) => s.issue);
   return detectNewSentryIncidents(issues, seen).map((issue) => ({
     hint: hintFromSentryIssue(issue),

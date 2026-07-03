@@ -4,6 +4,7 @@
  */
 
 import type { Evidence } from '@horus/core';
+import { redactSecrets } from '@horus/core';
 
 // ---------------------------------------------------------------------------
 // Level utilities
@@ -724,6 +725,25 @@ export function computeErrorDeltas(
 // Evidence conversion
 // ---------------------------------------------------------------------------
 
+/**
+ * Recursively redact secret-bearing string leaves in a structured value.
+ * Logger `context` is commonly nested (`context.error.url`, request config, driver
+ * details), so a top-level-only pass leaves secrets in nested objects/arrays that
+ * still survive into `JSON.stringify(payload)` and flow to reports/AI input. Walks
+ * objects and arrays, redacting every string leaf; non-string scalars pass through.
+ * Context originates from Elasticsearch `_source` (already JSON), so it is acyclic.
+ */
+function deepRedactSecrets(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(deepRedactSecrets);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, deepRedactSecrets(v)]),
+    );
+  }
+  return value;
+}
+
 export function logsToEvidence(
   records: LogRecord[],
   query: string,
@@ -731,7 +751,8 @@ export function logsToEvidence(
 ): Evidence[] {
   return records.map((r, i) => {
     const componentOrService = r.component ?? r.service ?? '';
-    const title = `[${r.level}] ${componentOrService}: ${r.message}`.slice(0, 160);
+    // Raw log messages go straight into the title — redact like the other providers do.
+    const title = redactSecrets(`[${r.level}] ${componentOrService}: ${r.message}`).slice(0, 160);
 
     const relevance =
       r.level === 'fatal'
@@ -742,6 +763,20 @@ export function logsToEvidence(
             ? 0.6
             : 0.3;
 
+    // The payload persists in the report and feeds AI input — the secret scrubbed
+    // from the title must not survive in the record's string fields. `raw` (the
+    // full ES _source, message included) is dropped: nothing reads it from
+    // evidence payloads, and it can't be redacted without mangling its shape.
+    const { raw: _raw, ...rest } = r;
+    const payload = {
+      ...rest,
+      message: redactSecrets(r.message),
+      ...(r.detail !== undefined ? { detail: redactSecrets(r.detail) } : {}),
+      ...(r.context !== undefined
+        ? { context: deepRedactSecrets(r.context) as Record<string, unknown> }
+        : {}),
+    };
+
     return {
       id: `ev_log_${i}`,
       source: 'logs' as const,
@@ -749,7 +784,7 @@ export function logsToEvidence(
       title,
       timestamp: r.timestamp,
       relevance,
-      payload: r,
+      payload,
       links: { traceId: r.traceId, requestId: r.requestId },
       provenance: { query, collectedAt },
     };

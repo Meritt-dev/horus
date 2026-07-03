@@ -8,6 +8,7 @@
 
 import { MongoClient, type Document } from 'mongodb';
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage } from '@horus/core';
 
 export interface MongoClientOpts {
   url: string;
@@ -106,7 +107,8 @@ export class MongoStateClient {
       await db.command({ ping: 1 });
       return { ok: true, detail: `mongodb ${this.opts.database} reachable` };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      // Driver errors (MongoParseError, server selection) can echo the URI creds.
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 

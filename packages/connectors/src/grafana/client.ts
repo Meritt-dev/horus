@@ -5,16 +5,21 @@
  */
 
 import type { HealthStatus } from '@horus/core';
+import { redactErrorMessage, redactSecrets, redactUpstreamBody } from '@horus/core';
+import { fetchWithRetry, type HttpRequestOptions } from '../http.js';
 
 export interface GrafanaClientOpts {
   baseUrl: string;
   username?: string;
   password?: string;
+  /** Transport overrides (timeout / retry) forwarded to fetchWithRetry. */
+  http?: HttpRequestOptions;
 }
 
 export class GrafanaClient {
   private readonly baseUrl: string;
   private readonly authHeader: string | undefined;
+  private readonly http: HttpRequestOptions;
 
   constructor(opts: GrafanaClientOpts) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
@@ -22,6 +27,7 @@ export class GrafanaClient {
       const encoded = Buffer.from(`${opts.username}:${opts.password}`).toString('base64');
       this.authHeader = `Basic ${encoded}`;
     }
+    this.http = opts.http ?? {};
   }
 
   private buildHeaders(): Record<string, string> {
@@ -33,10 +39,23 @@ export class GrafanaClient {
   }
 
   private async getJson(url: string, signal?: AbortSignal): Promise<unknown> {
-    const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(), signal });
+    // A caller-supplied signal (e.g. the engine's metrics budget) composes with
+    // the helper's per-attempt timeout; aborts are never retried, so budget
+    // aborts still yield prompt partial-metrics results (HOR-339).
+    const res = await fetchWithRetry(
+      url,
+      { method: 'GET', headers: this.buildHeaders() },
+      { ...this.http, ...(signal !== undefined ? { signal } : {}) },
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Grafana GET ${url} -> ${res.status}: ${text}`);
+      // Redact the WHOLE message: ${url} is the full request URL, so a baseUrl
+      // configured with userinfo (https://user:pass@grafana) would leak here
+      // even with an empty body. The body is redacted BEFORE capping so a
+      // secret straddling the 200-char boundary can never survive truncated.
+      throw new Error(
+        redactSecrets(`Grafana GET ${url} -> ${res.status}: ${redactUpstreamBody(text)}`),
+      );
     }
     const json = await res.json().catch(() => {
       throw new Error(`Grafana GET ${url}: response is not valid JSON`);
@@ -50,7 +69,7 @@ export class GrafanaClient {
       await this.getJson(`${this.baseUrl}/api/health`);
       return { ok: true, detail: 'grafana ok' };
     } catch (err) {
-      return { ok: false, detail: (err as Error).message };
+      return { ok: false, detail: redactErrorMessage(err) };
     }
   }
 
@@ -108,7 +127,8 @@ export class GrafanaClient {
     const r = raw as Record<string, unknown>;
     if (r['status'] === 'error') {
       const errMsg = typeof r['error'] === 'string' ? r['error'] : 'unknown error';
-      throw new Error(`Prometheus datasource error: ${errMsg}`);
+      // Upstream-controlled string — redact before it rides on a thrown Error.
+      throw new Error(`Prometheus datasource error: ${redactSecrets(errMsg)}`);
     }
     return raw;
   }
@@ -131,7 +151,8 @@ export class GrafanaClient {
     const r = raw as Record<string, unknown>;
     if (r['status'] === 'error') {
       const errMsg = typeof r['error'] === 'string' ? r['error'] : 'unknown error';
-      throw new Error(`Prometheus datasource error: ${errMsg}`);
+      // Upstream-controlled string — redact before it rides on a thrown Error.
+      throw new Error(`Prometheus datasource error: ${redactSecrets(errMsg)}`);
     }
     return raw;
   }

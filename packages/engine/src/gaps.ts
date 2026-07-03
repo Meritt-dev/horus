@@ -82,11 +82,59 @@ export interface ConnectorFlags {
    */
   metricsCollected?: boolean;
   /**
-   * Short description of why metrics collection failed (e.g. "metrics timeout",
-   * "connection refused"). Only set when collection was attempted and failed.
-   * Used to surface the exact failure reason in the gap analysis.
+   * Short description of why metrics collection failed (e.g. "timeout",
+   * "connection failed"). Only set when collection was attempted and failed.
+   * Used to surface the exact failure reason in the gap analysis. Like every
+   * *FailureReason below, this is a leak-safe CATEGORY (from
+   * `connectorFailureReason`), never raw connector error text.
    */
   metricsFailureReason?: string;
+  /**
+   * Short leak-safe category of why log collection failed (e.g. "timeout",
+   * "connection failed"). Only set when collection was attempted and failed.
+   * Surfaced in the logs gap `why` alongside the generic failure text.
+   */
+  logsFailureReason?: string;
+  /**
+   * Short leak-safe category of why Sentry collection failed. Only set when
+   * collection was attempted and failed. Surfaced in the logs gap `why`.
+   */
+  sentryFailureReason?: string;
+  /**
+   * Short leak-safe category of why Axiom collection failed. Only set when
+   * collection was attempted and failed. Surfaced in the logs gap `why`.
+   */
+  axiomFailureReason?: string;
+  /**
+   * Short leak-safe category of why Shopify query collection failed. Only set
+   * when collection was attempted and failed. Surfaced in the application-state gap.
+   */
+  shopifyFailureReason?: string;
+  /**
+   * True when ALL configured state providers (MongoDB / Postgres / Redis state)
+   * ran to completion (even with zero signals). False when at least one threw.
+   * Absent when none is configured — old persisted reports and provider-less
+   * runs never produce a state gap. A configured-but-empty provider is negative
+   * evidence, not a gap (HOR-33).
+   */
+  stateCollected?: boolean;
+  /**
+   * Provider-prefixed leak-safe failure categories for the state providers that
+   * threw, e.g. "mongodb: connection failed; redis: timeout". Only set when
+   * `stateCollected` is false.
+   */
+  stateFailureReason?: string;
+  /**
+   * True when live queue collection ran to completion (even with zero queues).
+   * False/absent + queue:true means collection was attempted but failed. Lets the
+   * gap detector distinguish "no live queue anomalies" from "collection failed".
+   */
+  queueCollected?: boolean;
+  /**
+   * Short leak-safe category of why live queue collection failed. Only set when
+   * collection was attempted and failed. Surfaced in the queue-runtime-state gap.
+   */
+  queueFailureReason?: string;
   /**
    * True when the user already supplied a `--since` value.
    * Changes the "deployment records" gap text to avoid redundant "re-run with --since" advice.
@@ -176,17 +224,23 @@ export function detectMissingEvidence(
       logNextSource = 'Add an `elasticsearch`, `sentry`, and/or `axiom` connector to the project/environment';
     } else if (!connectors.elasticsearch && connectors.sentry) {
       // ES absent but Sentry configured — the gap is purely about Sentry.
+      const sentryDetail = connectors.sentryFailureReason
+        ? ` (${connectors.sentryFailureReason})`
+        : '';
       logWhy = connectors.sentryCollected
         ? 'No open Sentry issues matched in the window — cannot confirm the actual error signatures.'
-        : 'Sentry collection failed or timed out — cannot confirm the actual error signatures.';
+        : `Sentry collection failed or timed out${sentryDetail} — cannot confirm the actual error signatures.`;
       logNextSource = connectors.sentryCollected
         ? 'Widen the window (--since) or check the Sentry project for open issues'
         : 'Check the Sentry auth token / project, then retry';
     } else if (!connectors.elasticsearch && connectors.axiom) {
       // ES (and Sentry) absent but Axiom configured — the gap is purely about Axiom.
+      const axiomDetail = connectors.axiomFailureReason
+        ? ` (${connectors.axiomFailureReason})`
+        : '';
       logWhy = connectors.axiomCollected
         ? 'No Axiom log rows matched in the window — cannot confirm the actual error signatures.'
-        : 'Axiom log collection failed or timed out — cannot confirm the actual error signatures.';
+        : `Axiom log collection failed or timed out${axiomDetail} — cannot confirm the actual error signatures.`;
       logNextSource = connectors.axiomCollected
         ? 'Widen the window (--since) or check the Axiom dataset for matching rows'
         : 'Check the Axiom API token / dataset, then retry';
@@ -197,8 +251,10 @@ export function detectMissingEvidence(
       logNextSource =
         'Fix fields.* overrides in your connector config or choose the correct preset (meritt / ecs)';
     } else if (!connectors.logsCollected) {
-      logWhy =
-        'Log collection failed or timed out — cannot confirm the actual error signatures.';
+      const logsDetail = connectors.logsFailureReason
+        ? ` (${connectors.logsFailureReason})`
+        : '';
+      logWhy = `Log collection failed or timed out${logsDetail} — cannot confirm the actual error signatures.`;
       logNextSource =
         'Check Elasticsearch connectivity, then run `horus logs <service>` manually';
     } else {
@@ -247,12 +303,21 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot validate latency-based hypotheses.');
   }
 
-  if (hasQueueTopology && !hasQueueState && !sourceImpact) {
+  // A configured queue connector that threw is a real gap even on repos with no static
+  // queue topology. Strict `=== false` — `queueCollected` is absent on old persisted
+  // reports and provider-less runs, which must never fabricate a queue gap.
+  const queueFailed = connectors.queue === true && connectors.queueCollected === false;
+  if ((hasQueueTopology || queueFailed) && !hasQueueState && !sourceImpact) {
+    const queueDetail = connectors.queueFailureReason
+      ? ` (${connectors.queueFailureReason})`
+      : '';
     gaps.push({
       dimension: 'queue runtime state',
-      why: connectors.redis
-        ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
-        : 'Queue topology is known but there is no Redis connector for live queue depth/failures.',
+      why: queueFailed
+        ? `Live queue state collection failed${queueDetail} — depth/failed/delayed counts unavailable.`
+        : connectors.redis
+          ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
+          : 'Queue topology is known but there is no Redis connector for live queue depth/failures.',
       // Stack-agnostic: the tip names Redis (the connector to add) but NOT a specific queue
       // library — "BullMQ" is Node-only and was leaking onto Python/Redis repos (HOR-428).
       nextSource: connectors.redis
@@ -273,6 +338,36 @@ export function detectMissingEvidence(
           },
     });
     blindSpots.push('Cannot determine if the queue is actually backed up.');
+  }
+
+  // Failure-only application-state gap: fires when a configured state provider
+  // (Mongo/Postgres/Redis state) or Shopify THREW and no state evidence exists. A
+  // configured-but-empty provider is negative evidence, never a gap (HOR-33 / the
+  // Shopify docstring). Strict `=== false` — the flags are absent on old persisted
+  // reports and provider-less runs, which must stay gap-free.
+  const hasState = r.evidence.some((e) => e.kind === 'state' || e.kind === 'redis-key');
+  const shopifyFailed = connectors.shopify === true && connectors.shopifyCollected === false;
+  const stateFailed = connectors.stateCollected === false || shopifyFailed;
+  if (!hasState && stateFailed && !sourceImpact) {
+    const stateReasons = [
+      ...(connectors.stateFailureReason ? [connectors.stateFailureReason] : []),
+      ...(shopifyFailed ? [`shopify: ${connectors.shopifyFailureReason ?? 'request failed'}`] : []),
+    ];
+    const stateDetail = stateReasons.length > 0 ? ` (${stateReasons.join('; ')})` : '';
+    const stateNextSource =
+      'Check the failing state connector auth/connectivity (horus connect <type>), then retry';
+    // The remedy targets the FIRST failed connector, parsed from the provider-prefixed
+    // reasons ("mongodb: connection failed; redis: timeout" → connect mongodb).
+    const failedConnector =
+      /^(mongodb|postgres|redis|shopify):/.exec(stateReasons[0] ?? '')?.[1] ?? 'mongodb';
+    gaps.push({
+      dimension: 'application state',
+      why: `State collection failed${stateDetail} — cannot check for stuck/failed records behind the symptom.`,
+      nextSource: stateNextSource,
+      confidenceImpact: 0.08,
+      routeHint: { nextTool: 'connect', args: failedConnector, reason: stateNextSource },
+    });
+    blindSpots.push('Cannot check application state for stuck or failed records.');
   }
 
   if (!hasCommit && !sourceImpact) {

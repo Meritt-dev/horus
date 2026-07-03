@@ -5,7 +5,7 @@
  * explicitly allowed (like the git connector). The "no CLI shell-out" rule applies
  * to QUERIES — those still go over HTTP/MCP via SourceHttpClient.
  *
- * The binary is named `horus-source` (PyPI package `horus-source`).
+ * The binary is named `horus-source` (installed from the wheel bundled with the CLI).
  */
 
 import { execFile, spawn } from 'node:child_process';
@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { PINNED_SOURCE_VERSION } from '@horus/core';
+import { PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED, redactSecrets } from '@horus/core';
 
 const exec = promisify(execFile);
 
@@ -66,8 +66,7 @@ export class SourceVersionMismatchError extends Error {
       `horus-source ${installed} is installed but Horus is pinned to ${pinned}. ` +
         `A drifted backend builds a graph this CLI cannot map and can corrupt the index ` +
         `(e.g. duplicate-primary-key failures during "Running initial index").\n` +
-        `  Fix it — run \`horus update\` to re-sync the backend to ${pinned} ` +
-        `(or install it directly: uv tool install horus-source==${pinned}).`,
+        `  Fix it — run \`horus update\` to install the backend bundled with this CLI.`,
     );
     this.name = 'SourceVersionMismatchError';
   }
@@ -85,6 +84,7 @@ export class SourceVersionMismatchError extends Error {
  * @throws {SourceVersionMismatchError} when the installed version is known and differs.
  */
 export async function assertSourceVersionPinned(): Promise<void> {
+  if (!SOURCE_PIN_ENFORCED) return; // unbundled dev run — no meaningful pin
   const installed = await getSourceVersion();
   if (installed !== null && installed !== PINNED_SOURCE_VERSION) {
     throw new SourceVersionMismatchError(installed, PINNED_SOURCE_VERSION);
@@ -197,16 +197,19 @@ export async function analyzeRepo(root: string): Promise<void> {
   } catch (err) {
     // The generic "Command failed: horus-source analyze ." hides both the 900s timeout (hit on
     // large repos in the slow embeddings phase) and horus-source's own stderr. Surface them so
-    // `horus index` reports WHY it failed instead of a bare command-failed string (HOR-381).
+    // `horus init` reports WHY it failed instead of a bare command-failed string (HOR-381).
     const e = err as { killed?: boolean; signal?: string; code?: unknown; stderr?: string; message?: string };
-    const tail = (e.stderr ?? '').trim().slice(-800);
+    // stderr can print env-derived URLs (credential-bearing connection strings) —
+    // redact BEFORE capping so a conn string straddling the cut can't lose its
+    // scheme prefix and escape the pattern.
+    const tail = redactSecrets((e.stderr ?? '').trim()).slice(-800);
     if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
       throw new Error(
         `horus-source analyze timed out after 900s (large repo / slow embeddings phase)` +
           (tail ? ` — last output: ${tail}` : ''),
       );
     }
-    throw new Error(tail ? `horus-source analyze failed: ${tail}` : (e.message ?? 'horus-source analyze failed'));
+    throw new Error(tail ? `horus-source analyze failed: ${tail}` : redactSecrets(e.message ?? 'horus-source analyze failed'));
   }
 }
 

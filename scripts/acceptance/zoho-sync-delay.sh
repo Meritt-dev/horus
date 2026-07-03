@@ -9,7 +9,7 @@
 # and asserts the investigation surfaces the expected structure. Exits non-zero
 # if any expectation regresses.
 #
-# Prereqs: `horus index` inside leadcall-api, `docker compose up -d`,
+# Prereqs: `horus init` inside leadcall-api, `docker compose up -d`,
 # `pnpm build`, and runtime creds in ~/.horus.env (ES_URL/ES_USERNAME/ES_PASSWORD).
 set -uo pipefail
 

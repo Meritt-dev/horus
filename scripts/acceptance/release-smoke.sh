@@ -32,19 +32,20 @@
 #   ✓ --version shows expected version (if HORUS_EXPECTED_VERSION is set)
 #   ✓ --help exits 0
 #   ✓ --help lists investigate
-#   ✓ --help lists setup
-#   ✓ --help lists index
+#   ✓ --help omits setup (merged into init)
+#   ✓ --help omits index (merged into init)
 #   ✓ --help lists connect
 #   ✓ --help usage line names product 'horus'
-#   ✓ setup --help exits 0
+#   ✓ setup --help exits 0 (hidden deprecation stub)
 #   ✓ config loading: no babel.cjs error (HOR-83 regression guard)
 #   ✓ config loading: doctor printed expected output
-#   ✓ index --help exits 0
+#   ✓ index --help exits 0 (hidden deprecation stub)
 #   ✓ investigate --help exits 0
 #   ✓ connect --help exits 0
 #   ✓ hosts --help exits 0
 #   ✓ stop --help exits 0
-#   ✓ setup prints header
+#   ✓ setup stub points to horus init and exits 1
+#   ✓ index stub points to horus init and exits 1
 #   ✓ init: created project in clean temp dir        (HOR-98 clean-env validation)
 #   ✓ init: .horus/config.json exists                (HOR-98)
 #   ✓ doctor: prints readiness header                (HOR-98)
@@ -213,16 +214,21 @@ fi
 
 check_exit0       "--help exits 0"                               --help
 check_contains    "--help lists investigate"  "investigate"      --help
-check_contains    "--help lists setup"        "setup"            --help
-check_contains    "--help lists index"        "index"            --help
+check_contains    "--help lists init"         "init"             --help
+# setup/index were merged into init — they are hidden deprecation stubs and must
+# be ABSENT from the --help command list (anchored to the command-list indent so
+# descriptions mentioning "index" don't false-positive).
+check_not_contains "--help omits setup (merged into init)" "^  setup" --help
+check_not_contains "--help omits index (merged into init)" "^  index" --help
 check_contains    "--help lists connect"      "connect"          --help
 # The usage line must name the installed CLI as "horus".
 check_contains "--help usage line names product 'horus'" "Usage: horus" --help
 
 # ── 5. sub-command help ──────────────────────────────────────────────────────
 
-check_exit0  "setup --help exits 0"       setup       --help
-check_exit0  "index --help exits 0"       index       --help
+# setup/index are hidden deprecation stubs — their --help must still work.
+check_exit0  "setup --help exits 0 (hidden deprecation stub)" setup --help
+check_exit0  "index --help exits 0 (hidden deprecation stub)" index --help
 check_exit0  "investigate --help exits 0" investigate --help
 check_exit0  "connect --help exits 0"     connect     --help
 check_exit0  "hosts --help exits 0"       hosts       --help
@@ -269,11 +275,25 @@ fi
 
 rm -rf "${_config_tmpdir}"
 
-# ── 7. setup command (non-zero exit is acceptable when prereqs absent) ────────
+# ── 7. deprecated setup/index stubs (merged into `horus init`) ────────────────
 
-# setup may exit non-zero when Node/Python versions are wrong, but it must
-# still print the "Horus setup" header rather than crashing silently.
-check_contains "setup prints header" "Horus setup"              setup
+# `horus setup` and `horus index` were merged into `horus init`. The hidden
+# stubs must print a single pointer to `horus init` and exit 1.
+check_stub() {
+  local desc="$1" cmd="$2"
+  local out status
+  out="$("${HORUS[@]}" "${cmd}" 2>&1)" && status=0 || status=$?
+  if [ "${status}" -eq 1 ] && printf '%s' "${out}" | grep -qF 'has been merged into `horus init`'; then
+    ok "${desc}"
+  else
+    fail_check "${desc}"
+    printf '    expected: pointer to horus init + exit 1 (got exit %s)\n' "${status}"
+    printf '    got:      %s\n' "$(printf '%s' "${out}" | head -3)"
+  fi
+}
+
+check_stub "setup stub points to horus init and exits 1" setup
+check_stub "index stub points to horus init and exits 1" index
 
 # ── 8. horus init — clean temp directory (HOR-98) ────────────────────────────
 #

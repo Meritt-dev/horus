@@ -1,15 +1,21 @@
+/**
+ * Tests for checkPrerequisites — the advisory prereq checks that open
+ * `horus init` (formerly the standalone `horus setup` command, now a hidden
+ * deprecation stub). The checks print status/fix-it lines and return a status
+ * object; they never gate init's exit code, so there is no exit code here.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runSetup } from './setup.js';
+import { checkPrerequisites } from './setup.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function captureOutput(
-  fn: (write: (line: string) => void) => Promise<number>,
-): Promise<{ lines: string[]; code: number }> {
+function capture(
+  fn: (write: (line: string) => void) => Promise<Awaited<ReturnType<typeof checkPrerequisites>>>,
+): Promise<{ lines: string[]; status: Awaited<ReturnType<typeof checkPrerequisites>> }> {
   const lines: string[] = [];
-  return fn((line) => lines.push(line)).then((code) => ({ lines, code }));
+  return fn((line) => lines.push(line)).then((status) => ({ lines, status }));
 }
 
 // ---------------------------------------------------------------------------
@@ -18,7 +24,6 @@ function captureOutput(
 
 vi.mock('@horus/connectors', () => ({
   getSourceVersion: vi.fn(),
-  SourceHttpClient: vi.fn(),
 }));
 
 vi.mock('@horus/db', () => ({
@@ -31,55 +36,34 @@ vi.mock('@horus/core', async (importOriginal) => {
     ...actual,
     loadConfig: vi.fn(),
     PINNED_SOURCE_VERSION: '1.0.1',
+    SOURCE_PIN_ENFORCED: true,
   };
 });
 
-import { getSourceVersion, SourceHttpClient } from '@horus/connectors';
+import { getSourceVersion } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 import { loadConfig } from '@horus/core';
 
 const mockGetSourceVersion = vi.mocked(getSourceVersion);
 const mockCheckDatabase = vi.mocked(checkDatabase);
 const mockLoadConfig = vi.mocked(loadConfig);
-const MockSourceHttpClient = vi.mocked(SourceHttpClient as unknown as new (...args: unknown[]) => {
-  health: () => Promise<{ ok: boolean; status: number }>;
-  nodeCount: () => Promise<number>;
-});
 
-// ---------------------------------------------------------------------------
-// Shared fixture for a passing state
-// ---------------------------------------------------------------------------
-
-const PASSING_DB = { reachable: true, schemaReady: true, schemaDetail: '8 tables' } as Awaited<ReturnType<typeof checkDatabase>>;
-
-const REPO_SOURCE_CONFIG = {
-  name: 'my-repo',
-  path: '/repos/my-repo',
-  source: { hostUrl: 'http://127.0.0.1:8420' },
-};
+const PASSING_DB = {
+  reachable: true,
+  schemaReady: true,
+  schemaDetail: '8 tables',
+} as Awaited<ReturnType<typeof checkDatabase>>;
 
 const MINIMAL_CONFIG = {
-  projects: [{ name: 'proj', repositories: [REPO_SOURCE_CONFIG], environments: [] }],
+  projects: [],
   database: { url: 'postgresql://horus:horus@localhost:5433/horus' },
-  models: { reasoning: 'claude-opus-4-8', extraction: 'claude-haiku-4-5' },
 } as unknown as Awaited<ReturnType<typeof loadConfig>>;
-
-function makeSourceClient(health: { ok: boolean }, nodeCount = 42) {
-  return {
-    health: vi.fn().mockResolvedValue(health),
-    nodeCount: vi.fn().mockResolvedValue(nodeCount),
-  };
-}
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default happy-path mocks
   mockGetSourceVersion.mockResolvedValue('1.0.1');
   mockCheckDatabase.mockResolvedValue(PASSING_DB);
   mockLoadConfig.mockResolvedValue(MINIMAL_CONFIG);
-  MockSourceHttpClient.mockImplementation(
-    () => makeSourceClient({ ok: true }) as ReturnType<typeof makeSourceClient>,
-  );
 });
 
 afterEach(() => {
@@ -87,218 +71,90 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// All-green path
+// Cases
 // ---------------------------------------------------------------------------
 
-describe('runSetup — all prerequisites met', () => {
-  it('exits 0', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(0);
-  });
-
-  it('output contains green markers for backend, postgres, and repo', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('source-intelligence backend');
-    expect(output).toContain('Postgres reachable');
-    expect(output).toContain('nodes indexed');
-  });
-
-  it('shows "Ready." when everything passes', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    expect(lines.join('\n')).toContain('Ready.');
+describe('checkPrerequisites — all green', () => {
+  it('reports every prerequisite as met', async () => {
+    const { lines, status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status).toEqual({
+      backendPresent: true,
+      backendVersionOk: true,
+      dbReachable: true,
+      schemaReady: true,
+    });
+    const out = lines.join('\n');
+    expect(out).toContain('source-intelligence backend');
+    expect(out).toContain('Postgres reachable');
   });
 });
 
-// ---------------------------------------------------------------------------
-// source-intelligence binary missing
-// ---------------------------------------------------------------------------
-
-describe('runSetup — source-intelligence binary not found', () => {
-  beforeEach(() => {
+describe('checkPrerequisites — backend missing', () => {
+  it('reports absence with the install hint (advisory, no throw)', async () => {
     mockGetSourceVersion.mockResolvedValue(null);
+    const { lines, status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.backendPresent).toBe(false);
+    expect(status.backendVersionOk).toBe(false);
+    const out = lines.join('\n');
+    expect(out).toContain('backend not found');
+    expect(out).toContain('curl -fsSL https://horus.sh/install.sh | bash');
   });
 
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output explains how to install the source-intelligence backend', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('horus.sh/install.sh');
+  it('treats a throwing probe as absent', async () => {
+    mockGetSourceVersion.mockRejectedValue(new Error('spawn failed'));
+    const { status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.backendPresent).toBe(false);
   });
 });
 
-// ---------------------------------------------------------------------------
-// source-intelligence binary version mismatch
-// ---------------------------------------------------------------------------
-
-describe('runSetup — source-intelligence binary version mismatch', () => {
-  beforeEach(() => {
+describe('checkPrerequisites — backend version mismatch', () => {
+  it('reports the drift with the update hint', async () => {
     mockGetSourceVersion.mockResolvedValue('0.9.0');
-  });
-
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output mentions version mismatch and update command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('version mismatch');
-    expect(output).toContain('update it');
+    const { lines, status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.backendPresent).toBe(true);
+    expect(status.backendVersionOk).toBe(false);
+    const out = lines.join('\n');
+    expect(out).toContain('version mismatch');
+    expect(out).toContain('horus update');
   });
 });
 
-// ---------------------------------------------------------------------------
-// Postgres unreachable
-// ---------------------------------------------------------------------------
-
-describe('runSetup — Postgres unreachable', () => {
-  beforeEach(() => {
+describe('checkPrerequisites — Postgres', () => {
+  it('unreachable: prints the docker hint and notes it is not needed for init', async () => {
     mockCheckDatabase.mockResolvedValue({
       reachable: false,
       schemaReady: false,
       schemaDetail: '',
     } as Awaited<ReturnType<typeof checkDatabase>>);
+    const { lines, status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.dbReachable).toBe(false);
+    const out = lines.join('\n');
+    expect(out).toContain('Postgres unreachable');
+    expect(out).toContain('docker run');
+    expect(out).toContain('not for init');
   });
 
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output includes docker run command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    expect(lines.join('\n')).toContain('docker run');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Postgres reachable but schema not applied
-// ---------------------------------------------------------------------------
-
-describe('runSetup — Postgres reachable but schema missing', () => {
-  beforeEach(() => {
+  it('reachable but schema missing: prints the migration hint', async () => {
     mockCheckDatabase.mockResolvedValue({
       reachable: true,
       schemaReady: false,
-      schemaDetail: '0 tables',
+      schemaDetail: 'no tables',
     } as Awaited<ReturnType<typeof checkDatabase>>);
-  });
-
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output includes migration command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
+    const { lines, status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.dbReachable).toBe(true);
+    expect(status.schemaReady).toBe(false);
     expect(lines.join('\n')).toContain('pnpm db migrate');
   });
-});
 
-// ---------------------------------------------------------------------------
-// source-intelligence host unreachable (running host, not binary)
-// ---------------------------------------------------------------------------
-
-describe('runSetup — source-intelligence host unreachable', () => {
-  beforeEach(() => {
-    MockSourceHttpClient.mockImplementation(
-      () => makeSourceClient({ ok: false }, 0) as ReturnType<typeof makeSourceClient>,
-    );
+  it('falls back to the default DB URL when no config is resolvable', async () => {
+    mockLoadConfig.mockRejectedValue(new Error('no config'));
+    await capture((write) => checkPrerequisites({ write }));
+    expect(mockCheckDatabase).toHaveBeenCalledWith('postgresql://horus:horus@localhost:5433/horus');
   });
 
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output includes repo name and horus index command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('my-repo');
-    expect(output).toContain('horus index');
-    expect(output).toContain('8420');
-  });
-
-  it('output includes repo path for cd command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    expect(lines.join('\n')).toContain('/repos/my-repo');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// source-intelligence host running but repo not indexed
-// ---------------------------------------------------------------------------
-
-describe('runSetup — source-intelligence host running but repo not indexed', () => {
-  beforeEach(() => {
-    MockSourceHttpClient.mockImplementation(
-      () => makeSourceClient({ ok: true }, 0) as ReturnType<typeof makeSourceClient>,
-    );
-  });
-
-  it('exits 1', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(1);
-  });
-
-  it('output includes horus index command', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('horus index');
-    expect(output).toContain('/repos/my-repo');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// No config — source-intelligence host checks are skipped gracefully
-// ---------------------------------------------------------------------------
-
-describe('runSetup — no config available', () => {
-  beforeEach(() => {
-    mockLoadConfig.mockRejectedValue(new Error('Config not found'));
-  });
-
-  it('does not throw', async () => {
-    await expect(captureOutput((write) => runSetup({ write }))).resolves.not.toThrow();
-  });
-
-  it('still performs source-intelligence binary and Postgres checks', async () => {
-    const { lines } = await captureOutput((write) => runSetup({ write }));
-    const output = lines.join('\n');
-    expect(output).toContain('source-intelligence backend');
-    expect(output).toContain('Postgres');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Repo without source config — skipped silently
-// ---------------------------------------------------------------------------
-
-describe('runSetup — repo without source config', () => {
-  beforeEach(() => {
-    mockLoadConfig.mockResolvedValue({
-      ...MINIMAL_CONFIG,
-      projects: [{
-        name: 'proj',
-        repositories: [{ name: 'no-source', path: '/repos/no-source' }],
-        environments: [],
-      }],
-    } as unknown as Awaited<ReturnType<typeof loadConfig>>);
-  });
-
-  it('exits 0 (no source checks to fail)', async () => {
-    const { code } = await captureOutput((write) => runSetup({ write }));
-    expect(code).toBe(0);
-  });
-
-  it('SourceHttpClient is never instantiated', async () => {
-    await captureOutput((write) => runSetup({ write }));
-    expect(MockSourceHttpClient).not.toHaveBeenCalled();
+  it('treats a throwing checkDatabase as unreachable (advisory, no throw)', async () => {
+    mockCheckDatabase.mockRejectedValue(new Error('boom'));
+    const { status } = await capture((write) => checkPrerequisites({ write }));
+    expect(status.dbReachable).toBe(false);
   });
 });

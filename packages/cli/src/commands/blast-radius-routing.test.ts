@@ -2,7 +2,7 @@
  * HOR-386 — `horus blast-radius` self-routing surfaces.
  *
  * The shared router (engine `route()`) runs for real; only the connector/DB layer is mocked.
- * Covers: host-down → `horus index`, no-symbol miss → `horus search <query>`, and the same
+ * Covers: host-down → `horus init`, no-symbol miss → `horus search <query>`, and the same
  * routes carried structurally on `--json`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -87,7 +87,7 @@ describe('horus blast-radius — self-routing (HOR-386)', () => {
     ]);
   });
 
-  it('routes a host-down failure to `horus index`', async () => {
+  it('routes a host-down failure to `horus init`', async () => {
     mocks.codeHealth.mockResolvedValue({ ok: false, detail: 'down' });
 
     const logged: string[] = [];
@@ -98,6 +98,6 @@ describe('horus blast-radius — self-routing (HOR-386)', () => {
     errSpy.mockRestore();
 
     expect(code).toBe(1);
-    expect(logged.join('\n')).toContain('horus index');
+    expect(logged.join('\n')).toContain('horus init');
   });
 });

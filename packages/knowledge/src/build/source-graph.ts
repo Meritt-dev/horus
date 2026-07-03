@@ -1,7 +1,7 @@
 /**
  * Source-graph → knowledge bridge (HOR-408).
  *
- * `horus index` analyses a repo with the source-intelligence backend
+ * `horus init` analyses a repo with the source-intelligence backend
  * (`horus-source analyze`), producing a rich code graph: functions, classes,
  * interfaces, type aliases, enums, semantic communities, and execution-flow
  * processes. The first-version knowledge pass (`buildProjectKnowledge`) only

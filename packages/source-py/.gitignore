@@ -6,8 +6,8 @@ dist/
 wheels/
 *.egg-info
 
-# Keep the pre-built frontend dist so pip install git+URL works without a Node build step
-!src/horus_source/web/frontend/dist/
+# The frontend dist is a build artifact: built by scripts/release/build-source-wheel.sh
+# at release time and shipped inside the wheel — never committed.
 
 # Virtual environments
 .venv

@@ -11,6 +11,10 @@ export * from './source/index.js';
 export * from './contract.js';
 export * from './duration.js';
 export * from './factory.js';
+// Shared HTTP transport: explicit re-export — `HttpRequestOptions` is part of the
+// public `*ClientOpts` surface (the `http?:` field on ES/Grafana/Sentry/Axiom opts).
+export { fetchWithRetry, DEFAULT_HTTP_TIMEOUT_MS } from './http.js';
+export type { HttpRequestOptions } from './http.js';
 export * from './source/provider.js';
 export * from './compat.js';
 export * from './git/index.js';

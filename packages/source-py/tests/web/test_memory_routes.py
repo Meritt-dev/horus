@@ -56,7 +56,12 @@ def _app_with_memory(tmp_path: Path):
 
 def _app_without_memory(tmp_path: Path):
     runtime = HorusRuntime(storage=MagicMock(), repo_path=tmp_path, owns_storage=False)
-    return create_app(db_path=tmp_path / "kuzu", runtime=runtime)
+    # mount_frontend=False: with a locally built frontend dist, StaticFiles at "/"
+    # answers the unmatched POST with 405 instead of 404 — this test is about the
+    # memory ROUTER being absent, so keep it deterministic either way. (The TS
+    # client treats any non-2xx as "unavailable" and falls back — both are fine
+    # in production.)
+    return create_app(db_path=tmp_path / "kuzu", runtime=runtime, mount_frontend=False)
 
 
 async def test_upsert_search_remove_roundtrip(tmp_path: Path, stub_embeddings) -> None:
@@ -68,7 +73,7 @@ async def test_upsert_search_remove_roundtrip(tmp_path: Path, stub_embeddings) -
     try:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
                 r = await ac.post(
                     "/api/memory/upsert",
                     json={"memoryId": "mem_auth", "claim": "claim about auth", "repo": "acme/app"},
@@ -122,7 +127,7 @@ async def test_search_is_repo_isolated(tmp_path: Path, stub_embeddings) -> None:
     try:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
                 await ac.post(
                     "/api/memory/upsert",
                     json={"memoryId": "mem_a", "claim": "shared claim", "repo": "repo/a"},
@@ -145,7 +150,7 @@ async def test_routes_absent_without_memory_store(tmp_path: Path) -> None:
     app = _app_without_memory(tmp_path)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
             # Router not mounted on RO/standalone surfaces => 404 so TS falls back.
             r = await ac.post(
                 "/api/memory/search", json={"query": "x", "repo": "acme/app", "limit": 5}

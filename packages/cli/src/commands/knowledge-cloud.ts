@@ -2,7 +2,7 @@
  * `horus knowledge push|pull` and `horus knowledge status --cloud` (HOR-296).
  *
  * OPTIONAL cloud sync for the local knowledge index. Local indexing/querying
- * (`horus index`, `horus knowledge ask`) never require this — it is gated behind
+ * (`horus init`, `horus knowledge ask`) never require this — it is gated behind
  * authenticated, cloud-linked mode and degrades to a clear message when offline
  * or unauthenticated. Uploads are content-hash idempotent (no duplicate pushes).
  *
@@ -144,7 +144,7 @@ export async function runKnowledgePush(
   const root0 = repoRootOrCwd(opts.cwd);
   const local = localContentHash(root0);
   if (!local.hash || !local.snapshot || !local.manifest) {
-    console.error(pc.red('No local knowledge index to push.') + ` Run ${pc.bold('horus index')} first.`);
+    console.error(pc.red('No local knowledge index to push.') + ` Run ${pc.bold('horus init')} first.`);
     return 1;
   }
 

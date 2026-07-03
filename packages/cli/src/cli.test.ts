@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildProgram } from './index.js';
 import { HORUS_VERSION } from '@horus/core';
 
@@ -20,7 +20,6 @@ describe('CLI program structure', () => {
   it('registers all release-critical commands', () => {
     const names = buildProgram().commands.map((c) => c.name());
     const required = [
-      'setup',
       'init',
       'projects',
       'connect',
@@ -28,7 +27,6 @@ describe('CLI program structure', () => {
       'hosts',
       'status',
       'investigate',
-      'index',
       'queues',
       'explain',
       'changes',
@@ -53,10 +51,22 @@ describe('CLI program structure', () => {
     }
   });
 
-  it('setup command has --config option', () => {
-    const setup = buildProgram().commands.find((c) => c.name() === 'setup')!;
-    const longs = setup.options.map((o) => o.long);
-    expect(longs).toContain('--config');
+  it('setup and index are hidden deprecation stubs (registered, absent from help)', () => {
+    const program = buildProgram();
+    for (const name of ['setup', 'index']) {
+      const cmd = program.commands.find((c) => c.name() === name);
+      expect(cmd, `stub "${name}" should stay registered`).toBeDefined();
+      // Commander hides via the `hidden` flag set by .command(name, { hidden: true }).
+      expect((cmd as unknown as { _hidden: boolean })._hidden, `"${name}" should be hidden`).toBe(true);
+    }
+    // And the top-level help must not advertise them.
+    let out = '';
+    program.configureOutput({ writeOut: (s) => { out += s; }, writeErr: (s) => { out += s; } });
+    program.outputHelp();
+    // Commander lists visible commands at exactly two-space indent.
+    expect(out).not.toMatch(/\n {2}setup\b/);
+    expect(out).not.toMatch(/\n {2}index\b/);
+    expect(out).toMatch(/\n {2}init\b/);
   });
 
   it('investigate command has --project, --env, --format options', () => {
@@ -88,17 +98,31 @@ describe('CLI program structure', () => {
     expect(aiOpt?.optional).toBe(false);
   });
 
+  it('invoking a stub prints the merge pointer and exits 1', async () => {
+    for (const name of ['setup', 'index']) {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      process.exitCode = 0;
+      await buildProgram().parseAsync(['node', 'horus', name]);
+      expect(errSpy.mock.calls.flat().join(' ')).toContain('merged into `horus init`');
+      expect(process.exitCode).toBe(1);
+      process.exitCode = 0;
+      errSpy.mockRestore();
+    }
+  });
+
   it('connect command requires a <type> argument', () => {
     const connect = buildProgram().commands.find((c) => c.name() === 'connect')!;
     expect(connect.registeredArguments.length).toBeGreaterThan(0);
     expect(connect.registeredArguments[0]?.name()).toBe('type');
   });
 
-  it('index command has --name and --env options', () => {
-    const index = buildProgram().commands.find((c) => c.name() === 'index')!;
-    const longs = index.options.map((o) => o.long);
-    expect(longs).toContain('--name');
-    expect(longs).toContain('--env');
+  it('init carries the full merged option set (old init + index flags)', () => {
+    const init = buildProgram().commands.find((c) => c.name() === 'init')!;
+    const longs = init.options.map((o) => o.long);
+    for (const opt of ['--name', '--env', '--source', '--path', '--config', '--project',
+                       '--full', '--changed', '--fast', '--import-kb']) {
+      expect(longs, `init should carry ${opt}`).toContain(opt);
+    }
   });
 
   it('stop command has --all flag', () => {

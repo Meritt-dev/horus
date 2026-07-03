@@ -1768,7 +1768,7 @@ export function GraphCanvas({ className }: GraphCanvasProps) {
   if (graphEmpty) {
     return (
       <div className={cn('flex items-center justify-center h-full', className)}>
-        <EmptyState message="No graph data. Run `horus index` first." />
+        <EmptyState message="No graph data. Run `horus init` first." />
       </div>
     );
   }

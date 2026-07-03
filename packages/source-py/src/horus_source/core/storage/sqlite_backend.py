@@ -239,6 +239,12 @@ class SqliteBackend:
     def __init__(self) -> None:
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.RLock()
+        self._path: Path | None = None
+        self._read_only: bool = False
+        # Dedicated read-only connection for execute_raw (the SQL console). Lazily
+        # opened against the same file with `mode=ro` so an arbitrary query can
+        # NEVER write, regardless of the route's keyword guard. See execute_raw.
+        self._ro_conn: sqlite3.Connection | None = None
         # Parity flag with KuzuBackend; SQLite recovery is handled separately and
         # this backend never recreates a corrupt DB silently in Stage 1.
         self.recreated_due_to_corruption: bool = False
@@ -267,7 +273,10 @@ class SqliteBackend:
         """
         path = Path(path)
         if read_only:
-            uri = f"file:{path}?mode=ro"
+            # Percent-encode the path: a raw f-string lets URI delimiters in the
+            # filesystem path (``?``/``#``) truncate the filename and drop
+            # ``mode=ro``. ``Path.as_uri()`` escapes it (requires an absolute path).
+            uri = path.resolve().as_uri() + "?mode=ro"
             conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -284,17 +293,48 @@ class SqliteBackend:
             conn.execute("PRAGMA foreign_keys=OFF")
 
         self._conn = conn
+        self._path = path
+        self._read_only = read_only
         if not read_only:
             self._create_schema()
 
     def close(self) -> None:
-        """Close the SQLite connection, releasing the file lock."""
-        if self._conn is not None:
+        """Close the SQLite connection(s), releasing the file lock."""
+        for attr in ("_conn", "_ro_conn"):
+            conn = getattr(self, attr)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.debug("SqliteBackend close failed (%s)", attr, exc_info=True)
+                setattr(self, attr, None)
+
+    def _readonly_conn(self) -> sqlite3.Connection:
+        """A connection that physically cannot write, for the SQL console.
+
+        When the backend is already open read-only we reuse the main connection.
+        Otherwise (the host opens read-write for reindex/watch) we lazily open a
+        SEPARATE ``mode=ro`` connection to the same file, so a query that slips
+        past the route's keyword guard still cannot mutate the store — SQLite
+        rejects the write at the OS/driver level.
+        """
+        if self._read_only:
+            return self._require_conn()
+        if self._ro_conn is None:
+            if self._path is None:
+                raise RuntimeError("SqliteBackend.initialize() must be called before use")
+            # Escape the path so ``?``/``#`` in a repo path can't slip past the
+            # read-only open (see initialize()). ``as_uri()`` percent-encodes it.
+            uri = self._path.resolve().as_uri() + "?mode=ro"
+            ro = sqlite3.connect(uri, uri=True, check_same_thread=False)
             try:
-                self._conn.close()
-            except Exception:
-                logger.debug("SqliteBackend close failed", exc_info=True)
-            self._conn = None
+                _load_sqlite_vec_extension(ro)
+            except SqliteVecUnavailableError:
+                # Vector search degrades to FTS; a raw SELECT touching code_vec will
+                # error clearly rather than write. Keep the RO conn usable.
+                logger.debug("sqlite-vec unavailable on the read-only console connection")
+            self._ro_conn = ro
+        return self._ro_conn
 
     def _create_schema(self) -> None:
         conn = self._require_conn()
@@ -844,16 +884,19 @@ class SqliteBackend:
         return graph
 
     def execute_raw(self, query: str) -> list[list[Any]]:
-        """Execute a raw SQL query and return all result rows as lists."""
-        conn = self._require_conn()
+        """Execute a raw SQL query on a READ-ONLY connection and return rows.
+
+        Runs against `mode=ro` (see :meth:`_readonly_conn`), so this SQL-console
+        entry point cannot mutate the store even if the route's keyword guard is
+        bypassed. No commit — a read-only connection has nothing to commit.
+        """
+        conn = self._readonly_conn()
         with self._lock:
             cur = conn.execute(query)
             try:
                 rows = cur.fetchall()
             except sqlite3.ProgrammingError:
-                conn.commit()
                 return []
-            conn.commit()
         return [list(r) for r in rows]
 
     # ------------------------------------------------------------------ analytics

@@ -58,6 +58,11 @@ describe('AxiomProvider.queryEvidence', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
     await expect(provider().queryEvidence()).resolves.toEqual([]);
   });
+
+  it('collect() PROPAGATES a transport failure so the engine records a gap', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
+    await expect(provider().collect()).rejects.toThrow(/-> 403/);
+  });
 });
 
 /**

@@ -278,7 +278,7 @@ export async function runDoctor(opts?: {
           label: 'Source-intelligence host',
           status: 'warn',
           detail: 'not configured',
-          next: 'run `horus index` to analyze this repo and start a host, or pass --source <url> to `horus init`',
+          next: 'run `horus init` to analyze this repo and start a host',
         });
       }
     } catch {
@@ -300,7 +300,7 @@ export async function runDoctor(opts?: {
       label: 'Source-intelligence host',
       status: 'warn',
       detail: 'not configured (no local config)',
-      next: 'run `horus init` then `horus index` to set up source intelligence',
+      next: 'run `horus init` to set up source intelligence',
     });
   }
 

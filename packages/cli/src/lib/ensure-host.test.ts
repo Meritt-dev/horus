@@ -62,11 +62,11 @@ describe('ensureHostReasonHint', () => {
   it('maps each reason to an actionable hint', () => {
     expect(ensureHostReasonHint('source-unavailable')).toMatch(/install\.sh/);
     expect(ensureHostReasonHint('version-mismatch')).toMatch(/pinned/);
-    expect(ensureHostReasonHint('not-analyzed')).toMatch(/horus index/);
+    expect(ensureHostReasonHint('not-analyzed')).toMatch(/horus init/);
     expect(ensureHostReasonHint('bad-url')).toMatch(/valid URL/);
     expect(ensureHostReasonHint('no-free-port')).toMatch(/free localhost port/);
-    expect(ensureHostReasonHint('unhealthy')).toMatch(/horus index/);
-    expect(ensureHostReasonHint(undefined)).toMatch(/horus index/);
+    expect(ensureHostReasonHint('unhealthy')).toMatch(/horus init/);
+    expect(ensureHostReasonHint(undefined)).toMatch(/horus init/);
   });
 });
 

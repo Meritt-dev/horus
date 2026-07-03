@@ -379,7 +379,7 @@ describe('runDoctor — fix hints (HOR-100)', () => {
     expect(output).toContain('9 tables present');
   });
 
-  it('shows horus index hint when source-intelligence host is not configured', async () => {
+  it('shows horus init hint when source-intelligence host is not configured', async () => {
     const root = tempDir();
     execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
     mkdirSync(join(root, '.horus'));
@@ -398,7 +398,7 @@ describe('runDoctor — fix hints (HOR-100)', () => {
       runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
     );
     const output = lines.join('\n');
-    expect(output).toContain('horus index');
+    expect(output).toContain('horus init');
   });
 
   it('exits 0 (warn, not fail) for all missing prerequisites', async () => {

@@ -71,12 +71,19 @@ export class RedisStateRuntimeProvider implements RedisStateProvider {
     const collectedAt = new Date().toISOString();
     const databases: RedisDbSummary[] = [];
     const signals: RedisStateSignal[] = [];
+    const failures: string[] = [];
 
     for (const d of this.dbs) {
       const client = this.mkClient(d);
       try {
         const health = await client.health();
-        if (!health.ok) continue;
+        if (!health.ok) {
+          // Skip this DB but remember why — when EVERY configured DB fails we
+          // throw below so the engine records a state gap instead of reading a
+          // total Redis outage as a clean empty analysis.
+          failures.push(`db ${d.db}: ${health.detail}`);
+          continue;
+        }
         const keyCount = await client.dbSize();
         const prefixes = await client.samplePrefixes(d.scan?.sampleLimit ?? 500, d.scan?.patterns);
         databases.push({
@@ -138,6 +145,10 @@ export class RedisStateRuntimeProvider implements RedisStateProvider {
       }
     }
 
+    if (this.dbs.length > 0 && databases.length === 0 && failures.length > 0) {
+      // health.detail is already redacted by the scan client.
+      throw new Error(`redis state collection failed: ${failures.join('; ')}`);
+    }
     return { collectedAt, databases, signals };
   }
 

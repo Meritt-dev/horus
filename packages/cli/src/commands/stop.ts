@@ -83,7 +83,7 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
   if (!healthy) {
     // A failing /api/health does NOT prove the process is gone. A host can crash mid-index
     // yet keep its port bound and hold the Kùzu single-writer lock — in which case the next
-    // `horus index` can't acquire it and keeps re-using the broken host. So only declare
+    // `horus init` can't acquire it and keeps re-using the broken host. So only declare
     // "already stopped" when we own no still-running process; otherwise fall through and
     // terminate the stuck host (its identity is still verified before we signal it).
     const owned = readSpawnedHost(root);
@@ -93,7 +93,7 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
       // real server under a DIFFERENT pid (recorded by the backend in source/host.json) that
       // can outlive the wrapper and keep the port + Kùzu lock held. Stop that server before
       // concluding the host is down — otherwise `horus stop` reports success while the host
-      // is still listening (the exact zombie that blocks the next `horus index`).
+      // is still listening (the exact zombie that blocks the next `horus init`).
       const res = await stopBackendServerPid(root, port);
       if (res === 'failed') return 1;
       if (res !== 'stopped') console.log(pc.dim(`Host ${hostUrl} is already stopped.`));

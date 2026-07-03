@@ -65,8 +65,10 @@ export class ShopifyProvider implements Provider {
    * Run each supplied (or, as a fallback, config-declared) query verbatim and return one
    * record per success. The investigation window is injected as `$from`/`$to` variables for
    * queries that opt in (`bindWindow`); `hintTerms` are NOT used to rewrite the query — only
-   * to weight relevance later. Best-effort: a failing query is dropped (returns nothing for
-   * that query) so one bad document never aborts the investigation. Never throws.
+   * to weight relevance later. A single failing query is dropped (one bad document never
+   * aborts the investigation), but when EVERY query fails the first error is rethrown —
+   * a total outage (revoked token, dead shop) must reach the engine as a failure, not as
+   * an empty result set.
    */
   async collect(
     opts: {
@@ -85,6 +87,7 @@ export class ShopifyProvider implements Provider {
     const to = opts.to ?? new Date().toISOString();
     const from = opts.from;
 
+    let firstError: unknown;
     const records = await Promise.all(
       specs.map(async (q): Promise<ShopifyRecord | null> => {
         try {
@@ -92,16 +95,20 @@ export class ShopifyProvider implements Provider {
           const rec: ShopifyRecord = { name: q.name, kind: q.kind, data: result.data, timestamp: to };
           if (q.relevance !== undefined) rec.relevance = q.relevance;
           if (result.errors !== undefined && result.errors.length > 0) {
-            rec.errors = result.errors.map((e) => ({ message: e.message }));
+            // GraphQL error text is upstream-controlled and lands in the evidence payload.
+            rec.errors = result.errors.map((e) => ({ message: redactSecrets(e.message) }));
           }
           if (result.extensions?.cost !== undefined) rec.cost = result.extensions.cost;
           return rec;
-        } catch {
+        } catch (err) {
+          firstError ??= err;
           return null;
         }
       }),
     );
-    return records.filter((r): r is ShopifyRecord => r !== null);
+    const ok = records.filter((r): r is ShopifyRecord => r !== null);
+    if (ok.length === 0 && firstError !== undefined) throw firstError;
+    return ok;
   }
 
   /** Synthesize one Evidence per record. Preserves per-query provenance. */
