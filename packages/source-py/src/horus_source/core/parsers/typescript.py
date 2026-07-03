@@ -216,29 +216,62 @@ class TypeScriptParser(LanguageParser):
             if obj_node is None or prop_node is None:
                 continue
             obj_text = obj_node.text.decode()
-            if obj_text not in ("exports", "module.exports"):
+
+            if obj_text in ("exports", "module.exports"):
+                # exports.X = fn / module.exports.X = fn — module public API.
+                sym_name = prop_node.text.decode()
+                result.exports.append(sym_name)
+
+                func_node = self._unwrap_to_function(right)
+                if func_node is not None:
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+                    content = child.text.decode()
+                    signature = self._build_function_signature(func_node, sym_name)
+                    result.symbols.append(
+                        SymbolInfo(
+                            name=sym_name,
+                            kind="function",
+                            start_line=start_line,
+                            end_line=end_line,
+                            content=content,
+                            signature=signature,
+                        )
+                    )
+                    self._extract_function_types(func_node, sym_name, result)
                 continue
 
-            sym_name = prop_node.text.decode()
-            result.exports.append(sym_name)
-
+            # General property-assignment function (dogfood cycle-2 N6): the classic
+            # CommonJS/prototype idiom — `res.send = function send(body) {...}`,
+            # `app.use = function use(fn) {...}`, `Foo.prototype.bar = () => {...}`.
+            # Express's ENTIRE API is defined this way and was invisible to the graph
+            # (0 methods repo-wide). Extract as a method owned by the receiver so
+            # `res.send` resolves like `Class.method`; the receiver object is usually
+            # module-exported, so the name joins the export surface (it IS the API).
             func_node = self._unwrap_to_function(right)
-            if func_node is not None:
-                start_line = child.start_point[0] + 1
-                end_line = child.end_point[0] + 1
-                content = child.text.decode()
-                signature = self._build_function_signature(func_node, sym_name)
-                result.symbols.append(
-                    SymbolInfo(
-                        name=sym_name,
-                        kind="function",
-                        start_line=start_line,
-                        end_line=end_line,
-                        content=content,
-                        signature=signature,
-                    )
+            if func_node is None:
+                continue
+            method_name = prop_node.text.decode()
+            # `Foo.prototype` receivers own methods as `Foo`; plain `res`/`app` own as-is.
+            owner = obj_text[: -len(".prototype")] if obj_text.endswith(".prototype") else obj_text
+            # Skip deep/member receivers (a.b.c = fn) — ambiguous ownership, rare as API.
+            if "." in owner or owner in ("this",):
+                continue
+            start_line = child.start_point[0] + 1
+            end_line = child.end_point[0] + 1
+            result.symbols.append(
+                SymbolInfo(
+                    name=method_name,
+                    kind="method",
+                    class_name=owner,
+                    start_line=start_line,
+                    end_line=end_line,
+                    content=child.text.decode(),
+                    signature=self._build_function_signature(func_node, method_name),
                 )
-                self._extract_function_types(func_node, sym_name, result)
+            )
+            result.exports.append(method_name)
+            self._extract_function_types(func_node, method_name, result)
 
     def _extract_function_declaration(
         self, node: Node, source: str, result: ParseResult
