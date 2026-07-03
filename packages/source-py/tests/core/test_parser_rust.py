@@ -194,3 +194,45 @@ class TestTraitImplMarker:
         by_name = {s.name: s for s in result.symbols}
         assert "trait_impl" in by_name["from"].decorators
         assert by_name["inherent"].decorators == []  # inherent impls stay eligible
+
+
+class TestMacroCallMining:
+    """Dogfood cycle-3: tree-sitter parses macro bodies as raw token trees, so
+    every call wrapped in `tri!(...)` / `assert!(...)` was invisible — serde's
+    called methods read as dead."""
+
+    def test_calls_inside_macros_are_extracted(self) -> None:
+        parser = RustParser()
+        code = (
+            "fn visit(seq_visitor: S) -> R {\n"
+            "    tri!(seq_visitor.end());\n"
+            "    assert!(check_valid(x));\n"
+            "    Ok(())\n"
+            "}\n"
+        )
+        result = parser.parse(code, "src/de.rs")
+        calls = {(c.receiver, c.name) for c in result.calls}
+        assert ("seq_visitor", "end") in calls
+        assert ("", "check_valid") in calls
+
+    def test_control_keywords_not_mined(self) -> None:
+        parser = RustParser()
+        code = 'fn f() { assert!(if cond { a() } else { b() }); }\n'
+        result = parser.parse(code, "src/x.rs")
+        names = {c.name for c in result.calls}
+        assert "if" not in names
+        assert "a" in names and "b" in names
+
+
+class TestIdentifierArguments:
+    def test_unit_struct_argument_is_captured(self) -> None:
+        parser = RustParser()
+        code = (
+            "struct CowStrVisitor;\n"
+            "fn parse(d: D) -> R {\n"
+            "    d.deserialize_str(CowStrVisitor)\n"
+            "}\n"
+        )
+        result = parser.parse(code, "src/de.rs")
+        call = next(c for c in result.calls if c.name == "deserialize_str")
+        assert "CowStrVisitor" in call.arguments

@@ -480,6 +480,10 @@ export function rankExactCandidates(query: string, symbols: Symbol[]): Symbol[] 
     if (symbol.name === query) score += 8; // exact case: Command ≠ command
     score += explainKindWeight(symbol);
     if (isDeprioritizedSeedPath(symbol.filePath) || isCodegenPath(symbol.filePath)) score -= 6;
+    // Type-declaration shims: axios `explain "Axios"` picked index.d.ts:623 over the
+    // lib/core/Axios.js implementation (both class-kind, LOC capped → tie broken by
+    // search order). A .d.ts describes the API; the implementation IS the symbol.
+    if (/\.d\.[cm]?ts$/i.test(symbol.filePath)) score -= 3;
     // Body size as a centrality proxy, log-dampened: a 545-line class beats a
     // 10-line re-export subclass, but 5000 lines doesn't beat everything forever.
     const loc = (symbol.endLine ?? 0) - (symbol.startLine ?? 0);

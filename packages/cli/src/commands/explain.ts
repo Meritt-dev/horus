@@ -87,7 +87,10 @@ export async function runExplain(
       s.id !== top.id &&
       // A constructor is named like its class (Java/C#: OwnerController.OwnerController) —
       // listing it as a same-named "other" reads like a duplicate-symbol bug (dogfood N8).
-      !(s.className != null && s.className === s.name),
+      // Search results don't always carry className (typed /symbols/exact omits it), so
+      // ALSO detect the id's `...:Name.Name` constructor shape (gson dogfood, cycle 3).
+      !(s.className != null && s.className === s.name) &&
+      !s.id.endsWith(`:${s.name}.${s.name}`),
   );
 
   const [ctx, impact, flows] = await Promise.all([

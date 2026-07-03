@@ -534,4 +534,10 @@ describe('rankExactCandidates (dogfood P1 — explain disambiguation)', () => {
   it('returns empty when nothing matches the query exactly (fuzzy fallback preserved)', () => {
     expect(rankExactCandidates('HonoBase', [sym('class:a.ts:Hono', 'Hono', 'a.ts')])).toEqual([]);
   });
+
+  it('cycle 3: the implementation outranks the .d.ts type shim (axios)', () => {
+    const dts = sym('class:index.d.ts:Axios', 'Axios', 'index.d.ts', 623, 683);
+    const impl = sym('class:lib/core/Axios.js:Axios', 'Axios', 'lib/core/Axios.js', 12, 230);
+    expect(rankExactCandidates('Axios', [dts, impl])[0]?.filePath).toBe('lib/core/Axios.js');
+  });
 });

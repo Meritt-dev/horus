@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import PurePosixPath
 
 from horus_source.core.graph.graph import KnowledgeGraph
@@ -52,6 +53,7 @@ def _is_test_file(file_path: str) -> bool:
         or ".test." in name
         or ".spec." in name
         or any(p in _NON_PRODUCT_DIRS for p in parts)
+        or _BUILD_CONFIG_FILE_RE.search(file_path) is not None
     )
 
 # Benchmark/example/demo trees are exercised by external runners (or exist purely as
@@ -61,7 +63,17 @@ _NON_PRODUCT_DIRS: frozenset[str] = frozenset({
     "bench", "benches", "benchmark", "benchmarks",  # benches/ is the Rust convention
     "example", "examples", "sample", "samples", "demo", "demos",
     "fixtures", "e2e", "perf", "perf-measures", "runtime-tests",
+    "docs", "docs_src", "website", "sandbox",  # docs sites + scratch trees (axios dogfood)
 })
+
+# Root-level build/tooling config files — invoked by build tools, never by repo code
+# (axios dogfood: gulpfile.js / rollup.config.js helpers flagged dead).
+_BUILD_CONFIG_FILE_RE = re.compile(
+    r"(^|/)(gulpfile|gruntfile|webpack[^/]*|rollup[^/]*|vite[^/]*|babel[^/]*|karma[^/]*"
+    r"|eslint[^/]*|prettier[^/]*|jest[^/]*|vitest[^/]*|tsup[^/]*|postcss[^/]*)"
+    r"\.(config\.)?[cm]?[jt]s$",
+    re.IGNORECASE,
+)
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__") and len(name) > 4

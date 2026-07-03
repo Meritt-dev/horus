@@ -29,7 +29,11 @@ export async function runSearch(
       console.log(pc.dim('  (no matches)'));
     } else {
       for (const sym of result.symbols) {
-        console.log(`  - ${pc.bold(sym.name)}  ${pc.dim(sym.filePath)}`);
+        // Qualify with class + line so same-named hits are tellable apart (serde
+        // dogfood: three visually-identical `deserialize` rows).
+        const owner = sym.className ? pc.dim(`${sym.className}.`) : '';
+        const line = sym.startLine ? pc.dim(`:${sym.startLine}`) : '';
+        console.log(`  - ${owner}${pc.bold(sym.name)}  ${pc.dim(sym.filePath)}${line}`);
       }
       totalMatches += result.symbols.length;
     }

@@ -593,3 +593,17 @@ def test_cfg_test_symbols_exempt() -> None:
     )
     process_dead_code(graph)
     assert graph.get_node(fn_id).is_dead is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["docs/.vitepress/theme/index.ts", "gulpfile.js", "rollup.config.js", "sandbox/client.js", "webpack.dev.config.mjs"],
+)
+def test_docs_and_build_config_exempt(path: str) -> None:
+    """Dogfood cycle-3 (axios): docs-site + root build-tool config helpers are
+    invoked by tooling, never by repo code — not dead-code candidates."""
+    graph = KnowledgeGraph()
+    _add_file_node(graph, path)
+    fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "toolingHelper")
+    process_dead_code(graph)
+    assert graph.get_node(fn_id).is_dead is False

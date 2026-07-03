@@ -522,6 +522,34 @@ def resolve_file_calls(
                 if edge is not None:
                     edges.append(edge)
 
+            # Ambiguous same-file method dispatch (dogfood cycle-3): a file with
+            # several same-named methods on DIFFERENT classes (serde's
+            # SeqDeserializer.end / MapDeserializer.end / ...) resolved every
+            # `x.end()` to the FIRST candidate only — the siblings never received
+            # an edge and were flagged dead despite being called. Static analysis
+            # can't type the receiver, so link the remaining same-file candidates
+            # at low confidence: dead-code sees a reference; confidence-aware
+            # consumers can discount it.
+            if (
+                target_id is not None
+                and call.receiver
+                and call.receiver not in ("self", "this")
+            ):
+                same_file_siblings = [
+                    nid
+                    for nid in call_index.get(call.name, [])
+                    if nid != target_id
+                    and (n := graph.get_node(nid)) is not None
+                    and n.file_path == fpd.file_path
+                    and n.label == NodeLabel.METHOD
+                    and n.class_name
+                ]
+                if 0 < len(same_file_siblings) <= 5:
+                    for nid in same_file_siblings:
+                        sib_edge = _make_edge(source_id, nid, 0.4, seen)
+                        if sib_edge is not None:
+                            edges.append(sib_edge)
+
         for arg_name in call.arguments:
             if arg_name in _CALL_BLOCKLIST:
                 continue
