@@ -112,9 +112,40 @@ class TypeScriptParser(LanguageParser):
             self._maybe_extract_module_exports(node, source, result)
         elif ntype == "method_definition":
             self._extract_method(node, source, result)
+        elif ntype in ("jsx_opening_element", "jsx_self_closing_element"):
+            self._extract_jsx_component_usage(node, result)
 
         for child in node.children:
             self._walk(child, source, result, visited)
+
+    def _extract_jsx_component_usage(self, node: Node, result: ParseResult) -> None:
+        """Record ``<Component />`` as a call to ``Component``.
+
+        Rendering a component IS invoking it, but there is no call_expression in
+        the tree — so every JSX component previously read as dead code (hono
+        dogfood: `Content`/`Form` used as ``<Content />`` flagged dead). Only
+        capitalized names count: lowercase tags (``<div>``) are intrinsic
+        elements, and ``<ns.Member />`` usage resolves via the member name.
+        """
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        line = node.start_point[0] + 1
+        if name_node.type == "identifier":
+            name = name_node.text.decode()
+            if name[:1].isupper():
+                result.calls.append(CallInfo(name=name, line=line))
+        elif name_node.type == "member_expression":
+            prop = name_node.child_by_field_name("property")
+            obj = name_node.child_by_field_name("object")
+            if prop is not None and prop.text.decode()[:1].isupper():
+                result.calls.append(
+                    CallInfo(
+                        name=prop.text.decode(),
+                        line=line,
+                        receiver=obj.text.decode() if obj else "",
+                    )
+                )
 
     def _extract_export(
         self, node: Node, source: str, result: ParseResult

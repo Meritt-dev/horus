@@ -471,3 +471,28 @@ class TestDiFieldCapture:
         result = parser.parse(code, "empty.py")
         cls = next(s for s in result.symbols if s.kind == "class")
         assert cls.di_fields == {}
+
+
+class TestModuleLevelPublicClassExports:
+    """Dogfood P1: Python has no `export` keyword, so public module-level classes
+    (Flask's View/MethodView — subclassed by users, never called in-repo) were
+    flagged dead. They now join the module's export surface."""
+
+    def test_public_module_class_is_exported(self, parser: PythonParser) -> None:
+        code = "class View:\n    def dispatch_request(self):\n        pass\n"
+        result = parser.parse(code, "src/views.py")
+        assert "View" in result.exports
+
+    def test_private_and_nested_classes_are_not(self, parser: PythonParser) -> None:
+        code = (
+            "class _Internal:\n    pass\n\n"
+            "def factory():\n    class Inner:\n        pass\n    return Inner\n"
+        )
+        result = parser.parse(code, "src/util.py")
+        assert "_Internal" not in result.exports
+        assert "Inner" not in result.exports
+
+    def test_decorated_public_class_is_exported(self, parser: PythonParser) -> None:
+        code = "@dataclass\nclass Point:\n    x: int\n"
+        result = parser.parse(code, "src/models.py")
+        assert "Point" in result.exports

@@ -388,6 +388,14 @@ class PythonParser(LanguageParser):
 
         return di_fields
 
+    @staticmethod
+    def _is_module_level(node: Node) -> bool:
+        """True when *node* is defined at module scope (decorators looked through)."""
+        parent = node.parent
+        if parent is not None and parent.type == "decorated_definition":
+            parent = parent.parent
+        return parent is not None and parent.type == "module"
+
     def _extract_class(
         self,
         node: Node,
@@ -414,6 +422,13 @@ class PythonParser(LanguageParser):
                 di_fields=self._extract_di_fields(node),
             )
         )
+
+        # Python has no `export` keyword: a public module-level class IS the module's
+        # public surface (consumed by downstream code the index can't see — e.g. Flask's
+        # `View`/`MethodView` are subclassed by users, never called in-repo, and were
+        # flagged dead). Underscore-prefixed and nested classes stay non-exported.
+        if not class_name.startswith("_") and self._is_module_level(node):
+            result.exports.append(class_name)
 
         superclasses = node.child_by_field_name("superclasses")
         if superclasses is not None:

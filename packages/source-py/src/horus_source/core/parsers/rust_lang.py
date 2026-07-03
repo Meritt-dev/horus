@@ -94,6 +94,41 @@ class RustParser(LanguageParser):
             parent = parent.parent
         return ""
 
+    @staticmethod
+    def _in_trait_impl(node: Node) -> bool:
+        """True when *node* is a method inside ``impl Trait for Type``.
+
+        Trait impls are Rust's dynamic-dispatch surface: `From::from`, `PartialEq::eq`,
+        `Display::fmt` etc. are invoked by the language (operators, conversions, vtables),
+        not by in-repo named calls — the same reason Python dunders and overrides are
+        exempt from dead-code detection.
+        """
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "impl_item":
+                return parent.child_by_field_name("trait") is not None
+            parent = parent.parent
+        return False
+
+    @staticmethod
+    def _in_cfg_test_mod(node: Node) -> bool:
+        """True when *node* lives inside a ``#[cfg(test)] mod`` (inline unit tests).
+
+        tree-sitter-rust parses outer attributes as PRECEDING SIBLINGS of the item
+        they decorate, so each ancestor ``mod_item``'s attribute stack is checked.
+        """
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "mod_item":
+                sib = parent.prev_named_sibling
+                while sib is not None and sib.type == "attribute_item":
+                    text = sib.text.decode()
+                    if "cfg" in text and "test" in text:
+                        return True
+                    sib = sib.prev_named_sibling
+            parent = parent.parent
+        return False
+
     def _type_name(self, node: Node) -> str:
         """Bare type name from a (possibly generic / scoped) type node."""
         if node.type == "generic_type":
@@ -126,6 +161,13 @@ class RustParser(LanguageParser):
                 content=node.text.decode(),
                 signature=self._signature(node, name),
                 class_name=owner,
+                # Markers dead-code detection exempts on (clap dogfood): inline unit
+                # tests (`#[cfg(test)] mod` — runner-invoked) and trait-impl methods
+                # (`impl Trait for T` — language-invoked via operators/conversions).
+                decorators=(
+                    (["cfg(test)"] if self._in_cfg_test_mod(node) else [])
+                    + (["trait_impl"] if self._in_trait_impl(node) else [])
+                ),
             )
         )
         if _is_pub(node):

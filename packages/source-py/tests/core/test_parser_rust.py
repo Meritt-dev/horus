@@ -142,3 +142,55 @@ async fn main() -> std::io::Result<()> {
     assert ("AppState", "implements", "Repo") in result.heritage
     assert any(i.module.startswith("actix_web") for i in result.imports)
     assert any(c.name == "query" and c.receiver == "self.db" for c in result.calls)
+
+
+class TestCfgTestModMarker:
+    """Dogfood P1: 149 of clap's dead flags were symbols in `#[cfg(test)] mod`
+    inline unit tests — runner-invoked, never called in-repo."""
+
+    def test_symbols_in_cfg_test_mod_carry_marker(self) -> None:
+        parser = RustParser()
+        code = (
+            "pub fn real() {}\n\n"
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    fn verifies_real() { super::real(); }\n"
+            "    fn helper() {}\n"
+            "}\n"
+        )
+        result = parser.parse(code, "src/lib.rs")
+        by_name = {s.name: s for s in result.symbols}
+        assert "cfg(test)" in by_name["verifies_real"].decorators
+        assert "cfg(test)" in by_name["helper"].decorators
+        assert by_name["real"].decorators == []
+
+    def test_cfg_all_variant_detected(self) -> None:
+        parser = RustParser()
+        code = '#[cfg(all(test, feature = "x"))]\nmod tests {\n    fn t() {}\n}\n'
+        result = parser.parse(code, "src/lib.rs")
+        assert "cfg(test)" in {s.name: s for s in result.symbols}["t"].decorators
+
+    def test_non_test_mod_not_marked(self) -> None:
+        parser = RustParser()
+        code = "mod inner {\n    fn plain() {}\n}\n"
+        result = parser.parse(code, "src/lib.rs")
+        assert {s.name: s for s in result.symbols}["plain"].decorators == []
+
+
+class TestTraitImplMarker:
+    def test_trait_impl_methods_carry_marker(self) -> None:
+        parser = RustParser()
+        code = (
+            "struct Id(u32);\n"
+            "impl From<u32> for Id {\n"
+            "    fn from(v: u32) -> Self { Id(v) }\n"
+            "}\n"
+            "impl Id {\n"
+            "    fn inherent(&self) -> u32 { self.0 }\n"
+            "}\n"
+        )
+        result = parser.parse(code, "src/lib.rs")
+        by_name = {s.name: s for s in result.symbols}
+        assert "trait_impl" in by_name["from"].decorators
+        assert by_name["inherent"].decorators == []  # inherent impls stay eligible

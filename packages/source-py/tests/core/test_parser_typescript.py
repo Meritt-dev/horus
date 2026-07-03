@@ -425,3 +425,47 @@ class TestDiFieldCapture:
         result = ts_parser.parse(code, "empty.ts")
         cls = next(s for s in result.symbols if s.kind == "class")
         assert cls.di_fields == {}
+
+
+class TestJsxComponentUsage:
+    """Dogfood P1: `<Content />` is an invocation of Content, but produced no call
+    edge — every JSX component read as dead code."""
+
+    @pytest.fixture
+    def tsx_parser(self) -> TypeScriptParser:
+        return TypeScriptParser(dialect="tsx")
+
+    def test_self_closing_and_paired_elements_are_calls(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = """\
+const Content = () => <p>hi</p>;
+const Form = () => <form />;
+export const Page = () => (
+  <div>
+    <Content />
+    <Form>inner</Form>
+  </div>
+);
+"""
+        result = tsx_parser.parse(code, "src/page.tsx")
+        called = {c.name for c in result.calls}
+        assert "Content" in called
+        assert "Form" in called
+
+    def test_intrinsic_lowercase_tags_are_not_calls(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = 'export const X = () => <div className="a"><span /></div>;\n'
+        result = tsx_parser.parse(code, "src/x.tsx")
+        called = {c.name for c in result.calls}
+        assert "div" not in called
+        assert "span" not in called
+
+    def test_member_component_usage_records_property_name(
+        self, tsx_parser: TypeScriptParser
+    ) -> None:
+        code = "export const Y = () => <UI.Widget />;\n"
+        result = tsx_parser.parse(code, "src/y.tsx")
+        widget = [c for c in result.calls if c.name == "Widget"]
+        assert widget and widget[0].receiver == "UI"
