@@ -258,3 +258,23 @@ describe('dogfood cycle-2 architecture quality (N2/N3/N4)', () => {
     expect(m.subsystems[0]?.name).toBe('Routing+Core'); // real subsystem leads despite fewer members
   });
 });
+
+describe('async-boundary hygiene (dogfood: fixture + code-fragment queue names)', () => {
+  it('drops malformed queue names and fixture-only edges; keeps real ones', async () => {
+    const { discoverArchitecture: discover } = await import('./architecture.js');
+    const EDGES: QueueEdge[] = [
+      edge('real-queue', 'p', 'Producer', 'Worker'),
+      // Malformed: multiline code fragment captured as a "queue name".
+      { ...edge('x', 'p', 'A', 'B'), queueName: 'const q = new Queue(\n  "oops"' },
+      // Fixture-only: both endpoints in test trees.
+      {
+        ...edge('fixture-queue', 'p', 'FakeProducer', 'FakeWorker'),
+        producerFile: 'tests/fixtures/queues.ts',
+        workerFile: '__tests__/worker.test.ts',
+      },
+    ];
+    vi.mocked((await import('@horus/db')).listQueueEdges).mockResolvedValueOnce(EDGES as never);
+    const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
+    expect(m.asyncBoundaries.map((b) => b.queueName)).toEqual(['real-queue']);
+  });
+});

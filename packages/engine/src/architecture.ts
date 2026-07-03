@@ -199,7 +199,21 @@ export async function discoverArchitecture(deps: {
   // 3. Async boundaries from queue edges
   const asyncBoundaries = await (async () => {
     try {
-      const edges: QueueEdge[] = await listQueueEdges(deps.db, { project: deps.project });
+      const rawEdges: QueueEdge[] = await listQueueEdges(deps.db, { project: deps.project });
+      // Hygiene (dogfood): the stitcher can pick up queue-name look-alikes from test
+      // fixtures and malformed multiline code fragments. Product architecture shows
+      // PRODUCT boundaries: drop edges whose producer AND worker live in test/example
+      // trees, and reject names that are not plausible queue identifiers.
+      const isValidQueueName = (name: string): boolean =>
+        name.length > 0 &&
+        name.length <= 100 &&
+        !/[\n\r{}()`"';]/.test(name) &&
+        name.trim() === name;
+      const isFixtureEdge = (e: QueueEdge): boolean => {
+        const files = [e.producerFile, e.workerFile].filter((f): f is string => f != null && f !== '');
+        return files.length > 0 && files.every((f) => isTestOrExamplePath(f));
+      };
+      const edges = rawEdges.filter((e) => isValidQueueName(e.queueName) && !isFixtureEdge(e));
       type SymFile = { symbol: string; file: string | null };
       const byQueue = new Map<string, { producers: Map<string, SymFile>; workers: Map<string, SymFile> }>();
       for (const edge of edges) {
