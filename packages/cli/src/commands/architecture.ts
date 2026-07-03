@@ -6,6 +6,8 @@ import { discoverArchitecture, renderArchitecture, architectureToJSON } from '@h
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { detectOwnPackages } from '../lib/own-packages.js';
+import { repoRootOrCwd } from '../lib/cloud/session.js';
 
 export const ARCHITECTURE_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
 
@@ -61,7 +63,12 @@ export async function runArchitecture(opts: {
 
     const { db, sql } = await openDb(config.database.url);
     try {
-      const m = await discoverArchitecture({ code, db, project });
+      const m = await discoverArchitecture({
+        code,
+        db,
+        project,
+        ownPackages: detectOwnPackages(repoRootOrCwd()),
+      });
       if (opts.json) {
         console.log(architectureToJSON(m));
       } else {

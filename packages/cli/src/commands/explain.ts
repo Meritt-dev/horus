@@ -82,7 +82,12 @@ export async function runExplain(
   // production symbol). Case-insensitive: `Command` (struct) and `command` (method)
   // collide for the query "command" and both must be disclosed.
   const siblings = symbols.filter(
-    (s) => s.name.toLowerCase() === top.name.toLowerCase() && s.id !== top.id,
+    (s) =>
+      s.name.toLowerCase() === top.name.toLowerCase() &&
+      s.id !== top.id &&
+      // A constructor is named like its class (Java/C#: OwnerController.OwnerController) —
+      // listing it as a same-named "other" reads like a duplicate-symbol bug (dogfood N8).
+      !(s.className != null && s.className === s.name),
   );
 
   const [ctx, impact, flows] = await Promise.all([

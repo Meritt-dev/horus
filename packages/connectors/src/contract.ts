@@ -44,10 +44,14 @@ export interface CodeProvider extends Provider {
 
   /** Aggregate node counts by label (GET /api/overview). */
   overview?(): Promise<{ nodesByLabel: Record<string, number> }>;
-  /** Community clusters (Louvain) with member counts (GET /api/communities). */
-  communities?(): Promise<{ name: string; memberCount: number }[]>;
-  /** Discovered execution processes (GET /api/processes). */
-  processes?(): Promise<{ name: string }[]>;
+  /** Community clusters (Louvain) with member counts (GET /api/communities). `members`
+   *  (node ids) lets the engine detect docs/example-dominated clusters by path. */
+  communities?(): Promise<{ name: string; memberCount: number; members?: string[] }[]>;
+  /** Discovered execution processes (GET /api/processes). Step data lets the engine rank
+   *  flows by length/real-path instead of alphabetically. */
+  processes?(): Promise<
+    { name: string; stepCount?: number; steps?: { nodeId: string }[] }[]
+  >;
   /** Dead-code report — the engine consumes `total` (GET /api/dead-code). */
   deadCode?(): Promise<{ total: number }>;
   /** Temporal coupling pairs — the engine counts `coChanges >= 3` (GET /api/coupling). */

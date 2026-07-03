@@ -278,11 +278,11 @@ export class SourceCodeProvider implements CodeProvider {
     return this.client.overview();
   }
 
-  communities(): Promise<{ name: string; memberCount: number }[]> {
+  communities(): Promise<{ name: string; memberCount: number; members?: string[] }[]> {
     return this.client.communities();
   }
 
-  processes(): Promise<{ name: string }[]> {
+  processes(): Promise<{ name: string; stepCount?: number; steps?: { nodeId: string }[] }[]> {
     return this.client.processes();
   }
 

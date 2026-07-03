@@ -206,3 +206,55 @@ describe('discoverArchitecture — project scoping (HOR-207)', () => {
     expect(m.asyncBoundaries.map((b) => b.queueName)).toContain('zoho-sync-batch');
   });
 });
+
+describe('dogfood cycle-2 architecture quality (N2/N3/N4)', () => {
+  it('N2: manifest-derived own packages are excluded from external systems', async () => {
+    const code = {
+      filesContaining: async (tokens: string[]) =>
+        Object.fromEntries(
+          tokens.map((t) => [
+            t,
+            t === 'fastapi' || t === 'redis' ? [`src/uses_${t}.py`] : [],
+          ]),
+        ),
+    } as unknown as CodeProvider;
+    // Project label is df2-prefixed — only ownPackages can identify "fastapi" as self.
+    const m = await discoverArchitecture({
+      code,
+      db: fakeDb,
+      project: 'df2-fastapi',
+      ownPackages: ['fastapi'],
+    });
+    const names = m.externalSystems.map((e) => e.name);
+    expect(names).not.toContain('fastapi');
+    expect(names).toContain('redis');
+  });
+
+  it('N3: key flows rank real long flows above docs_src one-liners (not alphabetical)', async () => {
+    const code = {
+      processes: async () => [
+        // Alphabetically-first docs one-liner (the fastapi failure mode).
+        { name: 'aaa_get_path_param → Path', stepCount: 2, steps: [{ nodeId: 'function:docs_src/tutorial/params.py:aaa_get_path_param' }] },
+        { name: 'zz_checkout → charge → receipt', stepCount: 7, steps: [{ nodeId: 'function:src/checkout.py:zz_checkout' }] },
+        { name: 'mm_auth → session', stepCount: 3, steps: [{ nodeId: 'function:src/auth.py:mm_auth' }] },
+      ],
+    } as unknown as CodeProvider;
+    const m = await discoverArchitecture({ code, db: fakeDb });
+    expect(m.keyFlows[0]).toBe('zz_checkout → charge → receipt'); // longest real flow first
+    expect(m.keyFlows.at(-1)).toBe('aaa_get_path_param → Path'); // docs flow last
+  });
+
+  it('N4: a community whose MEMBERS are mostly docs/example paths ranks as testy', async () => {
+    const docsMembers = Array.from({ length: 10 }, (_, i) => `function:docs_src/tutorial/t${i}.py:f${i}`);
+    const realMembers = Array.from({ length: 4 }, (_, i) => `function:src/core/c${i}.py:g${i}`);
+    const code = {
+      communities: async () => [
+        // Bigger docs cluster with a name NO token list flags.
+        { name: 'Path_params_numeric_validations+Scripts', memberCount: 10, members: docsMembers },
+        { name: 'Routing+Core', memberCount: 4, members: realMembers },
+      ],
+    } as unknown as CodeProvider;
+    const m = await discoverArchitecture({ code, db: fakeDb });
+    expect(m.subsystems[0]?.name).toBe('Routing+Core'); // real subsystem leads despite fewer members
+  });
+});

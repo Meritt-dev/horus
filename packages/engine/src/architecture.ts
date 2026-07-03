@@ -4,6 +4,8 @@ import { listQueueEdges, type HorusDb, type QueueEdge } from '@horus/db';
 export interface Subsystem {
   name: string;
   members: number;
+  /** Test/docs/maintenance-dominated (by name tokens or member paths) — rendered tagged + last. */
+  testy?: boolean;
 }
 
 export interface AsyncBoundary {
@@ -93,6 +95,31 @@ export function isTestyCommunity(name: string): boolean {
 }
 
 /**
+ * True when most of a community's MEMBERS live under test/example/docs trees (dogfood
+ * cycle-2 N4). Name tokens miss doc-derived cluster names — fastapi's
+ * "Path_params_numeric_validations+Scripts" (a docs_src tutorial dir) ranked as the
+ * 3rd subsystem. Member node ids are path-shaped (`<kind>:<path>:<name>`), so the
+ * file path is extractable without extra requests.
+ */
+// Repo-maintenance trees that are never "the architecture" (fastapi's docs/translation
+// scripts formed the 170-member top subsystem). Ranking-only signal — deliberately NOT
+// part of isTestOrExamplePath, which also gates dead-code and external-system detection.
+const MAINTENANCE_DIR_RE = /(^|\/)(scripts?|tools?|tooling|ci|\.github|hack)(\/|$)/i;
+
+export function isMostlyNonProductMembers(members: string[] | undefined): boolean {
+  if (!members || members.length === 0) return false;
+  let nonProduct = 0;
+  for (const id of members) {
+    const parts = id.split(':');
+    const path = parts.length >= 2 ? (parts[1] ?? '') : '';
+    if (path !== '' && (isTestOrExamplePath(path) || MAINTENANCE_DIR_RE.test(path))) {
+      nonProduct += 1;
+    }
+  }
+  return nonProduct / members.length > 0.6;
+}
+
+/**
  * Normalize a community name on display (HOR-377). The backend's naming is fixed at the source,
  * but indexes built before that fix still carry degenerate names — clean them here so existing
  * repos benefit without a re-index: strip leading `_`/`.` ("_ext" → "ext") and collapse "X+x"
@@ -120,6 +147,9 @@ export async function discoverArchitecture(deps: {
   db: HorusDb;
   /** Active project — scopes queue edges so other projects' queues don't leak in (HOR-207). */
   project?: string;
+  /** Manifest-derived package names of THIS repo (package.json/pyproject/go.mod/Cargo.toml) —
+   *  excluded from external-system detection alongside the project label (dogfood N2). */
+  ownPackages?: string[];
 }): Promise<ArchitectureModel> {
   // NOTE: every section degrades to its empty default independently — one absent
   // provider method or failed request must not blank the whole architecture view.
@@ -147,13 +177,16 @@ export async function discoverArchitecture(deps: {
       const rows = communities.map((c) => ({
         name: cleanSubsystemName(c.name),
         members: Number(c.memberCount ?? 0),
+        // Name tokens (HOR-365) OR member paths (dogfood N4): docs_src/example clusters
+        // carry dir-derived names no token list can enumerate.
+        testy: isTestyCommunity(c.name) || isMostlyNonProductMembers(c.members),
       }));
       // De-prioritize test/example/docs clusters so the real product subsystems lead — they're
       // large but rarely what "the architecture" means. Sort AFTER mapping all rows so a real
       // subsystem ranked below the test clusters isn't dropped by the top-12 slice (HOR-365).
       rows.sort((a, b) => {
-        const at = isTestyCommunity(a.name) ? 1 : 0;
-        const bt = isTestyCommunity(b.name) ? 1 : 0;
+        const at = a.testy ? 1 : 0;
+        const bt = b.testy ? 1 : 0;
         if (at !== bt) return at - bt;
         return b.members - a.members;
       });
@@ -194,15 +227,31 @@ export async function discoverArchitecture(deps: {
     }
   })();
 
-  // 4. Key flows (Process nodes)
+  // 4. Key flows (Process nodes) — ranked by IMPORTANCE, not alphabetically (dogfood
+  //    cycle-2 N3: fastapi's "Critical paths" were 10x get_path_param_* docs_src
+  //    one-liners purely because they sort first). Real-path flows lead, longer flows
+  //    beat shorter ones, name only breaks ties.
   const keyFlows = await (async () => {
     try {
       const processes = (await deps.code.processes?.()) ?? [];
-      return processes
-        .map((p) => p.name)
-        .filter((n) => n !== '')
-        .sort()
-        .slice(0, 20);
+      const ranked = processes
+        .filter((p) => p.name !== '')
+        .map((p) => {
+          const firstStep = p.steps?.[0]?.nodeId ?? '';
+          const parts = firstStep.split(':');
+          const path = parts.length >= 2 ? (parts[1] ?? '') : '';
+          return {
+            name: p.name,
+            steps: Number(p.stepCount ?? p.steps?.length ?? 0),
+            nonProduct: path !== '' && isTestOrExamplePath(path),
+          };
+        });
+      ranked.sort((a, b) => {
+        if (a.nonProduct !== b.nonProduct) return a.nonProduct ? 1 : -1;
+        if (a.steps !== b.steps) return b.steps - a.steps;
+        return a.name.localeCompare(b.name);
+      });
+      return ranked.slice(0, 20).map((p) => p.name);
     } catch {
       return [];
     }
@@ -231,10 +280,18 @@ export async function discoverArchitecture(deps: {
   //    NON-test/example files so a marker mentioned once in a test or example isn't
   //    reported as a real dependency, and skip the repo's OWN package (a project named
   //    `flask` shouldn't list `flask` as external) — HOR-366.
-  const ownPackage = deps.project?.toLowerCase();
+  // Own-package candidates: the project label AND real manifest names the caller
+  // detected (dogfood cycle-2 N2: the horus project name is often df-prefixed or
+  // renamed — fastapi listed ITSELF as an external system because `deps.project`
+  // was "df2-fastapi" while the marker matched the pyproject name "fastapi").
+  const ownPackages = new Set(
+    [deps.project, ...(deps.ownPackages ?? [])]
+      .filter((x): x is string => typeof x === 'string' && x !== '')
+      .map((x) => x.toLowerCase()),
+  );
   const externalSystems = await (async () => {
     try {
-      const markers = EXTERNAL_MARKERS.filter((m) => !ownPackage || m.toLowerCase() !== ownPackage);
+      const markers = EXTERNAL_MARKERS.filter((m) => !ownPackages.has(m.toLowerCase()));
       const matches = (await deps.code.filesContaining?.(markers, 500)) ?? {};
       return markers
         .map((marker) => ({
