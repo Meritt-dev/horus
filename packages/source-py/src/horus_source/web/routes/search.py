@@ -31,7 +31,7 @@ class ContentSearchRequest(BaseModel):
     # {"matches": {token: [file_path, ...]}} with `limit` as a PER-TOKEN budget.
     # Backs the engine's external-system detection — content payloads would be
     # wasteful and a shared OR-limit lets common tokens crowd out rare ones.
-    filesOnly: bool = False
+    filesOnly: bool = False  # noqa: N815 — JSON wire key from the TS client
 
 
 @router.post("/search")
