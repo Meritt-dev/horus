@@ -24,7 +24,11 @@ const EXAMPLE_DIRS = new Set([
   'bench', 'benches', 'benchmark', 'benchmarks', 'perf', 'perf-measures',
   'runtime-tests', 'sandbox', 'playground', 'tutorial', 'tutorials',
 ]);
-const VENDORED_DIRS = new Set(['node_modules', 'vendor', 'vendors', 'vendored', 'third_party', 'third-party', 'dist', 'build', '.venv', 'venv']);
+// `.yarn` holds Yarn Berry's vendored release/plugin blobs (`.yarn/releases/*.cjs`);
+// `generated`/`__generated__` hold codegen output (`*.d.ts`, GraphQL/protobuf clients).
+// Both leaked into external-system detection (dogfood 0.21: apollo-server's generated
+// `stripe` d.ts, yarn release blobs) — they're not hand-written integrations.
+const VENDORED_DIRS = new Set(['node_modules', 'vendor', 'vendors', 'vendored', 'third_party', 'third-party', 'dist', 'build', '.venv', 'venv', '.yarn', 'generated', '__generated__']);
 
 /** Test-file naming conventions across the indexed languages. `.test.`/`.spec.`
  *  accept any extension (co-located tests: `router.test.ts`, `api.spec.js`, ...). */
@@ -35,7 +39,10 @@ const TEST_FILE_RE =
 const CONFIG_FILE_RE =
   /(^|\.)((eslint|prettier|babel|jest|vitest|tsup|vite|webpack|rollup)\.config\.[cm]?[jt]s$|tsconfig[^/]*\.json$|package\.json$|pnpm-(lock|workspace)\.yaml$|pyproject\.toml$|Cargo\.toml$|go\.(mod|sum)$|Dockerfile$|docker-compose[^/]*\.ya?ml$|\.github\/)/;
 
-const DOCS_FILE_RE = /\.(md|mdx|rst|adoc|txt)$/i;
+// `.markdown`/`.mdown`/`.mkd` are the long-form Markdown extensions — a root
+// `CHANGELOG.markdown` (outside any docs/ tree) classified as product and leaked its
+// prose mentions into external-system detection (dogfood 0.21: axios from markdown).
+const DOCS_FILE_RE = /\.(md|mdx|markdown|mdown|mkd|rst|adoc|txt)$/i;
 
 /**
  * Classify a repo-relative (or absolute) path. Product is the default — the

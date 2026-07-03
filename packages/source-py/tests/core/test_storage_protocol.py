@@ -981,6 +981,59 @@ class TestCliReadPath:
         assert backend.files_containing([], per_token_limit=10) == {}
         assert backend.files_containing([""], per_token_limit=10) == {}
 
+    def _boundary_graph(self) -> KnowledgeGraph:
+        """Files exercising word-boundary / comment-skip refinement (dogfood 0.21, A3)."""
+        graph = KnowledgeGraph()
+        # `stripe` buried mid-identifier — must NOT match.
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="util.ts",
+                file_path="src/util.ts",
+                content="export function stripEndSlash(s) { return s }",
+            )
+        )
+        # `redis` as a standalone identifier — must match by NAME, not by an import path.
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="cache.ts",
+                file_path="src/cache.ts",
+                content="const redis = createClient()\nawait redis.get('k')",
+            )
+        )
+        # `axios` mentioned only in a comment — must be skipped.
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="notes.ts",
+                file_path="src/notes.ts",
+                content="// Axios, et al. are also supported\nexport const x = 1",
+            )
+        )
+        # `mongo` as a package-name substring (pymongo) — must still match.
+        graph.add_node(
+            _make_node(
+                label=NodeLabel.FILE,
+                name="store.py",
+                file_path="src/store.py",
+                content="from pymongo import MongoClient",
+            )
+        )
+        return graph
+
+    def test_files_containing_word_bounded_and_comment_skip(
+        self, backend: StorageBackend
+    ) -> None:
+        backend.bulk_load(self._boundary_graph())
+        out = backend.files_containing(
+            ["stripe", "redis", "axios", "mongo"], per_token_limit=10
+        )
+        assert out["stripe"] == []  # stripEndSlash must not mint a `stripe` dependency
+        assert out["redis"] == ["src/cache.ts"]  # standalone identifier matches
+        assert out["axios"] == []  # comment-only mention skipped
+        assert out["mongo"] == ["src/store.py"]  # pymongo substring preserved
+
     def test_flows_for_symbol(self, backend: StorageBackend) -> None:
         graph, ids = _analytics_graph()
         backend.bulk_load(graph)

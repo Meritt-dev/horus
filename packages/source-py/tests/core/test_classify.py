@@ -61,6 +61,12 @@ class TestDocsExampleVendoredConfig:
     def test_markdown_anywhere_is_docs(self) -> None:
         assert classify_path("src/README.md") == "docs"
 
+    @pytest.mark.parametrize("path", ["CHANGELOG.markdown", "NOTES.mdown", "readme.mkd"])
+    def test_long_form_markdown_extensions_are_docs(self, path: str) -> None:
+        # Root long-form Markdown outside a docs/ tree otherwise leaked into
+        # external-system detection (dogfood 0.21: axios from CHANGELOG.markdown).
+        assert classify_path(path) == "docs", path
+
     @pytest.mark.parametrize(
         "path",
         [
@@ -82,7 +88,10 @@ class TestDocsExampleVendoredConfig:
 
     @pytest.mark.parametrize(
         "path",
-        ["node_modules/pkg/index.js", "vendor/lib.go", "third_party/x.py", "dist/out.js"],
+        ["node_modules/pkg/index.js", "vendor/lib.go", "third_party/x.py", "dist/out.js",
+         # Yarn Berry blobs and codegen output are vendored, not integrations (dogfood 0.21).
+         ".yarn/releases/yarn-3.6.1.cjs", "src/generated/graphql.ts",
+         "src/__generated__/schema.d.ts"],
     )
     def test_vendored(self, path: str) -> None:
         assert classify_path(path) == "vendored", path

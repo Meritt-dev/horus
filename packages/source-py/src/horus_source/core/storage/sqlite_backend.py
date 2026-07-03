@@ -35,6 +35,7 @@ else:
     _SQLITE_VEC_IMPORT_ERROR = None
 
 from horus_source.core.classify import is_product
+from horus_source.core.marker_match import content_has_marker
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, NodeEmbedding, SearchResult
@@ -1344,7 +1345,12 @@ class SqliteBackend:
     def files_containing(
         self, tokens: list[str], per_token_limit: int
     ) -> dict[str, list[str]]:
-        """Distinct file paths whose FILE-node content contains each token (per-token budget)."""
+        """Distinct file paths whose FILE-node content contains each token (per-token budget).
+
+        The SQL ``LIKE`` is a coarse substring prefilter; :func:`content_has_marker`
+        refines each candidate to a whole-word, non-comment hit (dogfood 0.21 external-
+        system false positives), so the per-token budget is applied AFTER refinement.
+        """
         conn = self._require_conn()
         per_token_limit = int(per_token_limit)
         out: dict[str, list[str]] = {}
@@ -1353,13 +1359,22 @@ class SqliteBackend:
                 if not token:
                     continue
                 rows = conn.execute(
-                    "SELECT DISTINCT file_path FROM nodes "
+                    "SELECT DISTINCT file_path, content FROM nodes "
                     "WHERE label = 'file' AND file_path != '' "
                     "AND lower(content) LIKE ? ESCAPE '\\' "
-                    "ORDER BY file_path LIMIT ?",
-                    [f"%{_like_escape(token.lower())}%", per_token_limit],
+                    "ORDER BY file_path",
+                    [f"%{_like_escape(token.lower())}%"],
                 ).fetchall()
-                out[token] = [r[0] for r in rows]
+                paths: list[str] = []
+                seen: set[str] = set()
+                for file_path, content in rows:
+                    if file_path in seen or not content_has_marker(content or "", token):
+                        continue
+                    seen.add(file_path)
+                    paths.append(file_path)
+                    if len(paths) >= per_token_limit:
+                        break
+                out[token] = paths
         return out
 
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:

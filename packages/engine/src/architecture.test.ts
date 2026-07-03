@@ -259,6 +259,78 @@ describe('dogfood cycle-2 architecture quality (N2/N3/N4)', () => {
   });
 });
 
+describe('external-system detection — evidence threshold (dogfood 0.21, A3)', () => {
+  it('isOwnCapability: a marker whose files live under a like-named dir is the repo, not a dep', async () => {
+    const { isOwnCapability } = await import('./architecture.js');
+    // prettier's own GraphQL formatter — every match under src/language-graphql.
+    expect(
+      isOwnCapability('graphql', [
+        'src/language-graphql/parser.ts',
+        'src/language-graphql/printer.ts',
+      ]),
+    ).toBe(true);
+    // A repo that ships packages/graphql/* — its own package.
+    expect(isOwnCapability('graphql', ['packages/graphql/src/index.ts'])).toBe(true);
+    // Marker with non-alpha chars matches a like-named dir segment.
+    expect(isOwnCapability('drizzle-orm', ['packages/drizzle-orm/src/sql.ts'])).toBe(true);
+    // A genuine integration — graphql imported from scattered product files, no own dir.
+    expect(
+      isOwnCapability('graphql', ['src/api/resolvers.ts', 'src/server.ts']),
+    ).toBe(false);
+    // Below the 50% dominance bar → treated as a real dependency.
+    expect(
+      isOwnCapability('graphql', ['src/language-graphql/p.ts', 'src/api/a.ts', 'src/api/b.ts']),
+    ).toBe(false);
+  });
+
+  it('drops the repo own-capability marker but keeps real integrations', async () => {
+    const code = {
+      filesContaining: async (tokens: string[]) =>
+        Object.fromEntries(
+          tokens.map((t) => [
+            t,
+            t === 'graphql'
+              ? ['src/language-graphql/parser.ts', 'src/language-graphql/printer.ts']
+              : t === 'redis'
+                ? ['src/queue/worker.ts']
+                : [],
+          ]),
+        ),
+    } as unknown as CodeProvider;
+    const m = await discoverArchitecture({ code, db: fakeDb });
+    const names = m.externalSystems.map((e) => e.name);
+    expect(names).not.toContain('graphql'); // own formatter, not a dependency
+    expect(names).toContain('redis'); // real integration survives
+  });
+
+  it('VERIFY 4a/4b: non-product path forms are filtered regardless of normalization', async () => {
+    // Reproductions of the two flagged leaks: axios from a root Markdown file, and a
+    // marker from an astro test/fixtures tree. Both must be excluded no matter how the
+    // provider spells the path (leading ./, absolute, backslash) — classifyPath normalizes.
+    const code = {
+      filesContaining: async (tokens: string[]) =>
+        Object.fromEntries(
+          tokens.map((t) => [
+            t,
+            t === 'axios'
+              ? ['CHANGELOG.markdown', './docs/guide.md']
+              : t === 'stripe'
+                ? [
+                    'packages/astro/test/fixtures/units/fish.yaml',
+                    'packages\\astro\\test\\fixtures\\x.ts',
+                    '/repo/packages/astro/test/fixtures/y.ts',
+                  ]
+                : [],
+          ]),
+        ),
+    } as unknown as CodeProvider;
+    const m = await discoverArchitecture({ code, db: fakeDb });
+    const names = m.externalSystems.map((e) => e.name);
+    expect(names).not.toContain('axios'); // docs Markdown (incl. .markdown ext) excluded
+    expect(names).not.toContain('stripe'); // test/fixtures tree excluded, all path spellings
+  });
+});
+
 describe('async-boundary hygiene (dogfood: fixture + code-fragment queue names)', () => {
   it('drops malformed queue names and fixture-only edges; keeps real ones', async () => {
     const { discoverArchitecture: discover } = await import('./architecture.js');

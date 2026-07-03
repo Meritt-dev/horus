@@ -24,6 +24,7 @@ from typing import Any
 import kuzu
 
 from horus_source.core.classify import is_product
+from horus_source.core.marker_match import content_has_marker
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.storage.base import NodeEmbedding, SearchResult
@@ -914,7 +915,12 @@ class KuzuBackend:
     def files_containing(
         self, tokens: list[str], per_token_limit: int
     ) -> dict[str, list[str]]:
-        """Distinct file paths whose FILE-node content contains each token (per-token budget)."""
+        """Distinct file paths whose FILE-node content contains each token (per-token budget).
+
+        The Cypher ``CONTAINS`` is a coarse substring prefilter; :func:`content_has_marker`
+        refines each candidate to a whole-word, non-comment hit (dogfood 0.21 external-
+        system false positives), so the per-token budget is applied AFTER refinement.
+        """
         per_token_limit = int(per_token_limit)
         out: dict[str, list[str]] = {}
         for token in tokens:
@@ -924,10 +930,21 @@ class KuzuBackend:
                 f"MATCH (node:File) "
                 f"WHERE lower(node.content) CONTAINS lower('{escape_cypher(token)}') "
                 f"AND node.file_path <> '' "
-                f"RETURN DISTINCT node.file_path ORDER BY node.file_path "
-                f"LIMIT {per_token_limit}"
+                f"RETURN DISTINCT node.file_path, node.content ORDER BY node.file_path"
             )
-            out[token] = [r[0] for r in rows if r[0]]
+            paths: list[str] = []
+            seen: set[str] = set()
+            for r in rows:
+                file_path = r[0]
+                if not file_path or file_path in seen:
+                    continue
+                if not content_has_marker(r[1] or "", token):
+                    continue
+                seen.add(file_path)
+                paths.append(file_path)
+                if len(paths) >= per_token_limit:
+                    break
+            out[token] = paths
         return out
 
     def flows_for_symbol(self, node_id: str) -> dict[str, list[dict[str, Any]]]:

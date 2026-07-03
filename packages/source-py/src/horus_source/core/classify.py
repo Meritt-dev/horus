@@ -16,9 +16,12 @@ from typing import Literal
 
 PathKind = Literal["product", "test", "docs", "example", "vendored", "config"]
 
+# `.yarn` holds Yarn Berry's vendored release/plugin blobs (`.yarn/releases/*.cjs`);
+# `generated`/`__generated__` hold codegen output (`*.d.ts`, GraphQL/protobuf clients).
+# Both leaked into external-system detection (dogfood 0.21) — not hand-written integrations.
 _VENDORED_DIRS: frozenset[str] = frozenset({
     "node_modules", "vendor", "vendors", "vendored", "third_party", "third-party",
-    "dist", "build", ".venv", "venv",
+    "dist", "build", ".venv", "venv", ".yarn", "generated", "__generated__",
 })
 
 _TEST_DIRS: frozenset[str] = frozenset({
@@ -48,7 +51,10 @@ _TEST_FILE_RE = re.compile(
     r"|(^conftest\.py$)"
 )
 
-_DOCS_FILE_RE = re.compile(r"\.(md|mdx|rst|adoc|txt)$", re.IGNORECASE)
+# `.markdown`/`.mdown`/`.mkd` are the long-form Markdown extensions — a root
+# `CHANGELOG.markdown` (outside any docs/ tree) otherwise classifies as product and
+# leaks its prose mentions into external-system detection (dogfood 0.21).
+_DOCS_FILE_RE = re.compile(r"\.(md|mdx|markdown|mdown|mkd|rst|adoc|txt)$", re.IGNORECASE)
 
 # Root/build tooling config — invoked by build tools, never by repo code
 # (mirrors dead-code's axios dogfood findings: gulpfile.js helpers flagged dead).

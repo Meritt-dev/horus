@@ -57,6 +57,15 @@ describe('classifyPath', () => {
     expect(classifyPath('node_modules/lodash/index.js')).toBe('vendored');
     expect(classifyPath('vendor/lib/x.go')).toBe('vendored');
     expect(classifyPath('dist/index.cjs')).toBe('vendored');
+    // Yarn Berry release/plugin blobs and codegen output are vendored, not integrations
+    // (dogfood 0.21: `.yarn/releases/*.cjs`, `generated/*.d.ts` → false external systems).
+    expect(classifyPath('.yarn/releases/yarn-3.6.1.cjs')).toBe('vendored');
+    expect(classifyPath('src/generated/graphql.ts')).toBe('vendored');
+    expect(classifyPath('src/__generated__/schema.d.ts')).toBe('vendored');
+    // Long-form Markdown extensions outside a docs/ tree are still docs (dogfood 0.21:
+    // root CHANGELOG.markdown leaked `axios` into external-system detection).
+    expect(classifyPath('CHANGELOG.markdown')).toBe('docs');
+    expect(classifyPath('NOTES.mdown')).toBe('docs');
   });
 
   it('defaults to product — unknown layouts keep their code visible', () => {

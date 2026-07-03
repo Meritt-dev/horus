@@ -157,6 +157,31 @@ export function isDataFilePath(p: string): boolean {
   return DATA_FILE_RE.test(p);
 }
 
+/**
+ * True when a marker's matched files are dominated by the repo's OWN plugin/capability
+ * for that marker, not an integration WITH it (dogfood 0.21): prettier's
+ * `src/language-graphql/*` is its GraphQL formatter, not a GraphQL dependency; a repo's
+ * `packages/graphql/*` is the package it ships. Heuristic: >=50% of the marker's matched
+ * product files live under a directory segment whose name contains the marker (so a repo
+ * that merely IMPORTS graphql from scattered files is unaffected). Case-insensitive; the
+ * marker's own non-alpha chars (e.g. `drizzle-orm`) are stripped so `drizzle`/`orm`-named
+ * dirs still count.
+ */
+export function isOwnCapability(marker: string, productFiles: string[]): boolean {
+  if (productFiles.length === 0) return false;
+  const needle = marker.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (needle === '') return false;
+  const inOwnDir = productFiles.filter((p) =>
+    p
+      .replace(/\\/g, '/')
+      .toLowerCase()
+      .split('/')
+      .slice(0, -1)
+      .some((seg) => seg.replace(/[^a-z0-9]/g, '').includes(needle)),
+  ).length;
+  return inOwnDir / productFiles.length >= 0.5;
+}
+
 export async function discoverArchitecture(deps: {
   code: CodeProvider;
   db: HorusDb;
@@ -320,17 +345,18 @@ export async function discoverArchitecture(deps: {
       const markers = EXTERNAL_MARKERS.filter((m) => !ownPackages.has(m.toLowerCase()));
       const matches = (await deps.code.filesContaining?.(markers, 500)) ?? {};
       return markers
-        .map((marker) => ({
-          name: marker,
+        .map((marker) => {
           // Count only genuine product source. `classifyPath === 'product'` additionally drops
           // config/lockfiles (a marker in `pnpm-lock.yaml`/`package.json` is a transitive dep,
           // not an integration) and vendored trees over the old test/example-only filter;
           // data files are excluded because their string contents collide with markers.
-          files: (matches[marker] ?? []).filter(
+          const productFiles = (matches[marker] ?? []).filter(
             (p) => p !== '' && classifyPath(p) === 'product' && !isDataFilePath(p),
-          ).length,
-        }))
-        .filter((r) => r.files > 0)
+          );
+          return { name: marker, files: productFiles.length, productFiles };
+        })
+        .filter((r) => r.files > 0 && !isOwnCapability(r.name, r.productFiles))
+        .map((r) => ({ name: r.name, files: r.files }))
         .sort((a, b) => b.files - a.files);
     } catch {
       return [];
