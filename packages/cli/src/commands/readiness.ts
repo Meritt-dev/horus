@@ -209,7 +209,7 @@ export async function runReadiness(opts?: {
       status: 'warn',
       blocking: false,
       detail: 'horus.config.js not found — connector and repo checks skipped',
-      next: 'run `horus generate-config` then fill in your project details',
+      next: 'run `horus init` in the repo to set it up',
     });
   } else {
     let anyRepoConfigured = false;

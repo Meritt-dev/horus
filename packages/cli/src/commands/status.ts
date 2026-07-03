@@ -36,12 +36,38 @@ interface Check {
   fatal?: boolean;
 }
 
+/** One structured connector check for `--json` — small, stable, agent-facing. */
+interface EnvCheckJSON {
+  name: string;
+  /** Repository name, only on per-repo checks (source). */
+  repo?: string;
+  state: 'ok' | 'fail' | 'pending';
+  detail: string;
+  /** Per-logical-DB breakdown, only on the redis check. */
+  databases?: Array<{
+    db: number;
+    name?: string;
+    roles: string[];
+    reachable: boolean;
+    queueCount?: number;
+    keyCount?: number;
+  }>;
+}
+
 function mark(ok: boolean | 'pending'): string {
   if (ok === 'pending') return pc.yellow('○');
   return ok ? pc.green('●') : pc.red('●');
 }
 
-/** Print health status for one resolved environment. Returns true when healthy. */
+function toState(ok: boolean | 'pending'): 'ok' | 'fail' | 'pending' {
+  if (ok === 'pending') return 'pending';
+  return ok ? 'ok' : 'fail';
+}
+
+/**
+ * Print health status for one resolved environment (or, in `--json` mode, collect
+ * structured checks into `collect` and print nothing). Returns true when healthy.
+ */
 async function checkEnv(
   renv: ResolvedEnvironment,
   deps?: {
@@ -52,26 +78,38 @@ async function checkEnv(
     shopifyFactory?: (renv: ResolvedEnvironment) => ShopifyProvider | null;
     redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
+  collect?: EnvCheckJSON[],
 ): Promise<boolean> {
+  // stdout must stay VALID JSON under --json: human lines are suppressed, the
+  // same probe results land in `collect` instead.
+  const log = (line: string): void => {
+    if (collect === undefined) console.log(line);
+  };
+  const record = (c: EnvCheckJSON): void => {
+    collect?.push(c);
+  };
+
   const header =
     `  ${pc.bold(renv.project)} / ${pc.bold(renv.env)}` +
     (renv.readOnly ? pc.dim('  (read-only)') : '');
-  console.log(header);
+  log(header);
 
   let allOk = true;
 
   // Source intelligence — code intelligence, belongs to the project's repositories.
   if (renv.repositories.length === 0) {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`,
     );
+    record({ name: 'source', state: 'pending', detail: 'no repositories configured' });
   }
   for (const repo of renv.repositories) {
     const sourceHostUrl = repo.sourceHostUrl;
     if (!sourceHostUrl) {
-      console.log(
+      log(
         `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim(`${repo.name}: not configured`)}`,
       );
+      record({ name: 'source', repo: repo.name, state: 'pending', detail: 'not configured' });
       continue;
     }
     const source = new SourceHttpClient({ baseUrl: sourceHostUrl });
@@ -92,9 +130,10 @@ async function checkEnv(
     const sourceDetail = health.ok
       ? `${repo.name} · responded ${health.status} · ${versionPart} at ${sourceHostUrl}`
       : `${repo.name} · unreachable at ${sourceHostUrl}`;
-    console.log(
+    log(
       `    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(sourceDetail)}`,
     );
+    record({ name: 'source', repo: repo.name, state: toState(health.ok), detail: sourceDetail });
     if (!health.ok) allOk = false;
   }
 
@@ -110,20 +149,24 @@ async function checkEnv(
       const detail = h.ok
         ? `reachable · index ${idxDisplay}`
         : `unreachable · index ${idxDisplay}`;
-      console.log(`    ${mark(h.ok)} ${pc.bold('Elasticsearch')}   ${pc.dim(detail)}`);
+      log(`    ${mark(h.ok)} ${pc.bold('Elasticsearch')}   ${pc.dim(detail)}`);
+      record({ name: 'elasticsearch', state: toState(h.ok), detail });
       if (!h.ok) allOk = false;
     } else {
       const idxDisplay = esCfg.indexPatterns
         ? esCfg.indexPatterns.join(', ')
         : esCfg.indexPattern;
-      console.log(
-        `    ${mark(false)} ${pc.bold('Elasticsearch')}   ${pc.dim(`configured (index ${idxDisplay}) but ES_URL not set`)}`,
+      const detail = `configured (index ${idxDisplay}) but ES_URL not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('Elasticsearch')}   ${pc.dim(detail)}`,
       );
+      record({ name: 'elasticsearch', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Elasticsearch')}   ${pc.dim('not configured')}`,
     );
+    record({ name: 'elasticsearch', state: 'pending', detail: 'not configured' });
   }
 
   // Grafana
@@ -137,17 +180,21 @@ async function checkEnv(
         : grafanaCfg.dashboard;
       const dashSuffix = dashDisplay ? ` · dashboards: ${dashDisplay}` : '';
       const detail = h.ok ? `reachable${dashSuffix}` : `unreachable${dashSuffix}`;
-      console.log(`    ${mark(h.ok)} ${pc.bold('Grafana')}         ${pc.dim(detail)}`);
+      log(`    ${mark(h.ok)} ${pc.bold('Grafana')}         ${pc.dim(detail)}`);
+      record({ name: 'grafana', state: toState(h.ok), detail });
       if (!h.ok) allOk = false;
     } else {
-      console.log(
-        `    ${mark('pending')} ${pc.bold('Grafana')}         ${pc.dim('configured but GRAFANA_URL not set')}`,
+      const detail = 'configured but GRAFANA_URL not set';
+      log(
+        `    ${mark('pending')} ${pc.bold('Grafana')}         ${pc.dim(detail)}`,
       );
+      record({ name: 'grafana', state: 'pending', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Grafana')}         ${pc.dim('not configured')}`,
     );
+    record({ name: 'grafana', state: 'pending', detail: 'not configured' });
   }
 
   // MongoDB
@@ -158,9 +205,11 @@ async function checkEnv(
       try {
         const h = await mongo.health();
         if (!h.ok) {
-          console.log(
-            `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(`unreachable · db ${mongoCfg.database}`)}`,
+          const detail = `unreachable · db ${mongoCfg.database}`;
+          log(
+            `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(detail)}`,
           );
+          record({ name: 'mongodb', state: 'fail', detail });
           allOk = false;
         } else {
           const allowlist = mongoCfg.collections;
@@ -173,22 +222,26 @@ async function checkEnv(
             ? ` · discovered: ${discovered.length} collection(s)`
             : '';
           const detail = `reachable · db ${mongoCfg.database} · ${allowlistPart}${discoveredPart}`;
-          console.log(
+          log(
             `    ${mark(true)} ${pc.bold('MongoDB')}         ${pc.dim(detail)}`,
           );
+          record({ name: 'mongodb', state: 'ok', detail });
         }
       } finally {
         await mongo.close();
       }
     } else {
-      console.log(
-        `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(`configured (db ${mongoCfg.database}) but Mongo URL not set`)}`,
+      const detail = `configured (db ${mongoCfg.database}) but Mongo URL not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(detail)}`,
       );
+      record({ name: 'mongodb', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('MongoDB')}         ${pc.dim('not configured')}`,
     );
+    record({ name: 'mongodb', state: 'pending', detail: 'not configured' });
   }
 
   // Postgres (state)
@@ -200,9 +253,11 @@ async function checkEnv(
       try {
         const h = await pg.health();
         if (!h.ok) {
-          console.log(
-            `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(`unreachable · db ${dbName}`)}`,
+          const detail = `unreachable · db ${dbName}`;
+          log(
+            `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(detail)}`,
           );
+          record({ name: 'postgres', state: 'fail', detail });
           allOk = false;
         } else {
           const allowlist = postgresCfg.tables;
@@ -215,22 +270,26 @@ async function checkEnv(
             ? ` · discovered: ${discovered.length} table(s)`
             : '';
           const detail = `reachable · db ${dbName} · ${allowlistPart}${discoveredPart}`;
-          console.log(
+          log(
             `    ${mark(true)} ${pc.bold('Postgres')}        ${pc.dim(detail)}`,
           );
+          record({ name: 'postgres', state: 'ok', detail });
         }
       } finally {
         await pg.close();
       }
     } else {
-      console.log(
-        `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(`configured (db ${dbName}) but Postgres URL not set`)}`,
+      const detail = `configured (db ${dbName}) but Postgres URL not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(detail)}`,
       );
+      record({ name: 'postgres', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Postgres')}        ${pc.dim('not configured')}`,
     );
+    record({ name: 'postgres', state: 'pending', detail: 'not configured' });
   }
 
   // Sentry (error tracking) — probe reachability against the configured org/project.
@@ -241,24 +300,31 @@ async function checkEnv(
     if (sentry) {
       const h = await sentry.health();
       if (!h.ok) {
-        console.log(
-          `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(`unreachable · ${label}`)}`,
+        const detail = `unreachable · ${label}`;
+        log(
+          `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(detail)}`,
         );
+        record({ name: 'sentry', state: 'fail', detail });
         allOk = false;
       } else {
-        console.log(
-          `    ${mark(true)} ${pc.bold('Sentry')}          ${pc.dim(`reachable · ${label}`)}`,
+        const detail = `reachable · ${label}`;
+        log(
+          `    ${mark(true)} ${pc.bold('Sentry')}          ${pc.dim(detail)}`,
         );
+        record({ name: 'sentry', state: 'ok', detail });
       }
     } else {
-      console.log(
-        `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(`configured (${label}) but auth token not set`)}`,
+      const detail = `configured (${label}) but auth token not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(detail)}`,
       );
+      record({ name: 'sentry', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Sentry')}          ${pc.dim('not configured')}`,
     );
+    record({ name: 'sentry', state: 'pending', detail: 'not configured' });
   }
 
   // Axiom (structured logs) — probe reachability against the configured dataset.
@@ -269,24 +335,31 @@ async function checkEnv(
     if (axiom) {
       const h = await axiom.health();
       if (!h.ok) {
-        console.log(
-          `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(`unreachable · ${label}`)}`,
+        const detail = `unreachable · ${label}`;
+        log(
+          `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(detail)}`,
         );
+        record({ name: 'axiom', state: 'fail', detail });
         allOk = false;
       } else {
-        console.log(
-          `    ${mark(true)} ${pc.bold('Axiom')}           ${pc.dim(`reachable · ${label}`)}`,
+        const detail = `reachable · ${label}`;
+        log(
+          `    ${mark(true)} ${pc.bold('Axiom')}           ${pc.dim(detail)}`,
         );
+        record({ name: 'axiom', state: 'ok', detail });
       }
     } else {
-      console.log(
-        `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(`configured (${label}) but API token not set`)}`,
+      const detail = `configured (${label}) but API token not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(detail)}`,
       );
+      record({ name: 'axiom', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Axiom')}           ${pc.dim('not configured')}`,
     );
+    record({ name: 'axiom', state: 'pending', detail: 'not configured' });
   }
 
   // Shopify (Admin GraphQL) — probe auth reachability (Client-Credentials grant); no query.
@@ -297,24 +370,31 @@ async function checkEnv(
     if (shopify) {
       const h = await shopify.health();
       if (!h.ok) {
-        console.log(
-          `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(`unreachable · ${label}`)}`,
+        const detail = `unreachable · ${label}`;
+        log(
+          `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(detail)}`,
         );
+        record({ name: 'shopify', state: 'fail', detail });
         allOk = false;
       } else {
-        console.log(
-          `    ${mark(true)} ${pc.bold('Shopify')}         ${pc.dim(`reachable · ${label}`)}`,
+        const detail = `reachable · ${label}`;
+        log(
+          `    ${mark(true)} ${pc.bold('Shopify')}         ${pc.dim(detail)}`,
         );
+        record({ name: 'shopify', state: 'ok', detail });
       }
     } else {
-      console.log(
-        `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(`configured (${label}) but client secret not set`)}`,
+      const detail = `configured (${label}) but client secret not set`;
+      log(
+        `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(detail)}`,
       );
+      record({ name: 'shopify', state: 'fail', detail });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Shopify')}         ${pc.dim('not configured')}`,
     );
+    record({ name: 'shopify', state: 'pending', detail: 'not configured' });
   }
 
   // Redis — probe the server and each configured logical DB (HOR-201). Redis is a
@@ -325,13 +405,16 @@ async function checkEnv(
     const server = redisServerLabel(redisCfg.url);
     const status = await (deps?.redisStatus ?? redisServerStatus)(renv);
     if (!status) {
-      console.log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${server}`)}`);
+      log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${server}`)}`);
+      record({ name: 'redis', state: 'pending', detail: `configured · ${server}` });
     } else if (!status.reachable) {
       const state = status.authFailed ? 'auth failed' : 'unreachable';
-      console.log(`    ${mark(false)} ${pc.bold('Redis')}           ${pc.dim(`${state} · ${server}`)}`);
+      log(`    ${mark(false)} ${pc.bold('Redis')}           ${pc.dim(`${state} · ${server}`)}`);
+      record({ name: 'redis', state: 'fail', detail: `${state} · ${server}` });
       allOk = false;
     } else {
-      console.log(`    ${mark(true)} ${pc.bold('Redis')}           ${pc.dim(`reachable · ${server}`)}`);
+      const databases: NonNullable<EnvCheckJSON['databases']> = [];
+      log(`    ${mark(true)} ${pc.bold('Redis')}           ${pc.dim(`reachable · ${server}`)}`);
       for (const d of status.databases) {
         const roleLabel = d.roles.length > 0 ? d.roles.join('/') : 'unrolled';
         const name = d.name ? ` ${d.name}` : '';
@@ -343,18 +426,28 @@ async function checkEnv(
         } else {
           detail = `${d.keyCount ?? 0} key(s)`;
         }
-        console.log(
+        log(
           `      ${mark(d.reachable)} ${pc.bold(`DB ${d.db}`)}${name} ${pc.dim(`${roleLabel} · ${detail}`)}`,
         );
+        databases.push({
+          db: d.db,
+          ...(d.name !== undefined ? { name: d.name } : {}),
+          roles: d.roles,
+          reachable: d.reachable,
+          ...(d.queueCount !== undefined ? { queueCount: d.queueCount } : {}),
+          ...(d.keyCount !== undefined ? { keyCount: d.keyCount } : {}),
+        });
       }
+      record({ name: 'redis', state: 'ok', detail: `reachable · ${server}`, databases });
     }
   } else {
-    console.log(
+    log(
       `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim('not configured')}`,
     );
+    record({ name: 'redis', state: 'pending', detail: 'not configured' });
   }
 
-  console.log('');
+  log('');
   return allOk;
 }
 
@@ -388,6 +481,8 @@ export async function runStatus(
   configPath?: string,
   opts?: {
     env?: string;
+    /** Emit compact machine-readable JSON on stdout instead of human text. */
+    json?: boolean;
     /** Inject a MongoDB provider factory for tests. */
     _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     /** Inject a Postgres provider factory for tests. */
@@ -398,10 +493,20 @@ export async function runStatus(
     _redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
 ): Promise<number> {
-  console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
-  console.log(
-    pc.dim(`pinned backend: ${PINNED_SOURCE_VERSION} · transport: HTTP/MCP only\n`),
-  );
+  const json = opts?.json === true;
+  const envDeps = {
+    mongoFactory: opts?._mongoFactory,
+    postgresFactory: opts?._postgresFactory,
+    sentryFactory: opts?._sentryFactory,
+    redisStatus: opts?._redisStatus,
+  };
+
+  if (!json) {
+    console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
+    console.log(
+      pc.dim(`pinned backend: ${PINNED_SOURCE_VERSION} · transport: HTTP/MCP only\n`),
+    );
+  }
 
   let config: HorusConfig | undefined;
   const checks: Check[] = [];
@@ -418,31 +523,75 @@ export async function runStatus(
     });
   }
 
+  // Compact JSON contract (agents): stdout is ONE JSON object, always parseable,
+  // even when the config is missing or an environment fails to resolve.
+  const jsonOut: {
+    version: string;
+    pinnedSource: string;
+    config: { ok: boolean; detail: string };
+    database?: { reachable: boolean; schemaReady: boolean; detail: string; schemaDetail: string };
+    environments: Array<{
+      project: string;
+      env: string;
+      readOnly?: boolean;
+      healthy: boolean;
+      error?: string;
+      checks?: EnvCheckJSON[];
+    }>;
+    healthy: boolean;
+  } = {
+    version: HORUS_VERSION,
+    pinnedSource: PINNED_SOURCE_VERSION,
+    config: { ok: config !== undefined, detail: checks[0]?.detail ?? '' },
+    environments: [],
+    healthy: true,
+  };
+
   // Print config check before going further
-  for (const c of checks) {
-    console.log(`  ${mark(c.ok)} ${pc.bold(c.label)}  ${pc.dim(c.detail)}`);
+  if (!json) {
+    for (const c of checks) {
+      console.log(`  ${mark(c.ok)} ${pc.bold(c.label)}  ${pc.dim(c.detail)}`);
+    }
   }
 
   if (!config) {
-    console.log('');
+    if (json) {
+      jsonOut.healthy = false;
+      console.log(JSON.stringify(jsonOut, null, 2));
+    } else {
+      console.log('');
+    }
     return 1;
   }
 
   // --- Postgres (always shown, not project-scoped) ---
   const dbUrl = config.database.url;
   const h = await checkDatabase(dbUrl);
-  console.log(
-    `  ${mark(h.reachable)} ${pc.bold('Postgres')}  ${pc.dim(h.reachableDetail)}`,
-  );
-  console.log(
-    `  ${mark(h.schemaReady)} ${pc.bold('Schema')}    ${pc.dim(h.schemaDetail)}`,
-  );
-  console.log('');
+  if (json) {
+    jsonOut.database = {
+      reachable: h.reachable,
+      schemaReady: h.schemaReady,
+      detail: h.reachableDetail,
+      schemaDetail: h.schemaDetail,
+    };
+  } else {
+    console.log(
+      `  ${mark(h.reachable)} ${pc.bold('Postgres')}  ${pc.dim(h.reachableDetail)}`,
+    );
+    console.log(
+      `  ${mark(h.schemaReady)} ${pc.bold('Schema')}    ${pc.dim(h.schemaDetail)}`,
+    );
+    console.log('');
+  }
 
   // --- Project / environment matrix ---
   const envList = listEnvironments(config);
   if (envList.length === 0) {
-    console.log(pc.dim('  No projects configured.\n'));
+    if (json) {
+      console.log(JSON.stringify(jsonOut, null, 2));
+    } else {
+      console.log(pc.dim('  No projects configured.\n'));
+    }
     return 0;
   }
 
@@ -452,10 +601,33 @@ export async function runStatus(
     try {
       renv = resolveEnvironment(config, { env: opts.env });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
+      if (json) {
+        jsonOut.healthy = false;
+        jsonOut.environments.push({
+          project: '',
+          env: opts.env,
+          healthy: false,
+          error: (err as Error).message,
+        });
+        console.log(JSON.stringify(jsonOut, null, 2));
+      } else {
+        console.error(pc.red((err as Error).message));
+      }
       return 1;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, sentryFactory: opts?._sentryFactory, redisStatus: opts?._redisStatus });
+    const collect: EnvCheckJSON[] | undefined = json ? [] : undefined;
+    const ok = await checkEnv(renv, envDeps, collect);
+    if (json) {
+      jsonOut.environments.push({
+        project: renv.project,
+        env: renv.env,
+        ...(renv.readOnly ? { readOnly: true } : {}),
+        healthy: ok,
+        checks: collect,
+      });
+      jsonOut.healthy = ok;
+      console.log(JSON.stringify(jsonOut, null, 2));
+    }
     return ok ? 0 : 1;
   }
 
@@ -466,12 +638,36 @@ export async function runStatus(
     try {
       renv = resolveEnvironment(config, { project, env });
     } catch (err) {
-      console.error(pc.red(`  ${project}/${env}: ${(err as Error).message}`));
+      if (json) {
+        jsonOut.environments.push({
+          project,
+          env,
+          healthy: false,
+          error: (err as Error).message,
+        });
+      } else {
+        console.error(pc.red(`  ${project}/${env}: ${(err as Error).message}`));
+      }
       allHealthy = false;
       continue;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, sentryFactory: opts?._sentryFactory, redisStatus: opts?._redisStatus });
+    const collect: EnvCheckJSON[] | undefined = json ? [] : undefined;
+    const ok = await checkEnv(renv, envDeps, collect);
+    if (json) {
+      jsonOut.environments.push({
+        project: renv.project,
+        env: renv.env,
+        ...(renv.readOnly ? { readOnly: true } : {}),
+        healthy: ok,
+        checks: collect,
+      });
+    }
     if (!ok) allHealthy = false;
+  }
+
+  if (json) {
+    jsonOut.healthy = allHealthy;
+    console.log(JSON.stringify(jsonOut, null, 2));
   }
 
   // Exit non-zero only on a fatal failure (bad config). Unreachable providers are

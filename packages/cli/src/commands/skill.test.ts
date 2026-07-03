@@ -46,6 +46,21 @@ describe('generateSkillContent', () => {
     }
   });
 
+  it('teaches the agent-facing surface: machine JSON, packet, and reporting gaps', () => {
+    const content = generateSkillContent('generic');
+    // Agents must be pointed at machine-readable output, not human-text scraping.
+    expect(content).toContain('--json');
+    expect(content).toContain('--format json');
+    expect(content).toContain('nextSteps');
+    expect(content).toContain('compact by default');
+    // The compact briefing built for agent context windows.
+    expect(content).toContain('horus packet');
+    // Qualified-symbol resolution consistency across commands.
+    expect(content).toContain('resolve precisely');
+    // Filing a Horus bug/gap.
+    expect(content).toContain('horus report');
+  });
+
   it('includes all required command recipes', () => {
     const content = generateSkillContent('generic');
     const required = [

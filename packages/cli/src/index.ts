@@ -63,7 +63,6 @@ import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
 import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
-import { runGenerateConfig } from './commands/generate-config.js';
 import { runReadiness } from './commands/readiness.js';
 import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
 import { runUpdate } from './commands/update.js';
@@ -133,7 +132,6 @@ Examples:
       process.exitCode = await runProvidersDoctorCommand();
     });
 
-  // Hidden deprecation stub — `setup` was merged into `init`.
   program
     .command('init')
     .description(
@@ -144,21 +142,21 @@ Examples:
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--full', 'build a full project-knowledge snapshot (default)')
-    .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
+    .option('--changed', 'pre-push-safe: refresh PROJECT KNOWLEDGE for changed files only (does not reanalyze the source graph)')
     .option('--fast', 'speed hint, used with --changed')
+    .option('--reindex', 'force a full source re-analysis: stop the host, wipe .horus/source, rebuild (purges stale graph edges)')
     .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
     .action(
       async (opts: {
-        name?: string;
         env?: string;
         source?: string;
         path?: string;
         config?: string;
-        project?: string;
         full?: boolean;
         changed?: boolean;
         fast?: boolean;
         importKb?: string;
+        reindex?: boolean;
       }) => {
         process.exitCode = await runInit(opts);
       },
@@ -166,7 +164,8 @@ Examples:
     .addHelpText('after', `
 Examples:
   horus init
-  horus init --changed --fast          # pre-push: refresh knowledge for changed files only
+  horus init --changed --fast          # pre-push: refresh project knowledge only (no source reanalysis)
+  horus init --reindex                 # full source re-analysis (e.g. after a backend update)
   horus init --source http://127.0.0.1:8420   # use an already-running external host
 `);
 
@@ -175,17 +174,6 @@ Examples:
     .description('List projects registered in the global registry (~/.horus/registry.json)')
     .action(async () => {
       process.exitCode = await runProjects();
-    });
-
-  program
-    .command('generate-config')
-    .description('Create a starter horus.config.js with placeholders (HOR-90)')
-    .option('--out <path>', 'output path (default: horus.config.js in cwd)')
-    .option('--name <name>', 'project name placeholder (default: my-project)')
-    .option('--repo <path>', 'repository path placeholder (default: /path/to/<name>)')
-    .option('--force', 'overwrite an existing config file')
-    .action(async (opts: { out?: string; name?: string; repo?: string; force?: boolean }) => {
-      process.exitCode = await runGenerateConfig(opts);
     });
 
   program
@@ -218,7 +206,7 @@ Examples:
     .option('--tables <list>', 'comma-separated table allowlist (postgres)')
     .option('--auth-token <token>', 'Sentry API auth token (required for sentry)')
     .option('--org <slug>', 'Sentry org slug (required for sentry)')
-    .option('--project <slug>', 'Sentry project slug (required for sentry)')
+    .option('--sentry-project <slug>', 'Sentry project slug — provider domain data (required for sentry)')
     .option('--token <token>', 'Axiom API token (required for axiom)')
     .option('--dataset <name>', 'Axiom dataset to query (required for axiom)')
     .option('--store <name>', 'Shopify store subdomain, e.g. my-store — .myshopify.com is added automatically (required for shopify)')
@@ -254,7 +242,7 @@ Examples:
           tables?: string;
           authToken?: string;
           org?: string;
-          project?: string;
+          sentryProject?: string;
           token?: string;
           dataset?: string;
           store?: string;
@@ -284,7 +272,7 @@ Examples:
           tables: opts.tables,
           authToken: opts.authToken,
           org: opts.org,
-          project: opts.project,
+          project: opts.sentryProject,
           token: opts.token,
           dataset: opts.dataset,
           store: opts.store,
@@ -386,10 +374,12 @@ Examples:
     .description('Show config, provider health, and project/environment matrix')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
     .action(
-      async (opts: { config?: string; name?: string; project?: string; env?: string }) => {
+      async (opts: { config?: string; env?: string; json?: boolean }) => {
         const code = await runStatus(opts.config, {
           env: opts.env,
+          json: opts.json,
         });
         process.exitCode = code;
       },
@@ -402,7 +392,7 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
-    .option('--repo <name>', 'repository name to scope the source lookup to')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--json', 'output JSON')
     .option('--full', 'full JSON: uncapped lists + snippets (default: compact)')
     .action(
@@ -419,7 +409,6 @@ Examples:
       },
     );
 
-  // Hidden deprecation stub — `index` was merged into `init`.
   const knowledge = program
     .command('knowledge')
     .description('Query the local project-knowledge index (.horus/index) — offline, no Cloud');
@@ -488,7 +477,7 @@ Examples:
       'Synthesize owned areas, runtime paths, past investigations and weak spots for a scope',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--json', 'output JSON')
     .action(async (scope: string, opts: { config?: string; repo?: string; json?: boolean }) => {
       process.exitCode = await runMemoryShow(scope, opts);
@@ -500,7 +489,7 @@ Examples:
     .command('add <claim>')
     .description('Add an authored memory claim (human source) for the repo')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--scope <scope>', 'applicability scope: global|repo|module:<area>|symbol:<node_id>', 'repo')
     .option('--kind <kind>', 'code-fact|contract|decision|pitfall|incident-pattern', 'code-fact')
     .option('--evidence <kind:ref>', 'evidence reference (repeatable); "kind:ref" or bare "ref"', collectEvidence, [])
@@ -527,7 +516,7 @@ Examples:
     .command('confirm <investigationId>')
     .description('Record a confirmed-outcome memory item from an investigation (private, PII-gated)')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
@@ -563,7 +552,7 @@ Examples:
     .command('list')
     .description('List persisted authored memory items for the repo')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--all', 'include forgotten/deprecated/contradicted items')
     .option('--json', 'output JSON')
     .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
@@ -577,7 +566,7 @@ Examples:
     .description('Author a memory→memory edge (supersedes|contradicts|recurs-with) between two items')
     .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
@@ -595,7 +584,7 @@ Examples:
     .description('Remove a memory→memory edge (inverse of `memory link`); a missing edge is a no-op')
     .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
@@ -612,7 +601,7 @@ Examples:
     .command('detect')
     .description('Auto-detect memory→memory edges (recurrence/contradiction); --dry-run previews only')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--dry-run', 'print proposed edges for confirmation without writing')
     .option('--limit <n>', 'max items to scan', (v) => Number(v))
     .option('--json', 'output JSON')
@@ -626,7 +615,7 @@ Examples:
     .command('accuracy')
     .description("Report Horus's measured hit-rate from the converged outcome-label eval set")
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--since <date>', 'only count labels on/after this date (e.g. 2026-06-01)')
     .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
@@ -652,7 +641,7 @@ Examples:
     .command('sync')
     .description('Push local memory items to the linked cloud project (idempotent, best-effort)')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--limit <n>', 'max local items to scan', (v) => Number(v))
     .option('--dry-run', 'preview what would be synced without uploading')
     .option('--yes', 'skip the confirmation prompt')
@@ -680,7 +669,7 @@ Examples:
     .command('build')
     .description('Emit a byte-stable corpus-<version>.jsonl + manifest from the eval set (read-only)')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--days <n>', 'only include labels from the last N days', (v) => Number(v))
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
@@ -705,7 +694,7 @@ Examples:
     .command('baseline')
     .description('Print the baseline hit-rate (== memory accuracy) + a feature-separation diagnostic')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
@@ -760,7 +749,7 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .action(
       async (
         name: string | undefined,
-        opts: { config?: string; name?: string; project?: string; live?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
+        opts: { config?: string; live?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
       ) => {
         process.exitCode = await runQueues(name, {
           config: opts.config,
@@ -777,7 +766,7 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .description('Run a deterministic investigation for an incident hint')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
-    .option('--repo <name>', 'repository/project WITHIN this config to scope to (default: inferred from cwd)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
     .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
@@ -806,8 +795,6 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
         hint: string,
         opts: {
           config?: string;
-          name?: string;
-          project?: string;
           env?: string;
           repo?: string;
           scope?: string;
@@ -819,6 +806,7 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
           service?: string;
           json?: boolean;
           format?: string;
+          full?: boolean;
           ai?: boolean;
           aiModel?: string;
         },
@@ -836,6 +824,7 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
           service: opts.service,
           json: opts.json,
           format: opts.format,
+          full: opts.full,
           ai: opts.ai,
           aiModel: opts.aiModel,
         });
@@ -863,8 +852,6 @@ Examples:
         hintOrId: string,
         opts: {
           config?: string;
-          name?: string;
-          project?: string;
           env?: string;
           scope?: string;
           service?: string;
@@ -904,8 +891,6 @@ Examples:
     .action(
       async (opts: {
         config?: string;
-        name?: string;
-        project?: string;
         env?: string;
         source?: string;
         interval?: string;
@@ -934,11 +919,12 @@ Examples:
       'Show what changed between two git refs and which flows are affected (source change-impact)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--json', 'output JSON')
+    .option('--json', 'output JSON (compact by default)')
+    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
     .option('--ai', 'append AI change-impact review')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
-    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
+    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean; full?: boolean; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json, full: opts.full, ai: opts.ai, aiModel: opts.aiModel });
     });
 
   program
@@ -947,11 +933,12 @@ Examples:
       'Reconstruct what changed in a time window (git + change-impact) — evidence, not conclusions',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository name from config')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--since <when>', 'git --since (default "7 days ago"; e.g. "30 days ago", a date)')
     .option('--until <when>', 'git --until')
     .option('--all', 'include all history instead of the default recent window')
-    .option('--json', 'output JSON')
+    .option('--json', 'output JSON (compact by default)')
+    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
     .option('--ai', 'append AI narrative interpretation of the timeline')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
@@ -964,6 +951,7 @@ Examples:
           until?: string;
           all?: boolean;
           json?: boolean;
+          full?: boolean;
           ai?: boolean;
           aiModel?: string;
         },
@@ -975,6 +963,7 @@ Examples:
           until: opts.until,
           all: opts.all,
           json: opts.json,
+          full: opts.full,
           ai: opts.ai,
           aiModel: opts.aiModel,
         });
@@ -987,10 +976,11 @@ Examples:
       'Concise, evidence-backed summary of what changed for a service in a time window',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository name from config')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--since <when>', 'git --since (default "7 days ago")')
     .option('--until <when>', 'git --until')
-    .option('--json', 'output JSON')
+    .option('--json', 'output JSON (compact by default)')
+    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
     .option('--ai', 'append AI interpretation of the changes')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .option('--push', 'push the report to the linked Horus Cloud project')
@@ -1003,6 +993,7 @@ Examples:
           since?: string;
           until?: string;
           json?: boolean;
+          full?: boolean;
           ai?: boolean;
           aiModel?: string;
           push?: boolean;
@@ -1014,6 +1005,7 @@ Examples:
           since: opts.since,
           until: opts.until,
           json: opts.json,
+          full: opts.full,
           ai: opts.ai,
           aiModel: opts.aiModel,
           push: opts.push,
@@ -1041,14 +1033,19 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'traversal depth', (v) => parseInt(v, 10))
+    .option('--include-tests', 'include test/docs/example callers in the traversal (product-only by default)')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI severity and containment interpretation')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
-      async (query: string, opts: { config?: string; depth?: number; json?: boolean; ai?: boolean; aiModel?: string }) => {
+      async (
+        query: string,
+        opts: { config?: string; depth?: number; includeTests?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
+      ) => {
         process.exitCode = await runBlastRadius(query, {
           config: opts.config,
           depth: opts.depth,
+          includeTests: opts.includeTests,
           json: opts.json,
           ai: opts.ai,
           aiModel: opts.aiModel,
@@ -1087,13 +1084,19 @@ Examples:
     .description('List recent investigations (ids for replay)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
-    .action(async (opts: { config?: string; limit?: number }) => {
-      process.exitCode = await runInvestigations({ config: opts.config, limit: opts.limit });
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
+    .action(async (opts: { config?: string; limit?: number; json?: boolean }) => {
+      process.exitCode = await runInvestigations({
+        config: opts.config,
+        limit: opts.limit,
+        json: opts.json,
+      });
     })
     .addHelpText('after', `
 Examples:
   horus investigations
   horus investigations -n 20
+  horus investigations --json
 `);
 
   program
@@ -1149,7 +1152,7 @@ Examples:
       'Estimate who likely owns a component (git history, with confidence + evidence)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository name from config')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--json', 'output JSON')
     .action(
       async (query: string, opts: { config?: string; repo?: string; json?: boolean }) => {
@@ -1198,8 +1201,13 @@ Examples:
     .description('List recent investigation quality scores + the average (trend)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
-    .action(async (opts: { config?: string; limit?: number }) => {
-      process.exitCode = await runScores({ config: opts.config, limit: opts.limit });
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
+    .action(async (opts: { config?: string; limit?: number; json?: boolean }) => {
+      process.exitCode = await runScores({
+        config: opts.config,
+        limit: opts.limit,
+        json: opts.json,
+      });
     });
 
   program
@@ -1208,7 +1216,7 @@ Examples:
       'Understand a system fast: architecture, critical paths, what breaks, ownership, past incidents',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository name from config')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI onboarding guide grounded in discovered system evidence')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
@@ -1228,7 +1236,7 @@ Examples:
       'Practice an incident: pick a synthetic scenario and compare your reasoning with Horus',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository name from config')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .action(async (scenario: string | undefined, opts: { config?: string; repo?: string }) => {
       process.exitCode = await runSimulate(scenario, {
         config: opts.config,
@@ -1264,8 +1272,6 @@ Examples:
         service: string | undefined,
         opts: {
           config?: string;
-          name?: string;
-          project?: string;
           env?: string;
           since?: string;
           level?: string;
@@ -1298,8 +1304,6 @@ Examples:
     .action(
       async (opts: {
         config?: string;
-        name?: string;
-        project?: string;
         env?: string;
         staleHours?: string;
         json?: boolean;
@@ -1328,7 +1332,6 @@ Examples:
         hint: string | undefined,
         opts: {
           config?: string;
-          name?: string;
           since?: string;
           step?: string;
           dashboard?: string;
@@ -1439,9 +1442,9 @@ Examples:
       process.exitCode = await runContextList();
     });
   context
-    .command('use <target>')
-    .description('Switch context: "local" or "<org>/<workspace>/<project>"')
-    .action(async (target: string) => {
+    .command('use [target]')
+    .description('Switch context: "local" or "<org>/<workspace>/<project>". With no target, pick from a list of your accessible contexts.')
+    .action(async (target: string | undefined) => {
       process.exitCode = await runContextUse(target);
     });
   context
@@ -1455,13 +1458,17 @@ Examples:
     .command('cloud')
     .description('Link this repo to a Horus Cloud project and inspect cloud state');
   cloud
-    .command('link')
-    .description('Link the current repo to a cloud project (Git-aware)')
-    .option('--project <org/workspace/project>', 'target project (skips the interactive picker)')
+    .command('link [target]')
+    .description('Link the current repo to a cloud project (Git-aware); pass <org/workspace/project> to skip the interactive picker')
     .option('-y, --yes', 'skip confirmation prompts')
-    .action(async (opts: { project?: string; yes?: boolean }) => {
-      process.exitCode = await runCloudLink({ project: opts.project, yes: opts.yes });
-    });
+    .action(async (target: string | undefined, opts: { yes?: boolean }) => {
+      process.exitCode = await runCloudLink({ project: target, yes: opts.yes });
+    })
+    .addHelpText('after', `
+Examples:
+  horus cloud link                                # interactive / git-remote auto-match
+  horus cloud link my-org/main/checkout-api       # non-interactive target
+`);
   cloud
     .command('unlink')
     .description("Remove this repo's cloud link (returns to local mode)")
@@ -1515,7 +1522,7 @@ Examples:
       'free-text context recorded onto the outcome label (pair with --resolved)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'project/repository to scope the persisted label to (default: inferred)')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
     .action(
       async (
         investigationId: string | undefined,
@@ -1630,7 +1637,20 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   // `--no-input` is a global, position-independent kill-switch for interactive prompts
   // (CI/agents). Strip it before commander parses so no subcommand sees an unknown option;
   // the feedback nudge reads the original process.argv to honor it. `HORUS_NO_INPUT=1` works too.
-  const parseArgv = argv.filter((a) => a !== '--no-input');
+  let parseArgv = argv.filter((a) => a !== '--no-input');
+  // Removed-command hardening: `horus setup --help` must fail EXACTLY like
+  // `horus setup` — commander's global help option would otherwise swallow the
+  // unknown command and exit 0 with top-level help. When the first operand is not
+  // a registered command, drop the help flags so commander's standard
+  // unknown-command error (with suggestions) fires instead.
+  const firstOperand = parseArgv.slice(2).find((a) => !a.startsWith('-'));
+  if (firstOperand !== undefined) {
+    const known = new Set(program.commands.flatMap((c) => [c.name(), ...c.aliases()]));
+    known.add('help'); // commander's implicit help command
+    if (!known.has(firstOperand)) {
+      parseArgv = parseArgv.filter((a) => a !== '--help' && a !== '-h');
+    }
+  }
   await program.parseAsync(parseArgv);
   // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
   await flushTelemetry();

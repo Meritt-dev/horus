@@ -356,3 +356,91 @@ describe('runStatus — Redis multi-DB (HOR-201)', () => {
     expect(output).not.toContain('supersecret');
   });
 });
+
+// ---------------------------------------------------------------------------
+// `status --json` — stdout must be ONE parseable JSON document (agent contract),
+// human output untouched when the flag is absent.
+// ---------------------------------------------------------------------------
+
+async function captureStatusJson(
+  configPath: string,
+  factory: (() => StateProvider | null) | null,
+): Promise<{ stdout: string; code: number }> {
+  const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const code = await runStatus(configPath, {
+    env: 'production',
+    json: true,
+    _mongoFactory: factory ?? undefined,
+  });
+  const stdout = spy.mock.calls.map((c) => c.join(' ')).join('\n');
+  spy.mockRestore();
+  return { stdout, code };
+}
+
+describe('runStatus --json (agent contract)', () => {
+  it('emits one parseable document with config, database, and per-connector checks', async () => {
+    const dir = tempDir();
+    const path = writeConfig(dir, '{ url: "mongodb://localhost:27017", database: "my-api-prod" }');
+    const provider = makeMongoProvider({ ok: true, collections: ['users', 'orders'] });
+    const { stdout, code } = await captureStatusJson(path, mongoFactory(provider));
+    const out = JSON.parse(stdout) as {
+      version: string;
+      config: { ok: boolean };
+      database: { reachable: boolean; schemaReady: boolean };
+      environments: Array<{
+        project: string;
+        env: string;
+        healthy: boolean;
+        checks: Array<{ name: string; state: string; detail: string }>;
+      }>;
+      healthy: boolean;
+    };
+    expect(out.config.ok).toBe(true);
+    expect(out.database.reachable).toBe(true);
+    expect(out.environments).toHaveLength(1);
+    expect(out.environments[0]).toMatchObject({ project: 'my-api', env: 'production' });
+    const mongo = out.environments[0]!.checks.find((c) => c.name === 'mongodb');
+    expect(mongo?.state).toBe('ok');
+    expect(mongo?.detail).toContain('my-api-prod');
+    // Unconfigured connectors appear as pending — the matrix is complete, not sparse.
+    expect(out.environments[0]!.checks.find((c) => c.name === 'sentry')?.state).toBe('pending');
+    expect(out.healthy).toBe(true);
+    expect(code).toBe(0);
+  });
+
+  it('an unreachable connector marks the environment unhealthy and exits 1 (with --env)', async () => {
+    const dir = tempDir();
+    const path = writeConfig(dir, '{ url: "mongodb://localhost:27017", database: "my-api-prod" }');
+    const provider = makeMongoProvider({ ok: false });
+    const { stdout, code } = await captureStatusJson(path, mongoFactory(provider));
+    const out = JSON.parse(stdout) as {
+      environments: Array<{ healthy: boolean; checks: Array<{ name: string; state: string }> }>;
+      healthy: boolean;
+    };
+    expect(out.environments[0]!.checks.find((c) => c.name === 'mongodb')?.state).toBe('fail');
+    expect(out.environments[0]!.healthy).toBe(false);
+    expect(out.healthy).toBe(false);
+    expect(code).toBe(1);
+  });
+
+  it('a missing config still yields one parseable document and exit 1', async () => {
+    const dir = tempDir();
+    const missing = join(dir, 'nope.config.js');
+    const { stdout, code } = await captureStatusJson(missing, null);
+    const out = JSON.parse(stdout) as { config: { ok: boolean; detail: string }; healthy: boolean };
+    expect(out.config.ok).toBe(false);
+    expect(out.config.detail.length).toBeGreaterThan(0);
+    expect(out.healthy).toBe(false);
+    expect(code).toBe(1);
+  });
+
+  it('without --json the human banner still prints (output unchanged)', async () => {
+    const dir = tempDir();
+    const path = writeConfig(dir, '{ url: "mongodb://localhost:27017", database: "my-api-prod" }');
+    const provider = makeMongoProvider({ ok: true });
+    const { output } = await captureStatus(path, mongoFactory(provider));
+    expect(output).toContain('Horus ');
+    expect(output).toContain('MongoDB');
+    expect(() => JSON.parse(output)).toThrow(); // human mode is NOT a JSON document
+  });
+});

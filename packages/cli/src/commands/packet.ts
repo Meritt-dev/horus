@@ -85,6 +85,7 @@ async function computePacketFreshness(
     nowIso: new Date().toISOString(),
     meta,
     commitsSinceIndex,
+    anyRuntimeConnector: report.sourceStatus?.sources.some((s) => s.configured) ?? false,
   });
   return {
     indexStale: f.indexStale,

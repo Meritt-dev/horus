@@ -1,13 +1,15 @@
 import pc from 'picocolors';
-import { loadConfig, resolveEnvironment } from '@horus/core';
+import { loadConfig, resolveEnvironment, filterQueueEdges } from '@horus/core';
 import { openDb } from '@horus/db';
 import { listQueueEdges } from '@horus/db';
 import type { QueueEdge } from '@horus/db';
-import { queueForEnv } from '@horus/connectors';
+import { queueForEnv, queueDatabaseForEnv } from '@horus/connectors';
 import type { QueueCounts } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { readIndexMeta } from '../lib/freshness.js';
+import { repoRootOrCwd } from '../lib/cloud/session.js';
 
 export const QUEUES_AI_CONTRACT = `Provide a clearly separated AI evidence narration with:
 
@@ -59,7 +61,17 @@ export async function runQueues(
       } catch {
         // Unresolvable — leave undefined (unscoped) to preserve prior behavior.
       }
-      const rows = await listQueueEdges(db, { project, queueName: name });
+      const rawRows = await listQueueEdges(db, { project, queueName: name });
+      // Queue-edge hygiene (the canonical rules live in @horus/core's queue-hygiene
+      // module, shared with the engine's architecture view and the stitcher's write
+      // path): drop fixture-only edges, implausible names, and generic residue so
+      // the topology only ever shows production queues. Older databases may still
+      // hold garbage rows written before the stitcher filtered at persist time.
+      const rows = filterQueueEdges(rawRows);
+      const allFiltered = rawRows.length > 0 && rows.length === 0;
+      // Zero rows over an EXISTING index = this repo has no production queues; only a
+      // repo with no index at all should be told to run `horus init`.
+      const hasFreshIndex = readIndexMeta(repoRootOrCwd()) !== null;
 
       // HOR-343: a named queue with no static topology is likely dynamically registered
       // (e.g. `new Worker(enumValue)`), not unindexed — show its live state instead of
@@ -70,6 +82,12 @@ export async function runQueues(
       if (opts.json) {
         const topology = topologyToJson(buildQueueMap(rows));
         const out: Record<string, unknown> = { project: project ?? null, topology };
+        if (allFiltered) {
+          out['note'] =
+            'No production queues detected — the indexed queue edges look like test fixtures or implausible names.';
+        } else if (rawRows.length === 0 && hasFreshIndex) {
+          out['note'] = 'No production queues found in this repo.';
+        }
         if (showLive) out['live'] = await gatherLiveState(config, rows, name);
         console.log(JSON.stringify(out, null, 2));
         return 0;
@@ -86,7 +104,13 @@ export async function runQueues(
         console.log(
           name !== undefined
             ? pc.dim(`  No static topology for "${name}" — it may be dynamically registered; showing live state below.`)
-            : pc.dim('  No queue edges indexed. Run: horus init'),
+            : allFiltered
+              ? pc.dim(
+                  '  No production queues detected — the indexed queue edges look like test fixtures or implausible names.',
+                )
+              : hasFreshIndex
+                ? pc.dim('  No production queues found in this repo.')
+                : pc.dim('  No queue edges indexed. Run: horus init'),
         );
       } else {
         const byQueue = buildQueueMap(rows);
@@ -102,7 +126,9 @@ export async function runQueues(
           aiModel: opts.aiModel,
           _aiProvider: opts._aiProvider,
         } : undefined);
-      } else {
+      } else if (hasQueueConnector(config)) {
+        // Config drives behavior: only suggest --live when the loaded config actually
+        // has a queue-capable Redis connector — otherwise the tip is a dead end.
         console.log(
           pc.dim(
             '  Tip: run horus queues --live to show real-time Redis/BullMQ depths and failed-job counts.',
@@ -120,6 +146,21 @@ export async function runQueues(
   } catch (err) {
     console.error(pc.red((err as Error).message));
     return 1;
+  }
+}
+
+/** How --live explains a missing queue connector — a statement of what the config
+ *  needs, not a command to run (the config drives behavior). */
+const NO_QUEUE_CONNECTOR_MSG =
+  'Live queue state needs a queues-role Redis connector in the config (a connectors.redis stanza with a bullmq/queues database role).';
+
+/** Whether the loaded config has a Redis connector stanza with a queue-capable DB. */
+function hasQueueConnector(config: Awaited<ReturnType<typeof loadConfig>>): boolean {
+  try {
+    const renv = resolveEnvironment(config);
+    return renv.connectors.redis !== undefined && queueDatabaseForEnv(renv) !== null;
+  } catch {
+    return false;
   }
 }
 
@@ -173,7 +214,7 @@ async function gatherLiveState(
     return { ok: false, error: (err as Error).message };
   }
   const queueProvider = queueForEnv(renv);
-  if (!queueProvider) return { ok: false, error: 'Redis not configured' };
+  if (!queueProvider) return { ok: false, error: NO_QUEUE_CONNECTOR_MSG };
   try {
     const health = await queueProvider.health();
     if (!health.ok) return { ok: false, error: health.detail };
@@ -273,9 +314,7 @@ async function runLiveMode(
 
   if (!queueProvider) {
     console.log(pc.bold('Live queue state') + pc.dim('  ·  source: Redis/BullMQ'));
-    console.log(
-      pc.yellow('  ○ Redis not configured — run: ') + pc.bold('horus connect redis'),
-    );
+    console.log(pc.yellow(`  ○ ${NO_QUEUE_CONNECTOR_MSG}`));
     return;
   }
 

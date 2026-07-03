@@ -211,6 +211,74 @@ export function classifyAIFailure(firstError?: string): string {
   return firstError;
 }
 
+/**
+ * Compact the JSON projection of an investigation report IN PLACE — the agent-facing
+ * default. Dogfood: the "compact" output was still ~105 KB, with `recentChanges`
+ * alone ~52 KB (every in-window commit with its full file list) and the raw graph
+ * ~9 KB. Keeps counts + bounded tops + truncation metadata; `--full` skips this and
+ * restores the raw report. Exported for the size-budget regression test.
+ */
+export function compactInvestigateJSON(obj: Record<string, unknown>): void {
+  // Evidence payloads/snippets carry raw source strings — keep citable metadata only.
+  const ev = obj['evidence'];
+  if (Array.isArray(ev)) {
+    obj['evidence'] = ev.map((e) => {
+      const { payload: _payload, ...rest } = e as Record<string, unknown>;
+      return { ...rest, payload: '[omitted — re-run with --full]' };
+    });
+  }
+
+  // recentChanges → bounded projection: counts, top commits WITHOUT file lists, and
+  // the top changed files by churn (from fileStats).
+  const rc = obj['recentChanges'] as
+    | {
+        commits?: Array<{ sha?: string; shortSha?: string; author?: string; dateIso?: string; subject?: string; files?: string[] }>;
+        fileStats?: Array<{ path: string; insertions: number; deletions: number }>;
+        changedFiles?: string[];
+        [k: string]: unknown;
+      }
+    | undefined;
+  if (rc && Array.isArray(rc.commits)) {
+    const COMMIT_CAP = 10;
+    const FILE_CAP = 15;
+    const commits = rc.commits.slice(0, COMMIT_CAP).map((c) => ({
+      shortSha: c.shortSha ?? (c.sha ?? '').slice(0, 7),
+      dateIso: c.dateIso,
+      author: c.author,
+      subject: c.subject,
+      fileCount: c.files?.length ?? 0,
+    }));
+    const topChangedFiles = [...(rc.fileStats ?? [])]
+      .sort((a, b) => b.insertions + b.deletions - (a.insertions + a.deletions))
+      .slice(0, FILE_CAP);
+    const omitted = rc.commits.length - commits.length;
+    obj['recentChanges'] = {
+      window: rc['window'],
+      commitCount: rc.commits.length,
+      changedFileCount: rc.changedFiles?.length ?? rc.fileStats?.length ?? 0,
+      totalInsertions: rc['totalInsertions'],
+      totalDeletions: rc['totalDeletions'],
+      degenerate: rc['degenerate'],
+      commits,
+      topChangedFiles,
+      ...(omitted > 0
+        ? { truncated: true, truncatedCount: omitted, hint: 're-run with --full for the complete structure' }
+        : { truncated: rc['truncated'] }),
+      ...(rc['truncatedReason'] !== undefined ? { truncatedReason: rc['truncatedReason'] } : {}),
+    };
+  }
+
+  // graph → counts only; the full node/edge lists are a --full concern.
+  const graph = obj['graph'] as { nodes?: unknown[]; edges?: unknown[] } | undefined;
+  if (graph && (Array.isArray(graph.nodes) || Array.isArray(graph.edges))) {
+    obj['graph'] = {
+      nodeCount: graph.nodes?.length ?? 0,
+      edgeCount: graph.edges?.length ?? 0,
+      hint: 're-run with --full for nodes/edges',
+    };
+  }
+}
+
 export async function runInvestigate(
   hint: string,
   opts: {
@@ -334,22 +402,13 @@ export async function runInvestigate(
         nowIso: new Date().toISOString(),
         meta: fmeta,
         commitsSinceIndex,
+        anyRuntimeConnector: report.sourceStatus?.sources.some((s) => s.configured) ?? false,
       });
       if (format === 'json') {
         const obj = JSON.parse(reportToJSON(report)) as Record<string, unknown>;
         obj.freshness = freshness;
-        // Compact by default (agent-facing): evidence payloads/snippets carry raw
-        // source strings and can be enormous — keep citable metadata, drop bodies.
-        // `--full` restores the raw report.
-        if (!opts.full) {
-          const ev = obj['evidence'];
-          if (Array.isArray(ev)) {
-            obj['evidence'] = ev.map((e) => {
-              const { payload: _payload, ...rest } = e as Record<string, unknown>;
-              return { ...rest, payload: '[omitted — re-run with --full]' };
-            });
-          }
-        }
+        // Compact by default (agent-facing) — `--full` restores the raw report.
+        if (!opts.full) compactInvestigateJSON(obj);
         console.log(JSON.stringify(obj, null, 2));
       } else {
         console.log(format === 'markdown' || format === 'md' ? reportToMarkdown(report) : renderReport(report));

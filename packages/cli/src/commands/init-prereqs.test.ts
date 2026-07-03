@@ -5,7 +5,7 @@
  * object; they never gate init's exit code, so there is no exit code here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkPrerequisites } from './setup.js';
+import { checkPrerequisites } from './init-prereqs.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -2,7 +2,7 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
-import { symbolDisplayName, route, formatRouteStep, rankExactCandidates, type RouteStep } from '@horus/engine';
+import { symbolDisplayName, route, formatRouteStep, resolveSeedSymbol, type RouteStep } from '@horus/engine';
 import { openDb, listQueueEdges } from '@horus/db';
 
 /** Print the router's suggestions as human "Suggested next:" lines (HOR-386). */
@@ -30,15 +30,16 @@ export async function runExplain(
     return 1;
   }
 
-  // 10, not 5: exact-name collisions (4 `Hono`s, `Command` vs `command`) must all be
-  // in the pool for ranking — a cut-off collision can't be ranked or disclosed.
-  const searched = await code.searchSymbols(query, 10);
-  // Among candidates matching the query exactly, pick by importance (exact case,
-  // declaration kind, real path, body size) — NOT by raw search order, which put a
-  // 10-line preset subclass above the real 545-line class (dogfood P1). No exact
-  // match → keep the original search-ranked fuzzy fallback.
-  const ranked = rankExactCandidates(query, searched);
-  const symbols = ranked.length > 0 ? [...ranked, ...searched.filter((s) => !ranked.includes(s))] : searched;
+  // THE canonical resolver (shared with search/blast-radius/investigate): parses
+  // qualified queries (`Reply.hijack`, `app.use`, `path:symbol`), merges a bare-name
+  // search for the method part, and ranks exact-qualified > exact > fuzzy with
+  // product code before tests (`--full` lifts the test demotion). 10+ pool so
+  // exact-name collisions (4 `Hono`s) can all be ranked and disclosed.
+  const resolution = await resolveSeedSymbol(code, query, {
+    limit: 20, // SAME pool size as blast-radius — differing pools made commands disagree (axum)
+    includeTests: opts.full ?? false,
+  });
+  const symbols = resolution.candidates;
   if (symbols.length === 0) {
     if (await isQueueBoundary(config, query)) {
       console.log(`No symbol found for: ${pc.bold(query)}`);
@@ -61,7 +62,9 @@ export async function runExplain(
   const top = symbols[0];
   if (!top) return 1;
 
-  const isExactMatch = top.name.toLowerCase() === query.toLowerCase();
+  // Exact includes qualified forms: `Reply.hijack` resolving to Reply's hijack method
+  // is an exact match, not "fuzzy closest: hijack".
+  const isExactMatch = resolution.kind === 'exact' || resolution.kind === 'exact-qualified';
   let fuzzyNotice: string | null = null;
   if (!isExactMatch) {
     if (await isQueueBoundary(config, query)) {
@@ -82,6 +85,16 @@ export async function runExplain(
       console.log(pc.yellow(`  ${fuzzyNotice}`));
     }
   }
+  // Multiple exact matches tied at the top: the pick is deterministic, but say so and
+  // teach the disambiguator instead of implying a unique match (shared-resolver contract).
+  if (resolution.ambiguous && !opts.json) {
+    console.log(
+      pc.dim(
+        `  ${resolution.candidates.filter((s) => s.name.toLowerCase() === top.name.toLowerCase()).length} equally-plausible matches — disambiguate with "Class.${top.name}" or "path/to/file:${top.name}"`,
+      ),
+    );
+  }
+
   // Semantic search often returns several same-named hits (e.g. a resolver, a service,
   // and a test factory all named `createCompany`). We explain the highest-ranked match
   // and DISCLOSE the collisions so the user can re-query to target another — rather than
@@ -100,10 +113,12 @@ export async function runExplain(
       !s.id.endsWith(`:${s.name}.${s.name}`),
   );
 
+  // `--full` also lifts the product-only default: full output includes test callers.
+  const includeTests = opts.full ? { includeTests: true } : undefined;
   const [ctx, impact, flows] = await Promise.all([
     code.context(top.id),
-    code.impact(top.id, opts.depth ?? 3),
-    code.flowsFor(top.id),
+    code.impact(top.id, opts.depth ?? 3, includeTests),
+    code.flowsFor(top.id, includeTests),
   ]);
 
   if (opts.json) {
@@ -130,6 +145,21 @@ export async function runExplain(
       JSON.stringify(
         {
           symbol: strip(ctx.symbol as unknown as Record<string, unknown>),
+          // Shared-resolver verdict: how the query resolved + whether exact matches tied.
+          resolution: resolution.kind,
+          ...(resolution.ambiguous ? { ambiguous: true } : {}),
+          // The same-named collisions, so an agent can re-query a specific one
+          // (mirrors blast-radius --json — human output lists these inline).
+          ...(siblings.length > 0
+            ? {
+                alternatives: siblings.slice(0, 10).map((s) => ({
+                  name: s.name,
+                  filePath: s.filePath,
+                  ...(s.className != null ? { className: s.className } : {}),
+                  ...(s.startLine != null ? { startLine: s.startLine } : {}),
+                })),
+              }
+            : {}),
           ...(fuzzyNotice !== null ? { notice: fuzzyNotice } : {}),
           community: ctx.community,
           isDead: ctx.isDead,

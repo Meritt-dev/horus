@@ -203,3 +203,31 @@ describe('horus explain — async boundary redirect (HOR-181)', () => {
     expect(output).not.toContain('horus queues');
   });
 });
+
+describe('explain --json exposes disambiguation candidates (agent parity with blast-radius)', () => {
+  it('includes an `alternatives` list of same-named collisions', async () => {
+    const real: Symbol = { id: 'method:lib/reply.js:Reply.hijack', name: 'hijack', filePath: 'lib/reply.js', className: 'Reply', startLine: 40, endLine: 60 };
+    const other: Symbol = { id: 'function:test/reply.test.js:hijack', name: 'hijack', filePath: 'test/reply.test.js', startLine: 5, endLine: 9 };
+    mocks.searchSymbols.mockResolvedValue([real, other]);
+    mocks.listQueueEdges.mockResolvedValue([]);
+    mocks.context.mockResolvedValue({ symbol: real, callers: [], callees: [], community: null, isDead: false });
+    mocks.impact.mockResolvedValue({ byDepth: [], affected: 0 });
+    mocks.flowsFor.mockResolvedValue([]);
+
+    const logged: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { logged.push(String(a[0])); });
+    const code = await runExplain('hijack', { json: true });
+    consoleSpy.mockRestore();
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(logged.join('\n')) as {
+      resolution: string;
+      alternatives?: { name: string; filePath: string }[];
+    };
+    expect(parsed.resolution).toBe('exact');
+    // The product method is explained; the test-file collision is disclosed as an alternative.
+    expect(parsed.alternatives).toEqual([
+      { name: 'hijack', filePath: 'test/reply.test.js', startLine: 5 },
+    ]);
+  });
+});

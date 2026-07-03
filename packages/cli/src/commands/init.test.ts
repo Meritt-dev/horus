@@ -37,8 +37,8 @@ vi.mock('@horus/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@horus/db')>();
   return { ...actual, checkDatabase: seams.checkDatabase };
 });
-vi.mock('./index-repo.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./index-repo.js')>();
+vi.mock('./init-index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./init-index.js')>();
   return { ...actual, runIndex: seams.runIndex };
 });
 

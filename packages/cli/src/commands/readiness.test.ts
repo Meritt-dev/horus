@@ -192,7 +192,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     expect(lines(out)).toContain('horus.sh/install.sh');
   });
 
-  it('global config missing — shows generate-config hint', async () => {
+  it('global config missing — points at horus init', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -200,7 +200,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
       _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
-    expect(lines(out)).toContain('generate-config');
+    expect(lines(out)).toContain('horus init');
   });
 
   it('no source host URL in config — shows warn for Repo / Source host', async () => {

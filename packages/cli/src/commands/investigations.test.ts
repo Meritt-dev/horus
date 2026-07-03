@@ -155,3 +155,46 @@ describe('runInvestigations (cloud-linked)', () => {
     expect(out).toContain('local audit store unavailable');
   });
 });
+
+describe('runInvestigations --json (agent contract)', () => {
+  it('stdout is ONE parseable JSON document: local + cloud rows, count, notes', async () => {
+    seams.readCloudConfig.mockReturnValue({ project: { id: 'p1' } });
+    seams.isCloudActive.mockReturnValue(true);
+    seams.listCloudInvestigations.mockResolvedValue([CLOUD_ROW_SYNCED, CLOUD_ROW_FOREIGN]);
+    const code = await runInvestigations({ json: true });
+    expect(code).toBe(0);
+    const out = JSON.parse(logs.join('\n')) as {
+      investigations: Array<{ id: string; createdAt: string; title: string | null; cloud: boolean }>;
+      count: number;
+      notes?: string[];
+    };
+    expect(out.count).toBe(2);
+    expect(out.investigations[0]).toEqual({
+      id: 'local-1111',
+      createdAt: '2026-07-01T10:00:00.000Z',
+      title: 'orders stuck',
+      cloud: false,
+    });
+    // Synced cloud twin deduped; the foreign row is appended and flagged.
+    expect(out.investigations.some((r) => r.id === 'cloud-aaaa')).toBe(false);
+    expect(out.investigations[1]).toMatchObject({ id: 'cloud-bbbb', cloud: true });
+    expect(out.notes?.join(' ')).toContain('not locally replayable');
+  });
+
+  it('keeps human hints OUT of stdout in --json mode', async () => {
+    const code = await runInvestigations({ json: true });
+    expect(code).toBe(0);
+    const stdout = logs.join('\n');
+    expect(() => JSON.parse(stdout)).not.toThrow();
+    expect(stdout).not.toContain('horus replay <id>');
+  });
+
+  it('emits a parseable error document when the store is unreachable', async () => {
+    seams.openDb.mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const code = await runInvestigations({ json: true });
+    expect(code).toBe(1);
+    const out = JSON.parse(logs.join('\n')) as { error: string; investigations: unknown[] };
+    expect(out.error).toContain('ECONNREFUSED');
+    expect(out.investigations).toEqual([]);
+  });
+});

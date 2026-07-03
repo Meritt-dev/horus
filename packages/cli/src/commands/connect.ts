@@ -37,6 +37,7 @@ import {
   MongoStateClient,
   PostgresStateClient,
   SentryClient,
+  type SentryNamedResource,
   AxiomClient,
   ShopifyAdminClient,
   GrafanaClient,
@@ -342,14 +343,50 @@ async function fillInteractive(
         ((await ask('Tables (comma-separated, or Enter for all)', '')) || undefined);
       break;
 
-    case 'sentry':
-      filled.org = filled.org ?? (await ask('Org slug', 'my-org'));
-      filled.project = filled.project ?? (await ask('Project slug', 'my-project'));
+    case 'sentry': {
+      // Token + base URL first — both are needed to list orgs/projects for the pickers.
       filled.authToken =
         filled.authToken ?? ((await askPassword('Auth token')) || undefined);
       filled.url =
         filled.url ?? ((await ask('Base URL (self-hosted)', 'https://sentry.io', false)) || undefined);
+      const baseUrl = filled.url ?? 'https://sentry.io';
+
+      // Org — discover-then-select (mirrors the Axiom dataset picker), unless --org given.
+      if (filled.org === undefined && filled.authToken) {
+        let orgs: SentryNamedResource[] = [];
+        try {
+          orgs = await new SentryClient({
+            authToken: filled.authToken,
+            org: '',
+            project: '',
+            baseUrl,
+          }).listOrganizations();
+        } catch {
+          /* fall through to manual entry with the notice below */
+        }
+        filled.org = await pickSentryResource('Sentry organization', orgs);
+      }
+      filled.org = filled.org ?? (await ask('Org slug', 'my-org'));
+
+      // Project — Sentry issues are project-scoped, so a project is required; list the
+      // org's projects and let the user pick rather than type a slug, unless --project given.
+      if (filled.project === undefined && filled.authToken && filled.org) {
+        let projects: SentryNamedResource[] = [];
+        try {
+          projects = await new SentryClient({
+            authToken: filled.authToken,
+            org: filled.org,
+            project: '',
+            baseUrl,
+          }).listProjects();
+        } catch {
+          /* fall through to manual entry */
+        }
+        filled.project = await pickSentryResource('Sentry project', projects);
+      }
+      filled.project = filled.project ?? (await ask('Project slug', 'my-project'));
       break;
+    }
 
     case 'axiom': {
       filled.token = filled.token ?? ((await askPassword('Axiom API token')) || undefined);
@@ -1203,6 +1240,71 @@ export async function askDatasetSelection(names: string[]): Promise<string | und
 
   // Otherwise treat the input as a manually-typed dataset name.
   return input;
+}
+
+/**
+ * Discover-then-select a Sentry org or project (mirrors {@link askDatasetSelection}).
+ * `label` is the resource kind ("Sentry organization" / "Sentry project"). Returns
+ * the chosen SLUG, or `undefined` when the list is empty or the user skips — the
+ * caller then falls back to a manual slug prompt. The picker shows `name (slug)`
+ * but always returns the slug the API needs.
+ */
+export async function pickSentryResource(
+  label: string,
+  resources: SentryNamedResource[],
+): Promise<string | undefined> {
+  if (resources.length === 0) {
+    console.log(
+      pc.yellow(
+        `  Couldn't list ${label.toLowerCase()}s (check token / org / network) — enter the slug manually.`,
+      ),
+    );
+    return undefined;
+  }
+
+  // Distinct display label per row, mapping back to the slug on selection.
+  const bySlug = new Map(resources.map((r) => [r.slug, r]));
+  const choiceFor = (r: SentryNamedResource): string =>
+    r.name && r.name !== r.slug ? `${r.name} (${r.slug})` : r.slug;
+  const slugFromChoice = (choice: string): string => {
+    const m = /\(([^)]+)\)\s*$/.exec(choice);
+    const slug = m?.[1] ?? choice;
+    return bySlug.has(slug) ? slug : choice;
+  };
+
+  if (isInteractive()) {
+    try {
+      const picked = await selectSearch({
+        message: `Select a ${label.toLowerCase()}`,
+        choices: resources.map(choiceFor),
+        pageSize: 12,
+      });
+      return slugFromChoice(picked);
+    } catch (err) {
+      if (err instanceof ExitPromptError) throw err;
+      // Fall back to the numbered list on unexpected selector failures.
+    }
+  }
+
+  const MAX_DISPLAY = 25;
+  const shown = resources.slice(0, MAX_DISPLAY);
+  console.log(`\n  Available ${label.toLowerCase()}s:`);
+  shown.forEach((r, i) => {
+    console.log(`  ${pc.dim(`[${i + 1}]`)} ${choiceFor(r)}`);
+  });
+  if (resources.length > MAX_DISPLAY) {
+    console.log(pc.dim(`  … and ${resources.length - MAX_DISPLAY} more`));
+  }
+
+  const input = (
+    await ask(`  Select a ${label.toLowerCase()} (e.g. 1, or Enter to type the slug manually)`, '', false)
+  ).trim();
+  if (!input) return undefined;
+  if (/^\d+$/.test(input)) {
+    const idx = parseInt(input, 10) - 1;
+    if (idx >= 0 && idx < shown.length) return shown[idx]!.slug;
+  }
+  return input; // treat as a manually-typed slug
 }
 
 // ---------------------------------------------------------------------------

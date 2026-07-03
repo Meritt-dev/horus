@@ -67,21 +67,26 @@ describe('source entrypoint via tsx', () => {
 
   it('--help lists release-critical commands', () => {
     const out = runCLI('--help').stdout;
-    for (const cmd of ['setup', 'investigate', 'index', 'connect', 'stop', 'hosts']) {
+    for (const cmd of ['init', 'investigate', 'connect', 'stop', 'hosts']) {
       expect(out, `--help should mention "${cmd}"`).toContain(cmd);
     }
+    // `init` is the ONLY onboarding/indexing command — the removed names are gone.
+    expect(out).not.toMatch(/\n {2}setup\b/);
+    expect(out).not.toMatch(/\n {2}index\b/);
   });
 
-  it('setup --help exits 0', () => {
-    const result = runCLI('setup', '--help');
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('setup');
-  });
-
-  it('index --help exits 0', () => {
-    const result = runCLI('index', '--help');
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('index');
+  it('setup and index are REMOVED: bare and --help forms all fail nonzero', () => {
+    for (const name of ['setup', 'index']) {
+      const bare = runCLI(name);
+      expect(bare.status, `${name} should be an unknown command`).not.toBe(0);
+      expect(bare.stderr).toMatch(/unknown command/i);
+      // --help must not resurrect a removed command via top-level help (exit 0).
+      const withHelp = runCLI(name, '--help');
+      expect(withHelp.status, `${name} --help should fail like ${name}`).not.toBe(0);
+      expect(withHelp.stderr).toMatch(/unknown command/i);
+      const withH = runCLI(name, '-h');
+      expect(withH.status, `${name} -h should fail like ${name}`).not.toBe(0);
+    }
   });
 
   it('investigate --help exits 0 and documents --format', () => {
@@ -104,6 +109,69 @@ describe('source entrypoint via tsx', () => {
 
   it('<unknown-command> exits non-zero', () => {
     expect(runCLI('this-command-does-not-exist').status).not.toBe(0);
+  });
+});
+
+// ── Machine-readable --json (agent contract) ──────────────────────────────────
+// stdout under --json must be ONE parseable JSON document — no banner, no human
+// text before or after — even on failure. Agents pipe this straight into
+// JSON.parse. DATABASE_URL points at a closed local port so DB-backed commands
+// fail fast and deterministically; cwd is the empty temp dir so no repo config
+// is discoverable.
+describe('--json stdout is pure, parseable JSON', () => {
+  const CLOSED_DB = 'postgresql://horus:horus@127.0.0.1:9/horus';
+
+  function runJson(...args: string[]) {
+    return spawnSync(TSX, [ENTRYPOINT, ...args], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        DATABASE_URL: CLOSED_DB,
+        HORUS_CONFIG: '',
+        HORUS_NO_UPDATE_CHECK: '1',
+      },
+      timeout: 15_000,
+      cwd: tmpDir,
+    });
+  }
+
+  it('status --json with a missing config emits valid JSON and exits non-zero', () => {
+    const result = runJson('status', '--json', '--config', missingConfig);
+    expect(result.status).not.toBe(0);
+    const out = JSON.parse(result.stdout) as {
+      config: { ok: boolean; detail: string };
+      healthy: boolean;
+    };
+    expect(out.config.ok).toBe(false);
+    expect(out.config.detail).toContain(missingConfig);
+    expect(out.healthy).toBe(false);
+  });
+
+  it('investigations --json emits valid JSON even when the audit store is unreachable', () => {
+    const result = runJson('investigations', '--json', '--config', missingConfig);
+    expect(result.status).not.toBe(0);
+    const out = JSON.parse(result.stdout) as { error: string; investigations: unknown[] };
+    expect(typeof out.error).toBe('string');
+    expect(out.investigations).toEqual([]);
+  });
+
+  it('scores --json emits valid JSON even when the audit store is unreachable', () => {
+    const result = runJson('scores', '--json', '--config', missingConfig);
+    expect(result.status).not.toBe(0);
+    const out = JSON.parse(result.stdout) as { error: string; scores: unknown[] };
+    expect(typeof out.error).toBe('string');
+    expect(out.scores).toEqual([]);
+  });
+
+  it('outside a configured repo, the error is the exact documented sentence', () => {
+    // No --config, no .horus in cwd, no $HORUS_CONFIG: the config/cwd IS the
+    // project identity, and the failure must teach exactly that.
+    const result = runJson('investigate', 'test-hint');
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain(
+      'No Horus config found. Run from a configured repo or pass --config <path>.',
+    );
   });
 });
 
@@ -131,8 +199,23 @@ describe('release artifact dist/index.cjs', () => {
 
   it('--help lists release-critical commands', () => {
     const out = runDist('--help').stdout;
-    for (const cmd of ['setup', 'investigate', 'index', 'connect', 'stop', 'hosts']) {
+    for (const cmd of ['init', 'investigate', 'connect', 'stop', 'hosts']) {
       expect(out, `--help should mention "${cmd}"`).toContain(cmd);
+    }
+    // `init` is the ONLY onboarding/indexing command — the removed names are gone.
+    expect(out).not.toMatch(/\n {2}setup\b/);
+    expect(out).not.toMatch(/\n {2}index\b/);
+  });
+
+  it('setup and index are REMOVED: bare and --help forms all fail nonzero', () => {
+    for (const name of ['setup', 'index']) {
+      const bare = runDist(name);
+      expect(bare.status, `${name} should be an unknown command`).not.toBe(0);
+      expect(bare.stderr).toMatch(/unknown command/i);
+      // --help must not resurrect a removed command via top-level help (exit 0).
+      const withHelp = runDist(name, '--help');
+      expect(withHelp.status, `${name} --help should fail like ${name}`).not.toBe(0);
+      expect(withHelp.stderr).toMatch(/unknown command/i);
     }
   });
 

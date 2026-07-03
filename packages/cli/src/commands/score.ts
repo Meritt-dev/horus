@@ -82,7 +82,10 @@ export async function runScore(
 export async function runScores(opts: {
   config?: string;
   limit?: number;
+  /** Emit compact machine-readable JSON on stdout instead of human text. */
+  json?: boolean;
 }): Promise<number> {
+  const json = opts.json === true;
   // Score THIS project's investigations only (dogfood N1 — shared-DB isolation).
   let project: string | undefined;
   try {
@@ -90,39 +93,75 @@ export async function runScores(opts: {
   } catch {
     /* unresolvable — leave unscoped */
   }
-  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+  let scored: Array<{ id: string; title: string | null; createdAt: Date; score: number }>;
   try {
-    const rows = await listInvestigationsWithReports(db, opts.limit ?? 15, { project });
-    const scored = rows
-      .filter((r) => r.report)
-      .map((r) => ({
-        id: r.id,
-        title: r.title,
-        createdAt: r.createdAt,
-        score: scoreInvestigation(migrateReport(r.report) as InvestigationReport).score,
-      }));
-    if (scored.length === 0) {
-      console.log('No scored investigations yet.');
-      return 0;
+    const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+    try {
+      const rows = await listInvestigationsWithReports(db, opts.limit ?? 15, { project });
+      scored = rows
+        .filter((r) => r.report)
+        .map((r) => ({
+          id: r.id,
+          title: r.title,
+          createdAt: r.createdAt,
+          score: scoreInvestigation(migrateReport(r.report) as InvestigationReport).score,
+        }));
+    } finally {
+      await sql.end();
     }
-    for (const s of scored) {
-      console.log(
-        '  ' +
-          String(s.score).padStart(3) +
-          '/100  ' +
-          formatDateTime(s.createdAt) +
-          '  ' +
-          s.id +
-          '  ' +
-          (s.title ?? ''),
-      );
+  } catch (err) {
+    // stdout must stay VALID JSON under --json (agents parse it); the human
+    // message still goes to stderr in both modes.
+    if (json) {
+      console.log(JSON.stringify({ error: (err as Error).message, scores: [], count: 0 }, null, 2));
     }
-    const avg = Math.round(
-      scored.reduce((n, s) => n + s.score, 0) / scored.length,
-    );
-    console.log('  avg ' + avg + '/100 across ' + scored.length + ' investigation(s)');
-  } finally {
-    await sql.end();
+    console.error(pc.red((err as Error).message));
+    return 1;
   }
+
+  if (json) {
+    const average =
+      scored.length === 0
+        ? null
+        : Math.round(scored.reduce((n, s) => n + s.score, 0) / scored.length);
+    console.log(
+      JSON.stringify(
+        {
+          scores: scored.map((s) => ({
+            id: s.id,
+            createdAt: s.createdAt.toISOString(),
+            score: s.score,
+            title: s.title,
+          })),
+          count: scored.length,
+          average,
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (scored.length === 0) {
+    console.log('No scored investigations yet.');
+    return 0;
+  }
+  for (const s of scored) {
+    console.log(
+      '  ' +
+        String(s.score).padStart(3) +
+        '/100  ' +
+        formatDateTime(s.createdAt) +
+        '  ' +
+        s.id +
+        '  ' +
+        (s.title ?? ''),
+    );
+  }
+  const avg = Math.round(
+    scored.reduce((n, s) => n + s.score, 0) / scored.length,
+  );
+  console.log('  avg ' + avg + '/100 across ' + scored.length + ' investigation(s)');
   return 0;
 }

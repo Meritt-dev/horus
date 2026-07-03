@@ -247,3 +247,83 @@ describe('runInvestigate — output format validation (dogfood: --format xml fel
     errSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// `investigate --json` compact size budget (dogfood: ~105 KB default output,
+// recentChanges alone ~52 KB — unusable for agents).
+// ---------------------------------------------------------------------------
+
+import { compactInvestigateJSON } from './investigate.js';
+
+describe('compactInvestigateJSON — size budget', () => {
+  function fatReportJSON(): Record<string, unknown> {
+    return {
+      id: 'inv-1',
+      input: { hint: 'runOneInvestigation timeout' },
+      summary: 'x'.repeat(500),
+      evidence: Array.from({ length: 40 }, (_, i) => ({
+        id: `ev-${i}`,
+        kind: 'symbol',
+        title: `evidence ${i}`,
+        payload: { raw: 'src'.repeat(2000) }, // fat raw-source payload
+      })),
+      recentChanges: {
+        window: { since: '2026-06-01', until: undefined },
+        commits: Array.from({ length: 200 }, (_, i) => ({
+          sha: 'a'.repeat(40),
+          shortSha: `aaaa${i}`,
+          author: 'Dev',
+          dateIso: '2026-07-01T10:00:00Z',
+          subject: `feat: change ${i} touching lots of files in the service layer`,
+          files: Array.from({ length: 30 }, (_, j) => `src/modules/mod-${j}/file-${i}.ts`),
+        })),
+        fileStats: Array.from({ length: 400 }, (_, i) => ({
+          path: `src/modules/mod-${i % 30}/file-${i}.ts`,
+          insertions: i,
+          deletions: i % 7,
+        })),
+        changedFiles: Array.from({ length: 400 }, (_, i) => `src/modules/f-${i}.ts`),
+        totalInsertions: 90000,
+        totalDeletions: 2000,
+        truncated: false,
+        degenerate: false,
+      },
+      graph: {
+        nodes: Array.from({ length: 300 }, (_, i) => ({ id: `n${i}`, kind: 'symbol', label: `node ${i}` })),
+        edges: Array.from({ length: 500 }, (_, i) => ({ from: `n${i % 300}`, to: `n${(i * 7) % 300}`, kind: 'calls' })),
+      },
+      gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+      confidence: 0.4,
+      nextSteps: [{ nextTool: 'explain', args: 'x', reason: 'walk it' }],
+    };
+  }
+
+  it('keeps the default JSON under the byte budget on a fat report', () => {
+    const obj = fatReportJSON();
+    expect(Buffer.byteLength(JSON.stringify(obj))).toBeGreaterThan(150 * 1024); // fat for real
+    compactInvestigateJSON(obj);
+    expect(Buffer.byteLength(JSON.stringify(obj, null, 2))).toBeLessThan(48 * 1024);
+  });
+
+  it('recentChanges compacts to counts + bounded tops with truncation metadata', () => {
+    const obj = fatReportJSON();
+    compactInvestigateJSON(obj);
+    const rc = obj['recentChanges'] as Record<string, unknown>;
+    expect(rc['commitCount']).toBe(200);
+    expect(rc['changedFileCount']).toBe(400);
+    expect((rc['commits'] as unknown[]).length).toBe(10);
+    expect((rc['commits'] as Array<Record<string, unknown>>)[0]!['files']).toBeUndefined();
+    expect((rc['commits'] as Array<Record<string, unknown>>)[0]!['fileCount']).toBe(30);
+    expect((rc['topChangedFiles'] as unknown[]).length).toBe(15);
+    expect(rc['truncated']).toBe(true);
+    expect(rc['truncatedCount']).toBe(190);
+    // The graph collapses to counts.
+    const graph = obj['graph'] as Record<string, unknown>;
+    expect(graph['nodeCount']).toBe(300);
+    expect(graph['edgeCount']).toBe(500);
+    // Evidence keeps citable metadata, drops payloads.
+    const ev = (obj['evidence'] as Array<Record<string, unknown>>)[0]!;
+    expect(ev['title']).toBe('evidence 0');
+    expect(ev['payload']).toContain('omitted');
+  });
+});

@@ -141,6 +141,67 @@ describe('CLI program structure', () => {
     }
   });
 
+  it('NO command anywhere carries --project or --name — recursively, subcommands included', () => {
+    // The config/cwd IS the project identity; even domain data uses distinct spellings
+    // (`connect --sentry-project`, `cloud link <org/workspace/project>` positional).
+    const walk = (cmds: readonly import('commander').Command[], path: string): void => {
+      for (const cmd of cmds) {
+        const longs = cmd.options.map((o) => o.long);
+        expect(longs, `${path}${cmd.name()} must not carry --project`).not.toContain('--project');
+        expect(longs, `${path}${cmd.name()} must not carry --name`).not.toContain('--name');
+        walk(cmd.commands, `${path}${cmd.name()} `);
+      }
+    };
+    walk(buildProgram().commands, '');
+  });
+
+  it('every --repo option documents repo-WITHIN-config semantics (not cross-repo targeting)', () => {
+    // --repo is deliberately kept: it selects a repository/project WITHIN the loaded
+    // config in monorepo/multi-project setups. Cross-repo targeting is --config or cd.
+    // Every description must say so, so it can never read as registry-style targeting.
+    const walk = (cmds: readonly import('commander').Command[]): void => {
+      for (const cmd of cmds) {
+        const repoOpt = cmd.options.find((o) => o.long === '--repo');
+        if (repoOpt) {
+          expect(
+            repoOpt.description,
+            `${cmd.name()} --repo description must state WITHIN-config semantics`,
+          ).toContain('WITHIN the loaded config');
+        }
+        walk(cmd.commands);
+      }
+    };
+    walk(buildProgram().commands);
+  });
+
+  it('the domain replacements exist: connect --sentry-project and cloud link [target]', () => {
+    const program = buildProgram();
+    const connect = program.commands.find((c) => c.name() === 'connect')!;
+    expect(connect.options.map((o) => o.long)).toContain('--sentry-project');
+    const cloud = program.commands.find((c) => c.name() === 'cloud')!;
+    const link = cloud.commands.find((c) => c.name() === 'link')!;
+    // Non-interactive linking is the positional target, not a flag.
+    expect(link.registeredArguments.map((a) => a.name())).toContain('target');
+  });
+
+  it('agent-facing list commands carry --json (status, investigations, scores)', () => {
+    const program = buildProgram();
+    for (const name of ['status', 'investigations', 'scores']) {
+      const cmd = program.commands.find((c) => c.name() === name)!;
+      expect(cmd.options.map((o) => o.long), `${name} should carry --json`).toContain('--json');
+    }
+  });
+
+  it('heavy-JSON commands carry --full to opt out of the compact default', () => {
+    const program = buildProgram();
+    for (const name of ['changes', 'timeline', 'what-changed']) {
+      const cmd = program.commands.find((c) => c.name() === name)!;
+      const longs = cmd.options.map((o) => o.long);
+      expect(longs, `${name} should carry --json`).toContain('--json');
+      expect(longs, `${name} should carry --full`).toContain('--full');
+    }
+  });
+
   it('stop command has --all flag', () => {
     const stop = buildProgram().commands.find((c) => c.name() === 'stop')!;
     const longs = stop.options.map((o) => o.long);

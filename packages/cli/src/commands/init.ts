@@ -2,7 +2,7 @@
  * `horus init` — THE single onboarding command (merger of the old `setup`,
  * `init`, and `index` commands): check prerequisites (advisory), write/register
  * a local `.horus/config.json`, then start the source-intelligence host and
- * index the repo (via the HOR-37 flow in index-repo.ts).
+ * index the repo (via the HOR-37 flow in init-index.ts).
  *
  * Degradation policy:
  *   - `--source <url>`      → record the external host in config, skip local
@@ -26,8 +26,8 @@ import {
   type LocalConfigFile,
 } from '@horus/core';
 import { sourceAvailable } from '@horus/connectors';
-import { checkPrerequisites } from './setup.js';
-import { runIndex } from './index-repo.js';
+import { checkPrerequisites } from './init-prereqs.js';
+import { runIndex } from './init-index.js';
 import { installBundledBackend, resolveBundledWheel } from '../lib/bundled-backend.js';
 
 export interface InitOptions {
@@ -40,6 +40,8 @@ export interface InitOptions {
   changed?: boolean;
   fast?: boolean;
   importKb?: string;
+  /** Force a full source re-analysis (stop host, wipe .horus/source, rebuild). */
+  reindex?: boolean;
 }
 
 export async function runInit(opts: InitOptions): Promise<number> {
@@ -90,6 +92,7 @@ export async function runInit(opts: InitOptions): Promise<number> {
       ...(opts.changed !== undefined ? { changed: opts.changed } : {}),
       ...(opts.fast !== undefined ? { fast: opts.fast } : {}),
       ...(opts.importKb !== undefined ? { importKb: opts.importKb } : {}),
+      ...(opts.reindex !== undefined ? { reindex: opts.reindex } : {}),
       path: root,
     });
   } catch (err) {

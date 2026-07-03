@@ -56,7 +56,7 @@ vi.mock('@horus/db', async (importOriginal) => {
   };
 });
 
-import { runIndex } from './index-repo.js';
+import { runIndex } from './init-index.js';
 
 let repo: string;
 let logs: string[];

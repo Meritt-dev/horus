@@ -11,7 +11,8 @@
  * (from the resolved config, or from `.horus/source/host.json`).
  */
 
-import { basename, resolve } from 'node:path';
+import { rmSync } from 'node:fs';
+import { basename, resolve, join } from 'node:path';
 import pc from 'picocolors';
 import {
   loadConfig,
@@ -126,6 +127,12 @@ export interface IndexOptions {
   fast?: boolean;
   /** Import a Maison Safqa knowledge-base JSON instead of deriving from source. */
   importKb?: string;
+  /**
+   * Force a FULL source re-analysis: stop the repo's host, remove `.horus/source`,
+   * and rebuild from scratch. The only way to purge stale graph edges after a
+   * backend upgrade — `--changed` refreshes project knowledge only.
+   */
+  reindex?: boolean;
 }
 
 /**
@@ -247,7 +254,11 @@ async function buildKnowledgeIndex(
       // but keep the build to the cheap landscape pass.
       const changes = collectLocalChanges({ cwd: root });
       const n = changes.kind === 'local-changes' ? changes.changedFiles.length : 0;
-      console.log(pc.dim(`  project knowledge: fast refresh (${n} changed file(s))`));
+      console.log(
+        pc.dim(
+          `  project knowledge: fast refresh (${n} changed file(s)) — the source graph is NOT reanalyzed (use \`horus init --reindex\` for that)`,
+        ),
+      );
     }
 
     // Repos to profile: the configured project's repos, else the current repo root.
@@ -335,7 +346,17 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     let hostUrl: string | undefined;
     let spawned = false;
     let driftedHost: { url: string; version: string | null } | undefined;
-    for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
+    if (opts.reindex === true) {
+      // Full re-analysis: the running host holds the store lock and the existing
+      // index carries the stale graph — stop it and remove `.horus/source` so the
+      // spawn path below rebuilds from scratch (the documented full-rebuild path).
+      console.log(pc.dim('  --reindex: stopping the host and removing .horus/source for a full re-analysis…'));
+      await killSpawnedHost(root);
+      rmSync(join(root, '.horus', 'source'), { recursive: true, force: true });
+    }
+    for (const candidate of opts.reindex === true
+      ? []
+      : [configuredHost, readSourceHostUrl(root) ?? undefined]) {
       // Reuse a host only if it is healthy AND actually serving THIS repo — never another
       // repo's host that happens to occupy the same port (the collision that leaked one
       // repo's queue map into another's investigation).

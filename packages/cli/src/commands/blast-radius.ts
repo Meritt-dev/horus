@@ -37,6 +37,8 @@ export async function runBlastRadius(
     json?: boolean;
     ai?: boolean;
     aiModel?: string;
+    /** Include test/docs/example callers in the impact traversal (product-only by default). */
+    includeTests?: boolean;
     /** Injectable AI provider for tests — bypasses credential resolution. */
     _aiProvider?: InterpretationProvider;
   },
@@ -67,7 +69,9 @@ export async function runBlastRadius(
 
     const { db, sql } = await openDb(config.database.url);
     try {
-      const r = await analyzeBlastRadius(query, { code, db, project }, opts.depth ?? 3);
+      const r = await analyzeBlastRadius(query, { code, db, project }, opts.depth ?? 3, {
+        includeTests: opts.includeTests ?? false,
+      });
       if (!r) {
         // HOR-386 — no symbol matched: the router points at `horus search <query>`.
         const steps = route({ command: 'blast-radius', empty: true, query });
@@ -80,19 +84,28 @@ export async function runBlastRadius(
         }
         return 1;
       }
+      // The shared resolver's verdict, not a raw name comparison — `Engine.Run`
+      // resolving to Engine's `Run` method is an exact QUALIFIED match, and must
+      // never be reported as "fuzzy closest: Run" (gin dogfood).
       const fuzzyNotice =
-        r.seed.name.toLowerCase() !== query.toLowerCase()
+        r.resolution === 'fuzzy'
           ? `No exact match for "${query}" — showing closest: "${r.seed.name}" (fuzzy match)`
           : null;
-      // stdout stays VALID JSON in --json mode — the notice is a structured field.
-      if (fuzzyNotice !== null && !opts.json) {
-        console.log(pc.yellow(`  ${fuzzyNotice}`));
+      const ambiguityNotice =
+        r.ambiguous && r.alternatives.length > 0
+          ? `${r.alternatives.length + 1} equally-plausible matches for "${query}" — disambiguate with "Class.${r.seed.name}" or "path/to/file:${r.seed.name}" (others: ${r.alternatives.map((s) => s.filePath).join(', ')})`
+          : null;
+      // stdout stays VALID JSON in --json mode — the notices are structured fields.
+      if (!opts.json) {
+        if (fuzzyNotice !== null) console.log(pc.yellow(`  ${fuzzyNotice}`));
+        if (ambiguityNotice !== null) console.log(pc.dim(`  ${ambiguityNotice}`));
       }
       if (opts.json) {
         // HOR-386 — bolt the SAME router's structured next-steps onto the --json shape
         // (mirrors investigate.ts adding `freshness`). Empty on the happy path.
         const obj = JSON.parse(blastRadiusToJSON(r)) as Record<string, unknown>;
         if (fuzzyNotice !== null) obj.notice = fuzzyNotice;
+        if (ambiguityNotice !== null) obj.ambiguityNotice = ambiguityNotice;
         obj.nextSteps = route({ command: 'blast-radius', seedName: r.seed.name, query });
         console.log(JSON.stringify(obj, null, 2));
       } else {

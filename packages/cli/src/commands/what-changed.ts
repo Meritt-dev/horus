@@ -46,6 +46,8 @@ export async function runWhatChanged(
     since?: string;
     until?: string;
     json?: boolean;
+    /** With --json: uncapped raw structure instead of the compact summary. */
+    full?: boolean;
     ai?: boolean;
     aiModel?: string;
     /** Push the report to the linked Horus Cloud project. */
@@ -89,7 +91,7 @@ export async function runWhatChanged(
       { code },
     );
 
-    console.log(opts.json ? whatChangedToJSON(r) : renderWhatChanged(r));
+    console.log(opts.json ? whatChangedToJSON(r, { full: opts.full }) : renderWhatChanged(r));
 
     if (opts.ai && !opts.json) {
       const result = await renderAiInterpretation({
@@ -154,6 +156,27 @@ async function pushChangeReport(
     note: r.note,
     window: r.window,
     commitCount: r.commitCount,
+    // Git truth + working-tree state (cloud treats payload as opaque; bounded fields only).
+    gitTruth:
+      r.gitTruth == null
+        ? null
+        : {
+            base: r.gitTruth.base,
+            compare: r.gitTruth.compare,
+            fileCount: r.gitTruth.fileCount,
+            insertions: r.gitTruth.insertions,
+            deletions: r.gitTruth.deletions,
+            buckets: r.gitTruth.buckets,
+          },
+    workingTree:
+      r.repoState == null
+        ? null
+        : {
+            dirty: r.repoState.dirty,
+            stagedCount: r.repoState.stagedCount,
+            unstagedCount: r.repoState.unstagedCount,
+            untrackedCount: r.repoState.untrackedCount,
+          },
     topCommits: r.topCommits.map((c) => ({
       hash: c.shortSha,
       message: c.subject,

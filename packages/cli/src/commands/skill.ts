@@ -40,234 +40,148 @@ export function getSkillInstallPath(
 }
 
 const BASE_SKILL = `\
-# Horus Grounded Investigation Skill
+# Horus — grounded investigation
 
-When working in a repo with Horus configured, use Horus before guessing about production behavior, runtime state, ownership, recent changes, or codebase logic.
+Horus is a read-only evidence layer over a repo's production runtime (logs, metrics,
+queues, application state), source intelligence (symbols, call graph, ownership, blast
+radius), and git history. Use it before answering from assumption about runtime
+behavior, what changed, who owns code, blast radius, or whether code paths are actually
+connected. It never mutates anything.
 
-Horus is a read-only evidence layer. It helps collect and connect source, runtime, metrics, queue, log, ownership, and change evidence. It does not mutate production systems.
+Add \`--json\` to any command (\`--format json\` for \`investigate\` and \`replay\`) when you
+need to parse the result — output is stable and **compact by default**; add \`--full\`
+for the uncapped structure. Every JSON result carries a \`nextSteps\` array of
+deterministic follow-up commands; run those rather than guessing.
 
-## When to use Horus
+## When to invoke
 
-Use Horus when the user asks:
-
-* why something is broken, slow, failing, flaky, or inconsistent
-* about a production incident, outage, regression, or degraded service
-* what changed recently
-* what caused a behavior change
-* who owns a component, service, queue, worker, route, or module
-* about blast radius or impact of a change
-* about queues, workers, Redis, BullMQ, NATS, logs, metrics, MongoDB state, or source paths
-* to verify a fix or check for regressions after a change
-* whether a feature behaves a certain way
-* where business logic lives
-* whether a condition, flag, enum, status, or branch is handled
-* whether code paths are connected or only coincidentally similar
+Invoke Horus when the task involves: an incident / outage / regression / slow / flaky /
+inconsistent behavior; "what changed" or "what caused this"; ownership of a component,
+service, queue, worker, route, or module; blast radius or impact of a change; queues,
+workers, Redis/BullMQ, logs, metrics, MongoDB/Postgres state; where business logic
+lives; whether a flag / enum / status / branch is handled; whether code paths are truly
+connected or only coincidentally similar; or verifying a fix. Skip it for trivial
+syntax/formatting edits and obvious local refactors where blast radius doesn't matter.
 
 ## Setup (once per repo)
 
-If the repo has no \`.horus/config.json\` yet (or \`horus doctor\` shows source
-intelligence missing), run the single onboarding command:
+If there is no \`.horus/config.json\` (or \`horus doctor\` reports source intelligence
+missing), run the single onboarding command — idempotent, safe to re-run:
 
 \`\`\`bash
 horus init
 \`\`\`
 
-It checks prerequisites, writes and registers the config, starts the
-source-intelligence host, indexes the code, and stitches the queue map.
-Re-running it is safe (idempotent — reuses a healthy host, refreshes the index).
-Add runtime evidence sources with \`horus connect <type>\` (credentials are
-encrypted; never hand-edit them into config). The source backend ships inside
-the Horus bundle — \`horus init\` installs it automatically if missing.
+It checks prerequisites, writes the config, starts the source-intelligence host,
+indexes the code, and stitches the queue map. Add runtime sources with
+\`horus connect <type>\` (elasticsearch / mongodb / postgres / sentry / axiom / shopify /
+grafana / redis; credentials encrypted at rest — never hand-edit them into config). The
+source backend ships inside the Horus bundle and installs automatically.
 
-## Default first steps
-
-Start small. Do not shotgun every command.
+## Primary entry points
 
 \`\`\`bash
-horus status
-horus investigate "<incident, behavior, or debugging hint>"
+horus status --json                            # config + connector health matrix
+horus investigate --format json "<hint>"       # deterministic, ranked, evidence-backed report
+horus packet "<hint>" --for claude --json      # compact, honesty-framed briefing for your context
 \`\`\`
 
-If Horus returns a saved investigation ID, use that ID for follow-up reasoning:
+\`investigate\` returns a saved id. Reuse it — never restart from scratch:
 
 \`\`\`bash
-horus ask <id> "what evidence is missing?"
-horus ask <id> "what evidence contradicts the likely root cause?"
-horus score <id>
+horus investigations --json                    # list saved ids
+horus replay <id> --format json                # re-render a saved report, no re-query
+horus ask <id> "what evidence is missing?"     # refine against already-collected evidence
+horus postmortem <id>                          # draft an editable postmortem
+horus score <id> --json                        # quality score for the investigation
 \`\`\`
 
-## Report whether Horus helped (close the loop)
-
-Once you have **acted on an investigation and know the outcome** — you verified
-whether Horus pointed at the real cause — record it. This is how Horus measures and
-improves its own accuracy, and without it the impact signal is blind to agent-driven
-runs (most of them).
+\`horus ask\` requires an investigation ID and a directive:
 
 \`\`\`bash
-horus feedback <id> --resolved yes      # Horus pointed at the real cause
-horus feedback <id> --resolved partly   # useful lead, but not the whole cause
-horus feedback <id> --resolved no       # Horus missed the cause
-\`\`\`
-
-It is non-interactive and safe to run unattended. Report **once** per investigation,
-**after** you confirm the outcome — never before, and never guess. If you can estimate
-how long the same debugging would have taken you manually, add it:
-
-\`\`\`bash
-horus feedback <id> --resolved yes --manual-estimate-min 120
+horus ask <id> "what evidence contradicts <hypothesis>?"   # correct
+horus ask "<question>"                                      # WRONG — missing id
 \`\`\`
 
 ## Runtime evidence
 
-Use runtime commands when the question depends on live or recent runtime behavior:
-
 \`\`\`bash
-horus logs [service]
-horus state
-horus metrics "<hint>"
-horus queues --live
-\`\`\`
-
-Examples:
-
-\`\`\`bash
-horus logs api
-horus metrics "checkout latency"
-horus queues --live
-horus state
+horus logs [service] --json
+horus state --json
+horus metrics "<hint>" --json
+horus queues --live --json
 \`\`\`
 
 ## Source reasoning
 
-Use source commands when the question depends on code behavior, ownership, blast radius, or recent code changes:
-
 \`\`\`bash
-horus explain <symbol-or-hint>
-horus blast-radius <symbol>
-horus owner <symbol>
-horus changes <base> [compare]
-horus timeline
-horus what-changed
+horus explain <symbol> --json          # location, callers/callees, impact, resolution kind
+horus blast-radius <symbol> --json     # upstream/downstream reach + criticality
+horus owner <symbol> --json            # likely owner from git history, with confidence
+horus changes <base> [compare] --json  # changed symbols + affected execution flows
+horus what-changed --json              # git truth: files by status, +/- lines, runtime/test/docs/config buckets
+horus timeline --json
 \`\`\`
 
-Examples:
-
-\`\`\`bash
-horus explain "brandType MANUAL product auto draft"
-horus blast-radius ProductDraftService
-horus owner ProductDraftService
-horus what-changed
-\`\`\`
+Qualified names resolve precisely and identically across \`search\`, \`explain\`,
+\`investigate\`, and \`blast-radius\` — prefer them to disambiguate a method from a
+same-named helper or test: \`horus explain PaymentService.charge\`, \`horus blast-radius
+Reply.hijack\`. Product code is preferred over tests/examples by default; add
+\`--include-tests\` (or \`--full\`) when you need test callers too.
 
 ## Logic and behavior questions
 
-For questions like:
-
-* "Do we auto draft products for brands where brandType===MANUAL?"
-* "Where is this status handled?"
-* "Does this worker retry failed jobs?"
-* "What happens when this integration sync fails?"
-* "Is this queue idempotent?"
-* "Does this change affect Shopify imports?"
-
-Prefer:
+For "do we auto-draft products when brandType===MANUAL?", "where is this status
+handled?", "does this worker retry failed jobs?", "is this queue idempotent?" — resolve
+from source, not assumptions:
 
 \`\`\`bash
-horus explain "<symbol-or-behavior-hint>"
-horus investigate "<behavior question>"
+horus explain "<symbol-or-behavior>" --json
+horus investigate --format json "<behavior question>"
+horus ask <id> "what source evidence proves or disproves this behavior?"
 \`\`\`
-
-Then ask follow-ups against the saved investigation:
-
-\`\`\`bash
-horus ask <id> "what source evidence proves this behavior?"
-horus ask <id> "what source evidence disproves this behavior?"
-horus ask <id> "what evidence is missing?"
-\`\`\`
-
-Correct \`horus ask\` usage:
-
-\`\`\`bash
-horus ask <id> "do we auto draft products for brands where brandType===MANUAL?"
-\`\`\`
-
-Incorrect usage:
-
-\`\`\`bash
-horus ask "do we auto draft products for brands where brandType===MANUAL?"
-\`\`\`
-
-\`horus ask\` requires an investigation ID and a directive.
-
-## Saved investigations
-
-Use saved investigations to continue from existing evidence instead of restarting randomly:
-
-\`\`\`bash
-horus investigations
-horus replay <id>
-horus ask <id> "what evidence is missing?"
-horus ask <id> "what evidence contradicts <hypothesis>?"
-horus postmortem <id>
-horus score <id>
-\`\`\`
-
-## New codebase orientation
-
-When entering an unfamiliar area of the repo:
-
-\`\`\`bash
-horus doctor
-horus onboard [area]
-horus explain <symbol-or-hint>
-horus owner <symbol-or-hint>
-\`\`\`
-
-If \`horus doctor\` shows the repo is not set up, run \`horus init\` first.
 
 ## Change and fix workflow
 
-For write or fix tasks:
+1. Before editing: \`horus investigate\` / \`horus blast-radius <symbol>\` to ground in
+   evidence, ownership, and blast radius.
+2. Edit with normal filesystem tools.
+3. After editing: re-check \`horus blast-radius <changed-symbol>\`, then
+   \`horus ask <id> "does the proposed fix address the collected evidence?"\`.
+4. Run the project's own tests / typecheck / lint — Horus does not replace them.
 
-1. Use Horus before editing to understand evidence, ownership, and blast radius.
-2. Make code changes using normal filesystem tools.
-3. Use Horus after editing to validate blast radius and relevant runtime/source assumptions.
-4. Run normal project tests, typechecks, linters, or smoke checks as appropriate.
+## Close the loop
 
-Example:
+After you ACT on an investigation and know the outcome, record whether Horus pointed at
+the real cause (non-interactive, safe unattended; report once, after you confirm — never
+guess):
 
 \`\`\`bash
-horus investigate "<bug or behavior>"
-horus blast-radius <symbol>
-# edit files normally
-horus blast-radius <changed-symbol>
-horus ask <id> "does the proposed fix address the collected evidence?"
+horus feedback <id> --resolved yes      # pointed at the real cause
+horus feedback <id> --resolved partly   # useful lead, not the whole cause
+horus feedback <id> --resolved no       # missed the cause
+# optionally add --manual-estimate-min <minutes>
 \`\`\`
 
-## Reporting format
+If Horus itself is wrong, crashes, or lacks a capability you needed, file it — you see
+its failure modes firsthand, the highest-leverage way to improve it:
 
-When answering after using Horus, report:
+\`\`\`bash
+horus report "<what was wrong or missing>"
+\`\`\`
 
-* Conclusion
-* Horus evidence
-* Source locations
-* Missing, weak, stale, or ambient evidence
-* Conflicts between Horus evidence and filesystem/source inspection
-* Blast radius or risk
-* Recommended next action
+## Contract
 
-## Rules
-
-* Treat Horus evidence as grounded but not infallible.
-* Mention when Horus evidence is missing, stale, ambient, incomplete, or not structurally linked.
-* Do not invent runtime evidence Horus did not collect.
-* Prefer exact source locations from Horus over guesses.
-* If Horus output conflicts with filesystem or source inspection, report the discrepancy.
-* For write or fix tasks, use Horus to validate blast radius and rerun relevant checks after changes.
-* Horus is read-only evidence collection. Never use Horus to mutate production systems.
-* Do not hallucinate evidence. If Horus returns nothing, say so explicitly.
-* Do not use Horus as a substitute for tests, typechecks, or direct source inspection.
-* Do not overuse Horus for trivial syntax edits, formatting-only changes, or obvious local refactors unless blast radius matters.
+- Horus evidence is grounded but **not infallible**. State when it is missing, stale,
+  ambient, or not structurally linked to the symptom.
+- **Do not invent runtime evidence** Horus did not collect. If **Horus returns nothing**,
+  say so explicitly — never **hallucinate** a result.
+- Prefer Horus's exact source locations over guesses. If Horus conflicts with direct
+  source inspection, report the discrepancy.
+- Horus is **read-only** evidence collection. **Never use Horus to mutate production**
+  systems, and do not use it as a substitute for tests, typechecks, or source inspection.
+- Report back: conclusion; Horus evidence + exact source locations; gaps / weak / stale
+  evidence; **blast radius** or risk; recommended next action.
 `;
 
 function skillFrontmatter(target: SkillTarget): string {

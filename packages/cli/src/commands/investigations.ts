@@ -39,7 +39,10 @@ function printRow(id: string, createdAt: Date, title: string | null, marker?: st
 export async function runInvestigations(opts: {
   config?: string;
   limit?: number;
+  /** Emit compact machine-readable JSON on stdout instead of human text. */
+  json?: boolean;
 }): Promise<number> {
+  const json = opts.json === true;
   const repoRoot = repoRootOrCwd();
   const cloudCfg = readCloudConfig(repoRoot);
   const cloudLinked = isCloudActive(cloudCfg);
@@ -66,13 +69,28 @@ export async function runInvestigations(opts: {
     localError = err as Error;
   }
   if (localError && !cloudLinked) {
+    // stdout must stay VALID JSON under --json (agents parse it); the human
+    // message still goes to stderr in both modes.
+    if (json) {
+      console.log(JSON.stringify({ error: localError.message, investigations: [], count: 0 }, null, 2));
+    }
     console.error(pc.red(localError.message));
     return 1;
   }
 
+  const items: Array<{ id: string; createdAt: string; title: string | null; cloud: boolean }> =
+    localRows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      title: r.title,
+      cloud: false,
+    }));
+
   const localIds = new Set(localRows.map((r) => r.id));
-  for (const row of localRows) {
-    printRow(row.id, row.createdAt, row.title);
+  if (!json) {
+    for (const row of localRows) {
+      printRow(row.id, row.createdAt, row.title);
+    }
   }
 
   // 2. Cloud-linked: append team investigations that don't exist locally.
@@ -89,7 +107,13 @@ export async function runInvestigations(opts: {
           const localId = localIdFromCloudRow(row);
           if (localId !== null && localIds.has(localId)) continue; // already listed locally
           cloudOnly += 1;
-          printRow(row.id, new Date(row.createdAt), row.title, '[cloud]');
+          items.push({
+            id: row.id,
+            createdAt: new Date(row.createdAt).toISOString(),
+            title: row.title,
+            cloud: true,
+          });
+          if (!json) printRow(row.id, new Date(row.createdAt), row.title, '[cloud]');
         }
         if (cloudOnly > 0) {
           cloudNote = '[cloud] entries live in Horus Cloud (cloud.horus.sh) — not locally replayable';
@@ -98,6 +122,26 @@ export async function runInvestigations(opts: {
         cloudNote = 'cloud list unavailable — showing local investigations only';
       }
     }
+  }
+
+  if (json) {
+    const notes: string[] = [];
+    if (localError) {
+      notes.push(`local audit store unavailable — replay needs it (${localError.message})`);
+    }
+    if (cloudNote !== null) notes.push(cloudNote);
+    console.log(
+      JSON.stringify(
+        {
+          investigations: items,
+          count: items.length,
+          ...(notes.length > 0 ? { notes } : {}),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
   }
 
   if (localRows.length === 0 && cloudOnly === 0 && localError === null) {

@@ -116,6 +116,13 @@ export function computeFreshness(opts: {
   meta?: IndexMeta | null;
   /** Commits since the index was built (from `commitsSince`); null/undefined when unknown. */
   commitsSinceIndex?: number | null;
+  /**
+   * Whether the config has ANY runtime connector stanza (from `report.sourceStatus`).
+   * Config drives the no-runtime-evidence caveat: zero stanzas ⇒ a neutral statement of
+   * the evidence basis; configured-but-empty ⇒ point at `horus doctor`. Absent (legacy
+   * callers) ⇒ the neutral statement.
+   */
+  anyRuntimeConnector?: boolean;
 }): Freshness {
   const now = Date.parse(opts.nowIso);
   const meta = opts.meta !== undefined ? opts.meta : readIndexMeta(opts.repoRoot);
@@ -160,8 +167,13 @@ export function computeFreshness(opts: {
       ? { fromIso: new Date(stamps[0]!).toISOString(), toIso: new Date(stamps[stamps.length - 1]!).toISOString() }
       : null;
   if (runtime.length === 0) {
+    // Config drives the wording: with no runtime connector stanzas this is the expected
+    // evidence basis (never a "connect X" pitch); with configured connectors that
+    // produced nothing, the caveat points at diagnosis instead.
     caveats.push(
-      'no runtime evidence — source-only investigation; connect logs/metrics/queues for deeper grounding',
+      opts.anyRuntimeConnector === true
+        ? 'no runtime evidence collected despite configured connectors — check `horus doctor`'
+        : 'no runtime evidence — findings rest on code, git history, and topology',
     );
   }
 

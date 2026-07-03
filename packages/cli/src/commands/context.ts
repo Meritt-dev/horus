@@ -9,11 +9,59 @@ import type { ContextResponse } from "../lib/cloud/api.js";
 import { CloudError, CloudOfflineError } from "../lib/cloud/api.js";
 import { readCloudConfig, writeCloudConfig, isCloudActive } from "../lib/cloud/context-store.js";
 import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
+import { selectSearch, isInteractive, ExitPromptError } from "../lib/tty-selector.js";
 
 interface ResolvedTriple {
   organization: { id: string; slug: string };
   workspace: { id: string; slug: string };
   project: { id: string; slug: string };
+}
+
+/** The `local` sentinel offered as the first pick in the context selector. */
+const LOCAL_CHOICE = "local  ·  ~/.horus local Postgres";
+
+/**
+ * Interactively pick an `org/workspace/project` triple (or `local`) from the
+ * accessible cloud context — so the user never types a slug. Returns the chosen
+ * target string (`"local"` or `"org/ws/project"`), or `null` if nothing is
+ * pickable / the user is non-interactive (the caller then requires an explicit
+ * target). Shared by `context use` and `cloud link`; reuses the same
+ * `selectSearch` picker the connect wizard uses.
+ */
+export async function pickContextTarget(
+  ctx: ContextResponse,
+  opts: { includeLocal?: boolean; message?: string } = {},
+): Promise<string | null> {
+  const labels: string[] = [];
+  const targetByLabel = new Map<string, string>();
+  if (opts.includeLocal) {
+    labels.push(LOCAL_CHOICE);
+    targetByLabel.set(LOCAL_CHOICE, "local");
+  }
+  for (const project of ctx.projects) {
+    const triple = tripleLabel(ctx, project.id);
+    if (!triple) continue;
+    // Show the human project name alongside the slug triple; return the triple.
+    const label = project.name && project.name !== project.slug ? `${triple}  (${project.name})` : triple;
+    labels.push(label);
+    targetByLabel.set(label, triple);
+  }
+  if (targetByLabel.size === 0 || (opts.includeLocal && targetByLabel.size === 1)) {
+    // Nothing to pick beyond `local` — let the caller handle the empty case.
+    return opts.includeLocal && targetByLabel.size === 1 ? "local" : null;
+  }
+  if (!isInteractive()) return null;
+  try {
+    const picked = await selectSearch({
+      message: opts.message ?? "Select a context for this repo",
+      choices: labels,
+      pageSize: 12,
+    });
+    return targetByLabel.get(picked) ?? null;
+  } catch (err) {
+    if (err instanceof ExitPromptError) throw err;
+    return null;
+  }
 }
 
 /** Resolves `org/workspace/project` slugs against the user's accessible context. */
@@ -79,8 +127,40 @@ export async function runContextList(opts: { cwd?: string } = {}): Promise<numbe
   }
 }
 
-export async function runContextUse(target: string, opts: { cwd?: string } = {}): Promise<number> {
+export async function runContextUse(
+  target?: string,
+  opts: { cwd?: string } = {},
+): Promise<number> {
   const root = repoRootOrCwd(opts.cwd);
+
+  // No target given → pick from the accessible cloud contexts (plus `local`)
+  // instead of erroring. Requires login + a TTY; otherwise ask for an explicit target.
+  if (target === undefined || target === "") {
+    const session = authedClient();
+    if (!session) {
+      console.error(
+        pc.red(`Not logged in.`) +
+          ` Run ${pc.bold("horus login")} first, or pass a target: ${pc.bold("horus context use local")}.`,
+      );
+      return 1;
+    }
+    let ctx: ContextResponse;
+    try {
+      ctx = await session.client.context();
+    } catch (err) {
+      return reportCloudError(err);
+    }
+    const picked = await pickContextTarget(ctx, { includeLocal: true });
+    if (!picked) {
+      console.error(
+        pc.red("No context selected.") +
+          `\n  Pass a target explicitly: ${pc.bold("horus context use local")} or ${pc.bold("horus context use <org>/<workspace>/<project>")}.` +
+          `\n  Run ${pc.bold("horus context list")} to see what you can use.`,
+      );
+      return 1;
+    }
+    target = picked;
+  }
 
   if (target === "local") {
     const cfg = readCloudConfig(root) ?? { context: "local" as const };

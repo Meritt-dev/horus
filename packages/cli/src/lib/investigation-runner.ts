@@ -49,6 +49,7 @@ import { investigate, createLocalMemoryStore } from '@horus/engine';
 import type { InvestigationReport, CauseCandidate } from '@horus/engine';
 import { applyReranker, isRerankerModel } from '@horus/eval';
 import { resolveSourceHostUrl } from './ensure-host.js';
+import { readIndexMeta, STALE_INDEX_MS } from './freshness.js';
 
 /**
  * Everything a single `investigate()` call needs: the resolved env, the live connectors,
@@ -226,6 +227,12 @@ export async function runOneInvestigation(
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
   const rerank = loadReranker();
+  // Stale-index freshness feeds the engine's next-step routing: when the index is
+  // behind, `horus init` must appear as a real next step, not only as a banner caveat.
+  const indexMeta = readIndexMeta(renv.path);
+  const indexedAtMs = indexMeta?.lastIndexedAt ? Date.parse(indexMeta.lastIndexedAt) : NaN;
+  const staleIndex =
+    !Number.isNaN(indexedAtMs) && Date.now() - indexedAtMs > STALE_INDEX_MS;
   const investigation = investigate(
     {
       hint: input.hint,
@@ -256,17 +263,22 @@ export async function runOneInvestigation(
       redisState: ctx.redisState,
       metrics: ctx.metrics,
       repoPath: renv.path,
+      // CONFIGURED = the connector STANZA exists in the config — never resolved-URL
+      // truthiness. A stanza whose urlEnv/secret is missing in this shell is
+      // configured-but-unavailable (the engine derives that from provider absence),
+      // not "not configured"; checking `?.url` here collapsed the two.
       connectors: {
-        elasticsearch: !!renv.connectors.elasticsearch?.url,
-        grafana: !!renv.connectors.grafana?.url,
-        mongodb: !!renv.connectors.mongodb?.url,
-        postgres: !!renv.connectors.postgres?.url,
+        elasticsearch: !!renv.connectors.elasticsearch,
+        grafana: !!renv.connectors.grafana,
+        mongodb: !!renv.connectors.mongodb,
+        postgres: !!renv.connectors.postgres,
         sentry: !!renv.connectors.sentry,
         axiom: !!renv.connectors.axiom,
         shopify: !!renv.connectors.shopify,
-        redis: !!renv.connectors.redis?.url,
+        redis: !!renv.connectors.redis,
         queue: !!ctx.queue,
       },
+      staleIndex,
       // HOR-404: inject the learned reranker only when enabled + proven (loadReranker gates both);
       // CONTEXT-ONLY — it reorders eligible causes, never touches confidence/verdict/ceilings.
       ...(rerank ? { rerank } : {}),

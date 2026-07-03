@@ -30,6 +30,8 @@ export async function runChanges(
   opts: {
     config?: string;
     json?: boolean;
+    /** With --json: uncapped raw structure instead of the compact summary. */
+    full?: boolean;
     ai?: boolean;
     aiModel?: string;
     /** Injectable AI provider for tests — bypasses credential resolution. */
@@ -51,7 +53,7 @@ export async function runChanges(
     const report = await changeImpact({ base, compare }, { code });
 
     if (opts.json) {
-      console.log(changeImpactToJSON(report));
+      console.log(changeImpactToJSON(report, { full: opts.full }));
     } else {
       console.log(renderChangeImpact(report));
       if (opts.ai) {

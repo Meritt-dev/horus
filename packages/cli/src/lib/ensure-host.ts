@@ -255,7 +255,7 @@ export async function ensureSourceHost(
   }
 
   // Never became healthy — drop the ownership record so `horus stop` doesn't chase a
-  // dead PID (mirrors index-repo's behaviour on a failed spawn).
+  // dead PID (mirrors init-index's behaviour on a failed spawn).
   removeSpawnedHostRecord(root);
   return { ok: false, reason: 'unhealthy' };
 }

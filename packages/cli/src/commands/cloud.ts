@@ -23,7 +23,7 @@ import {
   type GitRemote,
 } from "../lib/cloud/git.js";
 import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
-import { resolveTriple, reportCloudError, syncMetaLines } from "./context.js";
+import { resolveTriple, reportCloudError, syncMetaLines, pickContextTarget } from "./context.js";
 import { openDb, listInvestigationsWithReports } from "@horus/db";
 import type { InvestigationReport } from "@horus/engine";
 import { resolveDbUrl } from "../lib/db-url.js";
@@ -50,7 +50,7 @@ export async function runCloudLink(
   if (remote) console.log(pc.dim(`Detected git remote: ${remote.remoteUrl}`));
 
   // Resolve the target project, in order of preference:
-  //   1. explicit --project flag
+  //   1. explicit <org/workspace/project> argument
   //   2. existing cloud binding for this repo
   //   3. AUTO-MATCH: a cloud project whose remoteUrl matches this git remote
   //   4. CREATE-FROM-REPO: interactively create a project from this repo
@@ -77,14 +77,24 @@ export async function runCloudLink(
     }
   }
 
-  // 4. Nothing matched — offer to create a project from this repo.
+  // 4. Nothing auto-matched — let the user PICK from their accessible projects
+  // (no slug typing) before falling back to creating one. Skipped with -y/--yes
+  // (non-interactive) and when there are no accessible projects.
+  if (!target && !opts.yes && ctx.projects.length > 0) {
+    const picked = await pickContextTarget(ctx, {
+      message: "Link this repo to which cloud project?",
+    });
+    if (picked && picked !== "local") target = picked;
+  }
+
+  // 5. Still nothing — offer to create a project from this repo.
   if (!target) {
     const created = await createProjectFromRepo(session.client, ctx, remote, opts.yes);
     if (created === "aborted") return 1;
     if (!created) {
       console.error(
         pc.red("No project to link.") +
-          `\n  Run ${pc.bold("horus cloud link")} in a TTY to create one, pass ${pc.bold("--project <org/workspace/project>")}, ` +
+          `\n  Run ${pc.bold("horus cloud link")} in a TTY to pick or create one, pass a target (${pc.bold("horus cloud link <org/workspace/project>")}), ` +
           `or create a project at ${pc.bold("https://cloud.horus.sh")}.`,
       );
       return 1;
