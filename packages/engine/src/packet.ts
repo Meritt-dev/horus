@@ -62,7 +62,7 @@ export interface HonestyHeader {
    */
   routing: RouteStep[];
   /** Which sources backed the run, preserving empty-vs-failed honesty. */
-  sources: { source: string; status: 'contributed' | 'empty' | 'failed' | 'not-configured' }[];
+  sources: { source: string; status: 'contributed' | 'empty' | 'failed' | 'not-configured' | 'unavailable' }[];
 }
 
 export interface ProblemSection {

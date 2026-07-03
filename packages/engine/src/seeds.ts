@@ -6,6 +6,7 @@
  */
 
 import type { Symbol } from '@horus/core';
+import type { CodeProvider } from '@horus/connectors';
 
 export interface RankedSeed {
   symbol: Symbol;
@@ -198,6 +199,27 @@ export function parseNamedSymbols(hint: string): string[] {
   return found.map((f) => f.name);
 }
 
+/**
+ * The symbol's owning container (class/receiver). Search rows from the typed
+ * /symbols/exact endpoint often OMIT `className` — but the graph id carries it
+ * (`<kind>:<path>:<Owner>.<name>`), so derive it there. Without this, qualified
+ * container matching silently failed on search results (gin `Engine.Run` read
+ * as bare-exact; celery/rq picked wrong receivers).
+ */
+export function symbolOwner(s: Symbol): string | undefined {
+  if (s.className !== undefined && s.className !== '') return s.className;
+  const lastSegment = s.id.split(':').pop() ?? '';
+  const dot = lastSegment.lastIndexOf('.');
+  if (dot > 0) {
+    const owner = lastSegment.slice(0, dot);
+    const member = lastSegment.slice(dot + 1);
+    if (member.toLowerCase() === s.name.toLowerCase() && /^[A-Za-z_$][\w$]*$/.test(owner)) {
+      return owner;
+    }
+  }
+  return undefined;
+}
+
 /** Split a camel/Pascal/snake/kebab identifier into lowercase word tokens. */
 function identTokens(s: string): string[] {
   return s
@@ -228,8 +250,9 @@ export function qualifierBoost(s: Symbol, q: SeedQualifier): number {
     // variant of Foo (e.g. `product.service.ts` for `ProductService`), OR the signature names Foo.
     const want = identTokens(q.container);
     const joined = want.join('');
+    const owner = symbolOwner(s);
     containerMatch =
-      (s.className !== undefined && s.className.toLowerCase() === q.container.toLowerCase()) ||
+      (owner !== undefined && owner.toLowerCase() === q.container.toLowerCase()) ||
       (want.length > 0 && want.every((t) => fp.includes(t))) ||
       (joined.length > 0 && fp.includes(joined)) ||
       (s.signature !== undefined && s.signature.toLowerCase().includes(q.container.toLowerCase()));
@@ -468,6 +491,32 @@ function explainKindWeight(s: Symbol): number {
 }
 
 /**
+ * Score one exact-name candidate (the shared per-candidate weights behind
+ * {@link rankExactCandidates} and {@link resolveSymbolQuery}). `includeTests`
+ * lifts the test/example demotion — the caller explicitly asked for tests.
+ */
+function scoreExactCandidate(query: string, symbol: Symbol, includeTests: boolean): number {
+  let score = 0;
+  if (symbol.name === query) score += 8; // exact case: Command ≠ command
+  score += explainKindWeight(symbol);
+  if (
+    (!includeTests && isDeprioritizedSeedPath(symbol.filePath)) ||
+    isCodegenPath(symbol.filePath)
+  ) {
+    score -= 6;
+  }
+  // Type-declaration shims: axios `explain "Axios"` picked index.d.ts:623 over the
+  // lib/core/Axios.js implementation (both class-kind, LOC capped → tie broken by
+  // search order). A .d.ts describes the API; the implementation IS the symbol.
+  if (/\.d\.[cm]?ts$/i.test(symbol.filePath)) score -= 3;
+  // Body size as a centrality proxy, log-dampened: a 545-line class beats a
+  // 10-line re-export subclass, but 5000 lines doesn't beat everything forever.
+  const loc = (symbol.endLine ?? 0) - (symbol.startLine ?? 0);
+  if (loc > 0) score += Math.min(4, Math.log2(loc + 1));
+  return score;
+}
+
+/**
  * Rank same-named candidates for an exact-name query (`explain Foo`). Returns the
  * candidates matching `query` case-insensitively, best first; empty when none match
  * exactly (callers keep their fuzzy-fallback behavior).
@@ -475,24 +524,182 @@ function explainKindWeight(s: Symbol): number {
 export function rankExactCandidates(query: string, symbols: Symbol[]): Symbol[] {
   const q = query.toLowerCase();
   const exact = symbols.filter((s) => s.name.toLowerCase() === q);
-  const scored = exact.map((symbol, i) => {
-    let score = 0;
-    if (symbol.name === query) score += 8; // exact case: Command ≠ command
-    score += explainKindWeight(symbol);
-    if (isDeprioritizedSeedPath(symbol.filePath) || isCodegenPath(symbol.filePath)) score -= 6;
-    // Type-declaration shims: axios `explain "Axios"` picked index.d.ts:623 over the
-    // lib/core/Axios.js implementation (both class-kind, LOC capped → tie broken by
-    // search order). A .d.ts describes the API; the implementation IS the symbol.
-    if (/\.d\.[cm]?ts$/i.test(symbol.filePath)) score -= 3;
-    // Body size as a centrality proxy, log-dampened: a 545-line class beats a
-    // 10-line re-export subclass, but 5000 lines doesn't beat everything forever.
-    const loc = (symbol.endLine ?? 0) - (symbol.startLine ?? 0);
-    if (loc > 0) score += Math.min(4, Math.log2(loc + 1));
-    return { symbol, score, i };
-  });
+  const scored = exact.map((symbol, i) => ({
+    symbol,
+    score: scoreExactCandidate(query, symbol, false),
+    i,
+  }));
   return scored
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
     .map((s) => s.symbol);
+}
+
+// ---------------------------------------------------------------------------
+// THE canonical symbol-query resolver (dogfood: search/explain/investigate/
+// blast-radius resolved the same query to DIFFERENT symbols — explain ranked via
+// rankExactCandidates, investigate/blast-radius via rankSeeds, search not at all,
+// and qualified `Class.method` / `receiver.method` queries fell back to fuzzy
+// bare-name matches). Every command resolves a symbol-shaped query through
+// resolveSymbolQuery/resolveSeedSymbol; rankSeeds remains the layer for PROSE
+// incident hints and consumes the same qualifier via scoreSeed's qualifierBoost.
+// ---------------------------------------------------------------------------
+
+/** How a query resolved: exact qualified (Class.method matched name+container),
+ *  exact (name matched), fuzzy (no name match — closest candidates), none. */
+export type ResolutionKind = 'exact-qualified' | 'exact' | 'fuzzy' | 'none';
+
+export interface SymbolResolution {
+  kind: ResolutionKind;
+  /** Best-first, deterministic. `[0]` is the resolution every command must use. */
+  candidates: Symbol[];
+  /**
+   * True when ≥2 top-tier exact candidates tie at the top score in different files —
+   * the ranking is still deterministic, but callers should DISCLOSE the ambiguity
+   * (suggest `Class.method` / `path:symbol`) instead of implying a unique match.
+   */
+  ambiguous: boolean;
+  /** The parsed qualifier, when the query was `Class.method`/`obj.method`/`path:sym`. */
+  qualifier: SeedQualifier | null;
+}
+
+/** File extensions that make a whole-query `x.y` a filename, not a qualified symbol. */
+const FILE_EXT_RE =
+  /^(js|cjs|mjs|jsx|ts|tsx|d|py|go|rs|java|kt|rb|php|cs|c|h|cpp|hpp|json|ya?ml|toml|md|txt|sh|css|html|xml|sql|lock)$/i;
+
+/**
+ * Parse a WHOLE QUERY (not a prose hint) as a symbol reference. Unlike
+ * {@link parseSeedQualifier} — which must be conservative inside prose and so only
+ * accepts Capitalized containers — a bare query that IS a dotted pair is qualified
+ * regardless of receiver case: `Reply.hijack`, `reply.hijack`, and `app.use` all
+ * mean "the method, on that receiver". A trailing file extension (`index.js`)
+ * stays a filename. Dotted chains keep the LAST segment pair
+ * (`celery.app.Task.apply_async` → container `Task`, symbol `apply_async`).
+ */
+export function parseSymbolQuery(query: string): SeedQualifier | null {
+  const t = query.trim();
+  // path:symbol form first (shares the prose parser's semantics).
+  const pathMatch = new RegExp(`^${PATH_QUALIFIER.source.replace('(?:^|[\\s(])', '')}$`).exec(t);
+  if (pathMatch && pathMatch[1] !== undefined && pathMatch[2] !== undefined) {
+    const container = pathMatch[1].replace(/^\.?\/+/, '');
+    if (container.length >= 2 && pathMatch[2].length >= 2) {
+      return { symbol: pathMatch[2], container, isPath: true };
+    }
+  }
+  if (t.includes('/')) return null; // path-like without the :symbol form — not a dotted pair
+  const m = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.([A-Za-z_$][\w$]*)$/.exec(t);
+  if (!m || m[1] === undefined || m[2] === undefined) return null;
+  if (FILE_EXT_RE.test(m[2])) return null; // `index.js`, `config.yaml`
+  const container = m[1].split('.').pop() ?? m[1];
+  if (container.length < 2 || m[2].length < 2) return null;
+  return { symbol: m[2], container, isPath: false };
+}
+
+/**
+ * Resolve a symbol-shaped query against a candidate pool — THE shared resolution
+ * semantics (requirement: explain/search/investigate/blast-radius agree):
+ *
+ *   1. exact-qualified — name matches the qualifier symbol AND the container
+ *      (className / file path / signature, via {@link qualifierBoost}).
+ *   2. exact — name matches the target (qualifier symbol, else the whole query).
+ *   3. fuzzy — nothing matched by name; candidates keep search order with
+ *      test/example paths demoted below product code.
+ *
+ * Within tiers 1–2, product code outranks tests/examples (unless `includeTests`),
+ * declaration kinds and bigger bodies win, exact case beats case-folded. Ties at
+ * the very top in different files set `ambiguous` — order stays deterministic.
+ */
+export function resolveSymbolQuery(
+  query: string,
+  symbols: Symbol[],
+  opts?: { includeTests?: boolean },
+): SymbolResolution {
+  const includeTests = opts?.includeTests === true;
+  const qualifier = parseSymbolQuery(query);
+  const target = (qualifier?.symbol ?? query.trim()).toLowerCase();
+
+  const exactAll = symbols.filter((s) => s.name.toLowerCase() === target);
+  const qualified =
+    qualifier !== null ? exactAll.filter((s) => qualifierBoost(s, qualifier) >= 40) : [];
+
+  const tier = qualified.length > 0 ? qualified : exactAll;
+  const kind: ResolutionKind =
+    qualified.length > 0
+      ? 'exact-qualified'
+      : exactAll.length > 0
+        ? 'exact'
+        : symbols.length > 0
+          ? 'fuzzy'
+          : 'none';
+
+  const caseTarget = qualifier?.symbol ?? query.trim();
+  // A class-owner match (`Router.route` on `impl Router`) is STRONGER evidence than a
+  // path-token match (`path_router.rs` merely containing "router") — without this,
+  // pool order decided between them and commands could disagree (axum dogfood).
+  const ownerExact = (s: Symbol): number =>
+    qualifier !== null &&
+    !qualifier.isPath &&
+    symbolOwner(s)?.toLowerCase() === qualifier.container.toLowerCase()
+      ? 4
+      : 0;
+  const scoredTier = tier
+    .map((symbol, i) => ({
+      symbol,
+      score: scoreExactCandidate(caseTarget, symbol, includeTests) + ownerExact(symbol),
+      i,
+    }))
+    .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score));
+
+  // Remainder keeps the provider's relevance order, but product code goes first
+  // unless tests were explicitly requested (requirement 4).
+  const inTier = new Set(tier.map((s) => s.id));
+  const rest = symbols
+    .filter((s) => !inTier.has(s.id))
+    .map((symbol, i) => ({ symbol, i, deprio: !includeTests && isDeprioritizedSeedPath(symbol.filePath) }))
+    .sort((a, b) => (a.deprio === b.deprio ? a.i - b.i : a.deprio ? 1 : -1))
+    .map((r) => r.symbol);
+
+  const first = scoredTier[0];
+  const second = scoredTier[1];
+  const ambiguous =
+    kind !== 'fuzzy' &&
+    kind !== 'none' &&
+    first !== undefined &&
+    second !== undefined &&
+    first.score === second.score &&
+    first.symbol.filePath !== second.symbol.filePath;
+
+  return {
+    kind,
+    candidates: [...scoredTier.map((s) => s.symbol), ...rest],
+    ambiguous,
+    qualifier,
+  };
+}
+
+/**
+ * Search + resolve a symbol-shaped query against the source host — the async
+ * entry every command uses. For a qualified query the provider is also searched
+ * for the BARE symbol part (`Reply.hijack` → `hijack`): dotted queries often
+ * return nothing or the wrong receiver from raw search, and the exact method
+ * only surfaces via its bare name. Results are merged/deduped before ranking.
+ */
+export async function resolveSeedSymbol(
+  code: CodeProvider,
+  query: string,
+  opts?: { limit?: number; includeTests?: boolean },
+): Promise<SymbolResolution> {
+  const limit = opts?.limit ?? 20;
+  const qualifier = parseSymbolQuery(query);
+  const pool = await code.searchSymbols(query, limit);
+  if (qualifier !== null) {
+    // ALWAYS merge a wider bare-name search: `apply_async` has a dozen receivers
+    // (group/chord/Signature/Task…) — a wrong-receiver name match in the primary
+    // pool must not suppress the search that surfaces the right one (celery dogfood).
+    const extra = await code.searchSymbols(qualifier.symbol, Math.max(limit, 30));
+    const seen = new Set(pool.map((s) => s.id));
+    for (const s of extra) if (!seen.has(s.id)) pool.push(s);
+  }
+  return resolveSymbolQuery(query, pool, { includeTests: opts?.includeTests ?? false });
 }
 
 export function rankSeeds(

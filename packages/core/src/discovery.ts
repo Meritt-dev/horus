@@ -1,9 +1,10 @@
 /**
  * Local-project discovery + registry (HOR-37).
  *
- * Horus can be driven git-style: a repo carries a `.horus/config.json`, discovered
- * by walking up from the working directory; a global registry at
- * `~/.horus/registry.json` lets `--name` resolve a project from anywhere.
+ * Horus is driven git-style: a repo carries a `.horus/config.json`, discovered by
+ * walking up from the working directory — the config/cwd IS the project identity.
+ * The global registry at `~/.horus/registry.json` only backs the informational
+ * `projects`/`hosts` listings; it is NOT a targeting mechanism (no --name/--project).
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs';

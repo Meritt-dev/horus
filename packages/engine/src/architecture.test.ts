@@ -277,4 +277,85 @@ describe('async-boundary hygiene (dogfood: fixture + code-fragment queue names)'
     const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
     expect(m.asyncBoundaries.map((b) => b.queueName)).toEqual(['real-queue']);
   });
+
+  it('rejects template placeholders and whitespace-containing names', async () => {
+    const { discoverArchitecture: discover } = await import('./architecture.js');
+    const EDGES: QueueEdge[] = [
+      edge('real-queue', 'p', 'Producer', 'Worker'),
+      { ...edge('x1', 'p', 'A', 'B'), queueName: '<name>' },
+      { ...edge('x2', 'p', 'A', 'B'), queueName: '${queueName}' },
+      { ...edge('x3', 'p', 'A', 'B'), queueName: '{name}' },
+      { ...edge('x4', 'p', 'A', 'B'), queueName: 'two words' },
+      { ...edge('x5', 'p', 'A', 'B'), queueName: 'tab\tname' },
+    ];
+    vi.mocked((await import('@horus/db')).listQueueEdges).mockResolvedValueOnce(EDGES as never);
+    const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
+    expect(m.asyncBoundaries.map((b) => b.queueName)).toEqual(['real-queue']);
+  });
+
+  it('drops boundaries whose only evidence is co-located *.test.ts files (dogfood: emails/reports)', async () => {
+    const { discoverArchitecture: discover } = await import('./architecture.js');
+    // The old dir-based regex missed co-located tests entirely — horus's own
+    // entrypoint.test.ts fixtures rendered `emails` / `reports` queues.
+    const EDGES: QueueEdge[] = [
+      edge('real-queue', 'p', 'Producer', 'Worker'),
+      {
+        ...edge('emails', 'p', 'fakeEnqueue', 'fakeWorker'),
+        producerFile: 'apps/horus/src/entrypoint.test.ts',
+        workerFile: 'apps/horus/src/entrypoint.test.ts',
+      },
+      {
+        ...edge('reports', 'p', 'seedProducer', 'seedWorker'),
+        producerFile: 'packages/engine/src/__fixtures__/queues.ts',
+        workerFile: null,
+      },
+    ];
+    vi.mocked((await import('@horus/db')).listQueueEdges).mockResolvedValueOnce(EDGES as never);
+    const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
+    expect(m.asyncBoundaries.map((b) => b.queueName)).toEqual(['real-queue']);
+  });
+
+  it('drops bare generic names with NO file evidence, keeps them with product files', async () => {
+    const { discoverArchitecture: discover } = await import('./architecture.js');
+    const noFiles = (e: QueueEdge): QueueEdge => ({ ...e, producerFile: null, workerFile: null });
+    const EDGES: QueueEdge[] = [
+      // Generic residue without any file behind it (dogfood: ALPHA / SEED_PRODUCTS / name).
+      noFiles(edge('ALPHA', 'p', 'A', 'B')),
+      noFiles(edge('SEED_PRODUCTS', 'p', 'A', 'B')),
+      noFiles(edge('name', 'p', 'A', 'B')),
+      // A REAL queue that happens to carry a generic word, with product file evidence.
+      edge('emails', 'p', 'EmailProducer', 'EmailWorker'),
+      // A distinctive name without file evidence survives (no reason to distrust it).
+      noFiles(edge('zoho-sync-batch', 'p', 'A', 'B')),
+    ];
+    vi.mocked((await import('@horus/db')).listQueueEdges).mockResolvedValueOnce(EDGES as never);
+    const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
+    expect(m.asyncBoundaries.map((b) => b.queueName).sort()).toEqual(['emails', 'zoho-sync-batch']);
+  });
+
+  it('drops producer-only GENERIC boundaries even from product code (self-matching extractor)', async () => {
+    const { discoverArchitecture: discover } = await import('./architecture.js');
+    // Dogfood on horus itself: the stitcher's own `X_QUEUE_NAME` extraction literals in
+    // packages/stitcher/src/extract.ts produced a queue named "name" with producers and
+    // ZERO workers. A generic name needs a REAL crossing (producer AND worker) to count.
+    const EDGES: QueueEdge[] = [
+      {
+        ...edge('name', 'p', 'extractQueueGraph', ''),
+        producerFile: 'packages/stitcher/src/extract.ts',
+        workerSymbol: null,
+        workerFile: null,
+      },
+      // A generic word WITH a real crossing survives…
+      edge('emails', 'p', 'EmailProducer', 'EmailWorker'),
+      // …and a distinctive producer-only boundary survives (workers may be off-repo).
+      {
+        ...edge('zoho-sync-batch', 'p', 'ZohoScheduler', ''),
+        workerSymbol: null,
+        workerFile: null,
+      },
+    ];
+    vi.mocked((await import('@horus/db')).listQueueEdges).mockResolvedValueOnce(EDGES as never);
+    const m = await discover({ code: fakeCode, db: fakeDb, project: 'p' });
+    expect(m.asyncBoundaries.map((b) => b.queueName).sort()).toEqual(['emails', 'zoho-sync-batch']);
+  });
 });

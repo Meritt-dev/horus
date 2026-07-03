@@ -9,6 +9,7 @@ import type { Symbol, Flow } from '@horus/core';
 
 vi.mock('@horus/connectors', () => ({
   gitLog: vi.fn(),
+  collectRepoState: vi.fn(async () => null),
 }));
 
 import * as connectors from '@horus/connectors';
@@ -194,5 +195,74 @@ describe('renderChangeTimeline', () => {
 
     // Must NOT have the old "Affected flows: N." pattern after the summary line
     expect(output).not.toMatch(/execution flow\(s\) affected\.\s+Affected flows:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dirty-worktree truth (repoState)
+// ---------------------------------------------------------------------------
+
+describe('reconstructChangeTimeline — dirty worktree', () => {
+  const mockRepoState = vi.mocked(connectors.collectRepoState);
+
+  const DIRTY = {
+    headSha: 'abc123',
+    branch: 'main',
+    dirty: true,
+    staged: [{ path: 'src/a.ts', status: 'M' }],
+    unstaged: [{ path: 'src/b.ts', status: 'M' }],
+    untracked: ['notes.md'],
+    stagedCount: 1,
+    unstagedCount: 1,
+    untrackedCount: 1,
+    insertions: 12,
+    deletions: 3,
+  };
+
+  it('0 commits over a dirty worktree says so instead of a bare "0 commit(s)"', async () => {
+    mockGitLog.mockResolvedValue([]);
+    mockRepoState.mockResolvedValue(DIRTY);
+    const t = await reconstructChangeTimeline(
+      { repoPath: '/repo', since: 'HEAD' },
+      { code: makeCode({ added: [], removed: [], modified: [] }) },
+    );
+    expect(t.repoState?.dirty).toBe(true);
+    expect(t.summary).toContain('working tree has uncommitted changes');
+    expect(t.summary).toContain('1 staged, 1 unstaged, 1 untracked');
+    expect(t.note).toContain('uncommitted changes');
+    const rendered = renderChangeTimeline(t);
+    expect(rendered).toContain('## Working tree (uncommitted)');
+  });
+
+  it('a clean repo keeps the standard note and no working-tree section', async () => {
+    mockGitLog.mockResolvedValue([makeCommit('a'.repeat(40), 'feat: x')]);
+    mockRepoState.mockResolvedValue({ ...DIRTY, dirty: false, stagedCount: 0, unstagedCount: 0, untrackedCount: 0, staged: [], unstaged: [], untracked: [] });
+    const t = await reconstructChangeTimeline(
+      { repoPath: '/repo' },
+      { code: makeCode({ added: [], removed: [], modified: [] }) },
+    );
+    expect(t.summary).not.toContain('uncommitted');
+    expect(renderChangeTimeline(t)).not.toContain('Working tree');
+  });
+
+  it('unreadable repo state reports null, never a fabricated clean/dirty', async () => {
+    mockGitLog.mockResolvedValue([]);
+    mockRepoState.mockRejectedValue(new Error('not a git repo'));
+    const t = await reconstructChangeTimeline(
+      { repoPath: '/nope' },
+      { code: makeCode({ added: [], removed: [], modified: [] }) },
+    );
+    expect(t.repoState).toBeNull();
+    expect(t.summary).not.toContain('uncommitted');
+  });
+
+  it('carries injected source-index freshness through to the timeline', async () => {
+    mockGitLog.mockResolvedValue([]);
+    mockRepoState.mockResolvedValue(null);
+    const t = await reconstructChangeTimeline(
+      { repoPath: '/repo', sourceIndex: { lastIndexedAt: '2026-07-01T00:00:00Z' } },
+      { code: makeCode({ added: [], removed: [], modified: [] }) },
+    );
+    expect(t.sourceIndex).toEqual({ lastIndexedAt: '2026-07-01T00:00:00Z' });
   });
 });

@@ -374,7 +374,7 @@ describe('runtimeSourceCaveat', () => {
         { source: 'queue', status: 'not-configured' },
       ]),
     });
-    expect(runtimeSourceCaveat(r)).toBe('source-only — logs, metrics, state, queue not configured');
+    expect(runtimeSourceCaveat(r)).toBe('no runtime evidence — logs, metrics, state, queue not in this config; findings rest on code, git, and topology');
   });
 
   it('returns null when all sources are empty (configured but no evidence)', () => {
@@ -396,7 +396,7 @@ describe('runtimeSourceCaveat', () => {
         { source: 'queue', status: 'not-configured' },
       ]),
     });
-    expect(runtimeSourceCaveat(r)).toBe('source-only — logs, queue not configured');
+    expect(runtimeSourceCaveat(r)).toBe('no runtime evidence — logs, queue not in this config; findings rest on code, git, and topology');
   });
 });
 
@@ -433,7 +433,7 @@ describe('renderReport — runtime source caveat (HOR-89)', () => {
     const lines = output.split('\n');
     const confIdx = lines.findIndex((l) => l.startsWith('Confidence:'));
     expect(lines[confIdx]).toBe('Confidence: 0.65');
-    expect(lines[confIdx + 1]).toBe('  ↳ source-only — logs, metrics, state, queue not configured');
+    expect(lines[confIdx + 1]).toBe('  ↳ no runtime evidence — logs, metrics, state, queue not in this config; findings rest on code, git, and topology');
   });
 });
 
@@ -466,7 +466,7 @@ describe('reportToMarkdown — runtime source caveat (HOR-89)', () => {
     });
     const output = reportToMarkdown(r);
     expect(output).toContain(
-      '**Confidence:** 0.65 _(source-only — logs, metrics, state, queue not configured)_',
+      '**Confidence:** 0.65 _(no runtime evidence — logs, metrics, state, queue not in this config; findings rest on code, git, and topology)_',
     );
   });
 });

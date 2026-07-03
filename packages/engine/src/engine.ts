@@ -67,7 +67,7 @@ import {
   autoInvestigationMemoryEnabled,
   captureInvestigationMemory,
 } from './auto-investigation-memory.js';
-import { detectMissingEvidence, gapNextActions, type ConnectorFlags } from './gaps.js';
+import { detectMissingEvidence, gapNextActions, hasAnyRuntimeConnector, type ConnectorFlags } from './gaps.js';
 import { route } from './router.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
 import type {
@@ -78,7 +78,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier, parseNamedSymbols } from './seeds.js';
+import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier, parseSymbolQuery, parseNamedSymbols } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import {
@@ -150,6 +150,12 @@ export interface EngineDeps {
   changeWindowDays?: number;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
+  /**
+   * True when the caller (CLI) knows the source index is stale/behind HEAD (from
+   * `.horus/source/meta.json` freshness). Feeds the router so `horus init` is offered
+   * as a REAL next step — the freshness banner and nextSteps must agree.
+   */
+  staleIndex?: boolean;
   /**
    * Optional authored-memory store (HOR-432). When supplied, every investigation auto-captures a
    * `kind:investigation` memory and links recurrences (`recurs-with`). Best-effort + CONTEXT-ONLY:
@@ -1374,6 +1380,14 @@ export function regressionSeedTouchedScore(focus: number | null): number {
 }
 
 /**
+ * Files-touched count above which a seed-touching commit is broad churn, not a focused
+ * change. ONE threshold shared by the cause ranker, the hypotheses engine, and the
+ * cause-chain gating — a report must never say "no specific cause identified (broad
+ * change)" in the summary while a hypothesis still calls the same change supported.
+ */
+export const BROAD_CHANGE_FILE_THRESHOLD = 14;
+
+/**
  * HOR-333: build the commit + changed-symbol citation clauses for the regression
  * cause title. Cites the most-recent 1-2 commits (short SHA + subject) from the
  * bounded git history and the changed symbol name(s) from the source-backend
@@ -1548,7 +1562,10 @@ export async function investigate(
   // HOR-337: a `Class.method` (ProductService.syncProduct) or `path/to/file:symbol` token in the
   // hint pins the seed to that EXACT symbol — strongly prefer the candidate whose name and
   // class/file both match, not an unrelated same-named symbol.
-  const seedQualifier = parseSeedQualifier(hint);
+  // Whole-hint qualified queries first (`Reply.hijack`, `reply.hijack`, `app.use` —
+  // lowercase receivers allowed when the hint IS the pair), then the conservative
+  // prose parser (Capitalized `Class.method` / `path:symbol` inside a sentence).
+  const seedQualifier = parseSymbolQuery(hint) ?? parseSeedQualifier(hint);
   const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode, seedQualifier, preferNamed);
   // Keep the top-ranked handful as candidate seeds — the wider pool was only needed so the
   // ranker could see (and promote) a lower-search-ranked implementation (HOR-361).
@@ -1930,6 +1947,30 @@ export async function investigate(
       {},
     );
     changeEvId = ev.id;
+  }
+
+  // Bounded per-commit timeline events: the aggregate change-range evidence above is
+  // UNTIMED, so the timeline showed one undated blob for the whole window. Each non-noise
+  // commit becomes a timed evidence entry (its author date), bounded so a busy window
+  // stays scannable. `perCommit` marks them so the hypotheses engine keeps treating the
+  // aggregate as THE change signal (these are timeline detail, not extra support).
+  if (recentChanges !== undefined && !recentChanges.degenerate && changeEvId !== undefined) {
+    const PER_COMMIT_EVENT_CAP = 8;
+    const timedCommits = recentChanges.commits
+      .filter((c) => !isNoiseCommit(c))
+      .slice(0, PER_COMMIT_EVENT_CAP);
+    for (const c of timedCommits) {
+      const sha = c.shortSha || c.sha.slice(0, 7);
+      const subject = (c.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, 70);
+      mkEv(
+        'commit',
+        `Commit ${sha}${subject ? ` "${subject}"` : ''} (${c.files.length} file(s))`,
+        { source: 'git', perCommit: true, sha: c.sha, files: c.files.slice(0, 10) },
+        {},
+        c.dateIso,
+        0.35,
+      );
+    }
   }
 
   // HOR-332: classify CHANGED CONFIG/MIGRATION files in the window as a distinct,
@@ -3076,6 +3117,25 @@ export async function investigate(
   // self-contradicted ("[0.80] recent change to X" vs "[0.18] none touched X"), a false-grounding
   // honesty violation. The flag deflates those sections consistently with the ranker.
   const recentChangeRelevant = seedTouchedByRelevantChange(recentChanges, top?.filePath);
+  // HOR-451 propagation: how FOCUSED is the seed-touching change — computed ONCE and shared by
+  // the cause ranker (title + score), the hypotheses engine, and (via hypothesis verdicts) the
+  // cause chains. A broad/diffuse change is weak evidence in EVERY section, not just the ranking.
+  const seedChangeFocus = recentChangeRelevant
+    ? seedTouchingCommitFocus(recentChanges, top?.filePath)
+    : null;
+  const seedChangeBroad =
+    seedChangeFocus !== null && seedChangeFocus > BROAD_CHANGE_FILE_THRESHOLD;
+
+  // A vague performance hint with NO metrics backend and a LOW-CONFIDENCE seed cannot
+  // support confident structural causes: the seed is a guess and nothing runtime
+  // corroborates it. Computed ONCE and applied to BOTH the cause ranking (demotion below)
+  // and the deployment-regression hypothesis so the sections agree.
+  const vaguePerfUnconfirmed =
+    looksPerformance(hint) &&
+    deps.metrics == null &&
+    latencyMetricEvIds.length === 0 &&
+    seedIsLowConfidence &&
+    !sourceImpactHint;
 
   // e2. CORRELATION (deterministic grouping + cause chains + missing evidence)
   // HOR-410 (round 2): pass real queue topology so the missing-evidence list does not
@@ -3095,6 +3155,9 @@ export async function investigate(
     sinceProvided: input.since !== undefined,
     suppressRuntimeHypotheses: sourceImpactHint,
     recentChangeRelevant,
+    seedChangeFocus,
+    seedChangeBroad,
+    vaguePerfGuess: vaguePerfUnconfirmed,
     graph,
     // HOR-435: per-segment duration breakdown (#2) + bimodal-population metric (#3) support
     // the benign-variance hypothesis (#4); the suggested categories de-anchor alert text (#1).
@@ -3457,13 +3520,14 @@ export async function investigate(
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
     const citation = formatRegressionCitation(recentChanges, changes, seedFile);
-    // HOR-451: how focused was the seed-touching change? Reused for BOTH the score and the title.
-    const seedFocus = seedInChanges ? seedTouchingCommitFocus(recentChanges, top?.filePath) : null;
+    // HOR-451: the SHARED focus verdict (computed once above, also fed to the hypotheses
+    // engine) — reused for BOTH the score and the title so no section can disagree.
+    const seedFocus = seedChangeFocus;
     // A BROAD/diffuse commit (touched many files) that merely included the seed's file is not a
     // credible specific culprit — naming it ("integrate PrestaShop API client may have caused
     // [unrelated symptom]") misleads, especially when no runtime evidence corroborates it. Reframe
     // honestly rather than confidently blaming the broad change.
-    const isBroadChange = seedFocus !== null && seedFocus > 14;
+    const isBroadChange = seedChangeBroad;
     // #3: only attribute the regression to the seed when an in-window commit actually touched the
     // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
     // pinning it on the newest unrelated commit.
@@ -3471,7 +3535,7 @@ export async function investigate(
       top && seedInChanges && !isBroadChange
         ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
         : top && seedInChanges && isBroadChange
-          ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; connect runtime evidence (logs/metrics) for a code-aware cause`
+          ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; treat it as unconfirmed without corroborating runtime evidence`
           : top
             ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
             : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
@@ -3853,6 +3917,25 @@ export async function investigate(
     ...(sourceImpactHint ? { mode: 'source-impact' as const } : {}),
   });
 
+  // Demote the structural cause categories to explicit unconfirmed guesses (below the
+  // headline bar) instead of letting them read as diagnoses — same shared verdict the
+  // deployment-regression hypothesis received above.
+  if (vaguePerfUnconfirmed) {
+    const STRUCTURAL_GUESS_CATEGORIES = new Set([
+      'deployment-regression',
+      'blast-radius',
+      'queue-path',
+    ]);
+    for (const c of rankedCauses) {
+      if (!STRUCTURAL_GUESS_CATEGORIES.has(c.category)) continue;
+      c.finalScore = Math.min(c.finalScore, 0.18);
+      if (!c.title.includes('unconfirmed structural guess')) {
+        c.title += ' — unconfirmed structural guess (vague performance hint: no metrics evidence, low-confidence seed)';
+      }
+    }
+    rankedCauses.sort((a, b) => b.finalScore - a.finalScore);
+  }
+
   // g. confidence
   // Pass ambient log IDs so unlinked runtime noise is weighted like structural
   // evidence rather than live confirmed signal (HOR-158).
@@ -3983,12 +4066,17 @@ export async function investigate(
 
   // Gap 4: a latency/performance hint with no metrics connector has nothing structural to
   // anchor to — say so instead of presenting an arbitrary low-confidence symbol as the finding.
+  // Config drives the advice: `connect grafana` is only suggested when the config already
+  // uses runtime connectors; a zero-connector config gets a neutral next step, not a nag.
   if (!explanatoryHint && looksPerformance(hint) && deps.metrics == null && seedIsLowConfidence) {
+    const perfNext = hasAnyRuntimeConnector(deps.connectors ?? {})
+      ? 'Connect a metrics source (`horus connect grafana`) and re-run, or name the specific slow operation.'
+      : 'Name the specific slow operation for a structural walkthrough.';
     summary =
       `${banner}"${hint}" reads as a latency/performance question, but no metrics connector ` +
       `(Grafana) is configured — response-time and error-rate trends can't be assessed from source ` +
       `structure alone${top ? ` (the closest structural match, ${top.name}, is a low-confidence guess, not a diagnosis)` : ''}. ` +
-      `Connect a metrics source (\`horus connect grafana\`) and re-run, or name the specific slow operation.`;
+      perfNext;
   }
 
   // HOR-385: source-impact mode LEADS with the structural impact result (blast radius, or an
@@ -4073,25 +4161,40 @@ export async function investigate(
 
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
+  // CONFIGURED (the caller's config-derived flags) is split from AVAILABLE (a provider
+  // was actually constructed for this run). Configured-but-unavailable — missing secret,
+  // unset URL env — is reported as exactly that, never as "not configured" and never as
+  // a phantom "collection failed".
+  const unavailable: string[] = deps.connectors
+    ? (
+        [
+          ['elasticsearch', deps.connectors.elasticsearch, deps.logs],
+          ['grafana', deps.connectors.grafana, deps.metrics],
+          ['mongodb', deps.connectors.mongodb, deps.mongo],
+          ['postgres', deps.connectors.postgres, deps.postgres],
+          ['sentry', deps.connectors.sentry, deps.sentry],
+          ['axiom', deps.connectors.axiom, deps.axiom],
+          ['shopify', deps.connectors.shopify, deps.shopify],
+          ['redis', deps.connectors.redis, deps.redisState],
+        ] as const
+      )
+        .filter(([, configured, provider]) => configured === true && provider == null)
+        .map(([kind]) => kind)
+    : [];
   const connectorFlags: ConnectorFlags = deps.connectors
     ? {
         ...deps.connectors,
-        // The queue connector is configured iff a BullMQ provider was constructed
-        // (queueForEnv returns null without a bullmq/queues Redis DB) — HOR-205.
+        // The queue connector is derived, not directly configured: it exists iff a
+        // BullMQ provider was constructed (queueForEnv returns null without a
+        // bullmq/queues Redis DB) — HOR-205.
         queue: deps.queue != null,
-        // Sentry is configured iff a provider was built; sentryCollected tracks whether
-        // its collection ran (distinguishes "no open issues" from "collection failed").
-        sentry: deps.sentry != null,
+        // sentry/axiom/shopify keep the caller's CONFIGURED values (no availability
+        // override) — a configured connector whose provider is missing lands in
+        // `unavailable` instead of silently flipping to "not configured".
         sentryCollected,
         sentryFailureReason,
-        // Axiom is configured iff a provider was built; axiomCollected tracks whether its
-        // collection ran (distinguishes "no matching rows" from "collection failed").
-        axiom: deps.axiom != null,
         axiomCollected,
         axiomFailureReason,
-        // Shopify is configured iff a provider was built (auth present); shopifyCollected
-        // tracks whether its query collection ran (vs "no queries supplied / failed").
-        shopify: deps.shopify != null,
         shopifyCollected,
         shopifyFailureReason,
         metricsCollected,
@@ -4104,6 +4207,7 @@ export async function investigate(
         queueCollected,
         queueFailureReason,
         sinceProvided: input.since !== undefined,
+        ...(unavailable.length > 0 ? { unavailable } : {}),
       }
     : {
         elasticsearch: deps.logs != null,
@@ -4173,23 +4277,21 @@ export async function investigate(
   const topRoutableGap = [...gapAnalysis.gaps]
     .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
     .find((g) => g.routeHint != null);
-  const anyRuntimeConnector = Boolean(
-    connectorFlags.elasticsearch ||
-      connectorFlags.sentry ||
-      connectorFlags.grafana ||
-      connectorFlags.redis ||
-      connectorFlags.postgres ||
-      connectorFlags.mongodb,
-  );
   report.nextSteps = route({
     command: 'investigate',
     intent,
     empty: false,
     lowConfidence: report.confidence < 0.5,
     topGap: topRoutableGap,
-    noConnectors: intent === 'incident' && !anyRuntimeConnector,
+    // The SAME predicate the gap consolidation uses (axiom/shopify/queue included) —
+    // gaps and nextSteps can never disagree about whether connector setup is worth
+    // suggesting.
+    anyRuntimeConnector: hasAnyRuntimeConnector(connectorFlags),
     metricsNull: looksPerformance(hint) && deps.metrics == null,
     degradedSourceIntelligence: report.degraded != null,
+    // Stale-index freshness (CLI-computed) routes to `horus init` — the freshness
+    // banner and nextSteps must tell the same story.
+    staleIndex: deps.staleIndex === true,
     seedName: top?.name,
     query: hint,
   });

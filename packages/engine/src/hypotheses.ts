@@ -77,6 +77,24 @@ export interface HypothesisContext {
    */
   recentChangeRelevant?: boolean;
   /**
+   * HOR-451 propagation: the files-touched count of the most-focused seed-touching commit
+   * (`seedTouchingCommitFocus`), and whether that makes the change BROAD churn
+   * (> BROAD_CHANGE_FILE_THRESHOLD). A relevant-but-broad change (a 22-file integration that
+   * incidentally touched the seed) must NOT produce a supported deployment-regression
+   * hypothesis while the cause ranking says "no specific cause identified — broad change".
+   * The hypothesis deflates to a low-confidence, unsupported statement so the validator
+   * cannot promote it and no cause-chain is narrated for it. Absent ⇒ focused (legacy).
+   */
+  seedChangeFocus?: number | null;
+  seedChangeBroad?: boolean;
+  /**
+   * True when the hint is a vague performance symptom with NO metrics backend and a
+   * low-confidence seed — the engine demotes structural causes to "unconfirmed
+   * structural guess" for such runs, and this hypothesis must deflate the same way
+   * (no commit support, low confidence) so the sections cannot contradict.
+   */
+  vaguePerfGuess?: boolean;
+  /**
    * Typed evidence graph built from all collected evidence.
    * When provided, hypothesis generation consults graph-derived implicated node sets
    * in addition to (not instead of) raw evidence kind checks, so topology links can
@@ -139,7 +157,14 @@ export function generateHypotheses(
   _correlation: CorrelationResult,
   ctx: HypothesisContext,
 ): Hypothesis[] {
-  const commitEvs = evidence.filter((e) => e.kind === 'commit');
+  // Per-commit timeline detail (`perCommit`) is excluded: the AGGREGATE change-range
+  // evidence is the change signal; the bounded per-commit entries exist for the timeline
+  // and must not multiply this hypothesis's apparent support.
+  const commitEvs = evidence.filter(
+    (e) =>
+      e.kind === 'commit' &&
+      (e.payload as { perCommit?: boolean } | null | undefined)?.perCommit !== true,
+  );
   const queueEvs = evidence.filter((e) => e.kind === 'queue-edge');
   const hasCommit = commitEvs.length > 0;
   const { queues } = ctx;
@@ -206,26 +231,45 @@ export function generateHypotheses(
   // statement — so this section never contradicts the relevance-gated ranking. `undefined` ⇒
   // legacy behaviour (treated as relevant) for callers that do not compute relevance.
   const hasRelevantCommit = hasCommit && ctx.recentChangeRelevant !== false;
-  const regressionStatement =
-    hasCommit && !hasRelevantCommit
-      ? 'Changes shipped in the window but none touched ' +
+  // HOR-451 propagation: a relevant-but-BROAD change (diffuse churn that merely included the
+  // seed's file) earns neither the 0.5 base nor the commit evidence as support — otherwise the
+  // validator promotes it to `supported` + a narrated cause-chain while the cause ranking says
+  // "no specific cause identified (broad change)": the exact internal contradiction this fixes.
+  const broadChange = hasRelevantCommit && ctx.seedChangeBroad === true;
+  // A vague perf hint (no metrics, low-confidence seed) deflates the same way broad
+  // churn does — the cause ranking calls these "unconfirmed structural guess" and this
+  // hypothesis must not stay `supported` against it.
+  const vagueGuess = hasRelevantCommit && !broadChange && ctx.vaguePerfGuess === true;
+  const regressionStatement = broadChange
+    ? `A broad recent change (${ctx.seedChangeFocus} files) touched ${ctx.seedLabel}'s file, but breadth alone is weak evidence — not clearly linked to the symptom.`
+    : vagueGuess
+      ? 'A recent change touching ' +
         ctx.seedLabel +
-        ' — a deployment regression of the seed is unlikely.'
-      : 'A recent change/deployment touching ' + ctx.seedLabel + ' introduced the fault.';
+        ' might relate to the performance symptom — unconfirmed structural guess (no metrics evidence, low-confidence seed).'
+      : hasCommit && !hasRelevantCommit
+        ? 'Changes shipped in the window but none touched ' +
+          ctx.seedLabel +
+          ' — a deployment regression of the seed is unlikely.'
+        : 'A recent change/deployment touching ' + ctx.seedLabel + ' introduced the fault.';
   hyps.push({
     id: globalThis.crypto.randomUUID(),
     category: 'deployment-regression',
     statement: regressionStatement,
-    confidence: hasRelevantCommit ? 0.5 : 0.15,
-    supportingEvidenceIds: hasRelevantCommit ? commitEvs.map((e) => e.id) : [],
+    confidence: broadChange ? 0.25 : vagueGuess ? 0.3 : hasRelevantCommit ? 0.5 : 0.15,
+    supportingEvidenceIds:
+      hasRelevantCommit && !broadChange && !vagueGuess ? commitEvs.map((e) => e.id) : [],
     contradictingEvidenceIds: [],
-    missingEvidence: hasRelevantCommit
-      ? []
-      : hasCommit
-        ? ['No in-window commit touched ' + ctx.seedLabel + ' — diff the actual change range or check upstream deps/data/config']
-        : ctx.sinceProvided
-          ? ['No git changes found in the specified range — verify the ref is accessible or use HEAD~N for exact commit ranges']
-          : ['A change/deployment range — re-run with --since <ref> to diff what shipped'],
+    missingEvidence: broadChange
+      ? ['Runtime evidence (logs/metrics) linking the broad change to the symptom — diff the change directly to narrow it']
+      : vagueGuess
+        ? ['Metrics evidence for the performance symptom — without it the change link stays an unconfirmed structural guess']
+        : hasRelevantCommit
+          ? []
+          : hasCommit
+            ? ['No in-window commit touched ' + ctx.seedLabel + ' — diff the actual change range or check upstream deps/data/config']
+            : ctx.sinceProvided
+              ? ['No git changes found in the specified range — verify the ref is accessible or use HEAD~N for exact commit ranges']
+              : ['A change/deployment range — re-run with --since <ref> to diff what shipped'],
   });
 
   // b+c. Per-queue hypotheses — one pair (queue-backlog + worker-slowdown) per queue.

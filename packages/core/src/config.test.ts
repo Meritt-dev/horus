@@ -199,19 +199,19 @@ describe('resolveEnvironment', () => {
     ).toThrow(/Unknown project: does-not-exist/);
   });
 
-  it('throws with a helpful list when multiple projects and no --project', () => {
+  it('throws with a helpful list (teaching --repo) when multiple projects and no selector', () => {
     expect(() => resolveEnvironment(TWO_PROJECT_CONFIG)).toThrow(
-      /Multiple projects configured/,
+      /Multiple projects configured; pass --repo <name>/,
     );
   });
 
-  it('selects the named project when --project is given', () => {
+  it('selects the named project when a selector (--repo) is given', () => {
     const renv = resolveEnvironment(TWO_PROJECT_CONFIG, { project: 'api-b' });
     expect(renv.project).toBe('api-b');
     expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8421');
   });
 
-  it('infers the project from the cwd repository when multiple projects + no --project', () => {
+  it('infers the project from the cwd repository when multiple projects + no selector', () => {
     // TWO_PROJECT_CONFIG has api-b at /repos/api-b
     expect(resolveEnvironment(TWO_PROJECT_CONFIG, { cwd: '/repos/api-b' }).project).toBe(
       'api-b',
@@ -528,6 +528,15 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
     delete process.env['HORUS_CONFIG'];
     await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/No Horus config found/);
     await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/horus init/);
+  });
+
+  it('outside-repo error is EXACTLY the documented sentence (config/cwd is the identity)', async () => {
+    // The wording is a contract: no registry targeting, no --name/--project — only
+    // a configured repo (cwd) or an explicit --config path.
+    delete process.env['HORUS_CONFIG'];
+    await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(
+      'No Horus config found. Run from a configured repo or pass --config <path>.',
+    );
   });
 
   it('throws a clear error when .js config has no default export', async () => {

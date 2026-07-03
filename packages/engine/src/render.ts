@@ -173,11 +173,20 @@ export function runtimeSourceCaveat(r: InvestigationReport): string | null {
   if (!status) return null;
   const contributed = status.sources.some((s) => s.status === 'contributed');
   if (contributed) return null;
+  // Configured-but-unavailable (missing secret/URL env) is a different truth from
+  // not-configured — name it and point at the diagnosis, not at connector setup.
+  const unavailable = status.sources
+    .filter((s) => s.status === 'unavailable')
+    .map((s) => s.source);
+  if (unavailable.length > 0) {
+    return `${unavailable.join(', ')} configured but unavailable in this run (missing credentials or URL) — see \`horus doctor\``;
+  }
   const notConfigured = status.sources
     .filter((s) => s.status === 'not-configured')
     .map((s) => s.source);
   if (notConfigured.length === 0) return null;
-  return `source-only — ${notConfigured.join(', ')} not configured`;
+  // Config drives behavior: state the evidence basis; never pitch connector setup here.
+  return `no runtime evidence — ${notConfigured.join(', ')} not in this config; findings rest on code, git, and topology`;
 }
 
 /** A clean, sectioned text report suitable for a terminal or a log. */

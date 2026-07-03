@@ -10,7 +10,12 @@ import type { Evidence } from '@horus/core';
 import type { ConnectorFlags } from './gaps.js';
 
 export type RuntimeSourceKind = 'logs' | 'metrics' | 'state' | 'queue';
-export type RuntimeSourceStatus = 'contributed' | 'empty' | 'failed' | 'not-configured';
+/**
+ * `unavailable` = configured in the project config but the provider could not be
+ * constructed for this run (missing secret / unset URL env). A different truth from
+ * `not-configured` (no stanza) and from `failed` (provider ran and threw).
+ */
+export type RuntimeSourceStatus = 'contributed' | 'empty' | 'failed' | 'not-configured' | 'unavailable';
 
 export interface RuntimeSourceEntry {
   source: RuntimeSourceKind;
@@ -33,10 +38,13 @@ function buildEntry(
   evidenceCount: number,
   failed: boolean,
   detail?: string,
+  unavailable = false,
 ): RuntimeSourceEntry {
   let status: RuntimeSourceStatus;
   if (!configured) {
     status = 'not-configured';
+  } else if (unavailable && evidenceCount === 0) {
+    status = 'unavailable';
   } else if (failed) {
     status = 'failed';
   } else if (evidenceCount > 0) {
@@ -110,6 +118,25 @@ export function buildRuntimeSourceStatus(
   const queueCount = evidence.filter((e) => e.kind === 'queue-state').length;
   const queueFailed = !!connectors.queue && queueCount === 0 && connectors.queueCollected === false;
 
+  // Configured-but-unavailable (missing secret/URL env — engine computes the list from
+  // config flags vs constructed providers): a source is unavailable when EVERY connector
+  // configured for it is unavailable.
+  const un = new Set(connectors.unavailable ?? []);
+  const logsUnavailable =
+    logsConfigured &&
+    (!connectors.elasticsearch || un.has('elasticsearch')) &&
+    (!connectors.sentry || un.has('sentry')) &&
+    (!connectors.axiom || un.has('axiom')) &&
+    un.size > 0;
+  const metricsUnavailable = metricsConfigured && un.has('grafana');
+  const stateUnavailable =
+    stateConfigured &&
+    (!connectors.redis || un.has('redis')) &&
+    (!connectors.mongodb || un.has('mongodb')) &&
+    (!connectors.postgres || un.has('postgres')) &&
+    (!connectors.shopify || un.has('shopify')) &&
+    un.size > 0;
+
   return {
     sources: [
       // Compatibility error keeps precedence over the generic failure category (its
@@ -120,9 +147,10 @@ export function buildRuntimeSourceStatus(
         logsCount,
         logsFailed,
         connectors.logsCompatibilityError ?? connectors.logsFailureReason,
+        logsUnavailable,
       ),
-      buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed, connectors.metricsFailureReason),
-      buildEntry('state', stateConfigured, stateCount, stateFailed, stateDetail),
+      buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed, connectors.metricsFailureReason, metricsUnavailable),
+      buildEntry('state', stateConfigured, stateCount, stateFailed, stateDetail, stateUnavailable),
       buildEntry('queue', queueConfigured, queueCount, queueFailed, queueFailed ? connectors.queueFailureReason : undefined),
     ],
   };

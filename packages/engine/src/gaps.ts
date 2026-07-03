@@ -140,6 +140,40 @@ export interface ConnectorFlags {
    * Changes the "deployment records" gap text to avoid redundant "re-run with --since" advice.
    */
   sinceProvided?: boolean;
+  /**
+   * Connector kinds that are CONFIGURED in the project config but whose provider could
+   * not be constructed for this run (missing secret, unset URL env, unloadable driver).
+   * Configured-but-unavailable is a different truth from not-configured: the gap text
+   * must say "configured but unavailable", never "not configured", and the connector
+   * still counts toward `hasAnyRuntimeConnector` (the config shows runtime intent).
+   */
+  unavailable?: string[];
+}
+
+/**
+ * The ONE definition of "this environment has a runtime connector" — shared by the gap
+ * consolidation below and the engine's next-step routing so reports can never contradict
+ * themselves (gaps saying runtime evidence is optional while nextSteps nag `connect`).
+ * Counts every runtime evidence source: logs/errors (elasticsearch, sentry, axiom),
+ * metrics (grafana), state (mongodb, postgres, redis, shopify), and queues.
+ */
+export function hasAnyRuntimeConnector(c: ConnectorFlags): boolean {
+  return Boolean(
+    c.elasticsearch ||
+      c.sentry ||
+      c.axiom ||
+      c.grafana ||
+      c.mongodb ||
+      c.postgres ||
+      c.redis ||
+      c.queue ||
+      c.shopify,
+  );
+}
+
+/** Is `kind` configured in the config but unavailable in this run (missing secret/env)? */
+function isUnavailable(c: ConnectorFlags, kind: string): boolean {
+  return c.unavailable?.includes(kind) ?? false;
 }
 
 /** A single dimension of missing evidence and its investigation impact. */
@@ -219,9 +253,21 @@ export function detectMissingEvidence(
     // Sentry and Axiom are additional ERROR/LOG sources (their evidence is also
     // `kind: 'log'`). Treat the "no runtime error evidence" gap as cleared/explained
     // by ANY of Elasticsearch / Sentry / Axiom.
+    const logSourceUnavailable =
+      (connectors.elasticsearch && isUnavailable(connectors, 'elasticsearch')) ||
+      (connectors.sentry && isUnavailable(connectors, 'sentry')) ||
+      (connectors.axiom && isUnavailable(connectors, 'axiom'));
     if (!connectors.elasticsearch && !connectors.sentry && !connectors.axiom) {
       logWhy = 'No Elasticsearch connector (nor Sentry / Axiom) configured for this environment — no runtime error evidence.';
       logNextSource = 'Add an `elasticsearch`, `sentry`, and/or `axiom` connector to the project/environment';
+    } else if (logSourceUnavailable) {
+      // Configured but unavailable (missing secret / unset URL env) — a config truth,
+      // not a collection failure and NOT "not configured".
+      const kinds = ['elasticsearch', 'sentry', 'axiom'].filter(
+        (k) => (connectors as Record<string, unknown>)[k] && isUnavailable(connectors, k),
+      );
+      logWhy = `${kinds.join(' / ')} configured but unavailable in this run (missing credentials or URL) — no runtime error evidence.`;
+      logNextSource = 'Provide the connector credentials/URL (see `horus doctor`), then retry';
     } else if (!connectors.elasticsearch && connectors.sentry) {
       // ES absent but Sentry configured — the gap is purely about Sentry.
       const sentryDetail = connectors.sentryFailureReason
@@ -261,12 +307,15 @@ export function detectMissingEvidence(
       logWhy = 'No error logs matched in the window — cannot confirm the actual error signatures.';
       logNextSource = 'Widen the window (--since) or inspect `horus logs <service>`';
     }
-    // No error source configured at all → the real remedy is `connect`; otherwise the
-    // source exists but returned nothing / failed → re-run `logs <service>`.
+    // No error source configured at all → the real remedy is `connect`; configured but
+    // unavailable → doctor (fix credentials, not re-configure); otherwise the source
+    // exists but returned nothing / failed → re-run `logs <service>`.
     const logRouteHint: RouteStep =
       !connectors.elasticsearch && !connectors.sentry && !connectors.axiom
         ? { nextTool: 'connect', args: 'elasticsearch', reason: logNextSource }
-        : { nextTool: 'logs', args: service, reason: logNextSource };
+        : logSourceUnavailable
+          ? { nextTool: 'doctor', args: '', reason: logNextSource }
+          : { nextTool: 'logs', args: service, reason: logNextSource };
     gaps.push({
       dimension: 'logs',
       why: logWhy,
@@ -283,16 +332,23 @@ export function detectMissingEvidence(
     const failureDetail = connectors.metricsFailureReason
       ? ` (${connectors.metricsFailureReason})`
       : '';
+    const grafanaUnavailable = Boolean(connectors.grafana) && isUnavailable(connectors, 'grafana');
     const metricsWhy = !connectors.grafana
       ? 'No Grafana connector configured — cannot see latency/error-rate trends.'
-      : `Grafana metrics collection failed or timed out${failureDetail} — metric trends unavailable for this investigation.`;
+      : grafanaUnavailable
+        ? 'Grafana configured but unavailable in this run (missing credentials or URL) — cannot see latency/error-rate trends.'
+        : `Grafana metrics collection failed or timed out${failureDetail} — metric trends unavailable for this investigation.`;
     const metricsNextSource = !connectors.grafana
       ? 'Add a `grafana` connector to the environment'
-      : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';
-    // No Grafana → `connect grafana`; configured but failed → re-run `metrics "<hint>"`.
+      : grafanaUnavailable
+        ? 'Provide the Grafana credentials/URL (see `horus doctor`), then retry'
+        : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';
+    // No Grafana → `connect grafana`; configured but unavailable → doctor; failed → re-run.
     const metricsRouteHint: RouteStep = !connectors.grafana
       ? { nextTool: 'connect', args: 'grafana', reason: metricsNextSource }
-      : { nextTool: 'metrics', args: service, reason: metricsNextSource };
+      : grafanaUnavailable
+        ? { nextTool: 'doctor', args: '', reason: metricsNextSource }
+        : { nextTool: 'metrics', args: service, reason: metricsNextSource };
     gaps.push({
       dimension: 'metrics',
       why: metricsWhy,
@@ -311,31 +367,30 @@ export function detectMissingEvidence(
     const queueDetail = connectors.queueFailureReason
       ? ` (${connectors.queueFailureReason})`
       : '';
+    // `queues --live` only works with an actual QUEUE provider (a Redis DB with role
+    // bullmq/queues — HOR-205). A generic state-only Redis connector cannot read live
+    // queue depth, so the advice is gated on `connectors.queue`, not `connectors.redis`.
+    const queueAdviceLive =
+      'Run `horus queues --live` to see real-time queue depths and failed-job counts';
+    const queueAdviceConnect = connectors.redis
+      ? 'Give a Redis DB the queues role (`horus connect redis --db <n>:queues`) to read live queue state'
+      : 'Add a `redis` connector with a queues-role DB to read live queue state';
     gaps.push({
       dimension: 'queue runtime state',
       why: queueFailed
         ? `Live queue state collection failed${queueDetail} — depth/failed/delayed counts unavailable.`
-        : connectors.redis
+        : connectors.queue
           ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
-          : 'Queue topology is known but there is no Redis connector for live queue depth/failures.',
+          : 'Queue topology is known but there is no queue-role Redis connector for live queue depth/failures.',
       // Stack-agnostic: the tip names Redis (the connector to add) but NOT a specific queue
       // library — "BullMQ" is Node-only and was leaking onto Python/Redis repos (HOR-428).
-      nextSource: connectors.redis
-        ? 'Run `horus queues --live` to see real-time queue depths and failed-job counts'
-        : 'Add a `redis` connector to read live queue state',
+      nextSource: connectors.queue ? queueAdviceLive : queueAdviceConnect,
       confidenceImpact: 0.1,
-      // Redis wired → read live state with `queues --live`; otherwise `connect redis` first.
-      routeHint: connectors.redis
-        ? {
-            nextTool: 'queues',
-            args: '--live',
-            reason: 'Run `horus queues --live` to see real-time queue depths and failed-job counts',
-          }
-        : {
-            nextTool: 'connect',
-            args: 'redis',
-            reason: 'Add a `redis` connector to read live queue state',
-          },
+      // Queue provider wired → read live state with `queues --live`; otherwise connect /
+      // re-role Redis first.
+      routeHint: connectors.queue
+        ? { nextTool: 'queues', args: '--live', reason: queueAdviceLive }
+        : { nextTool: 'connect', args: 'redis', reason: queueAdviceConnect },
     });
     blindSpots.push('Cannot determine if the queue is actually backed up.');
   }
@@ -432,18 +487,9 @@ export function detectMissingEvidence(
   // one honest statement, not four separate "connect X" nags (dogfood: OSS repos
   // with no connectors read as a wall of Elastic/Grafana/tracing suggestions).
   // The summed confidenceImpact is preserved, so the ceiling math is unchanged.
-  const anyRuntimeConnector = Boolean(
-    connectors.elasticsearch ||
-      connectors.sentry ||
-      connectors.axiom ||
-      connectors.grafana ||
-      connectors.mongodb ||
-      connectors.postgres ||
-      connectors.redis ||
-      connectors.queue ||
-      connectors.shopify,
-  );
-  if (!anyRuntimeConnector && !sourceImpact) {
+  // Same predicate as the router (`hasAnyRuntimeConnector`) so gaps and nextSteps
+  // can never disagree about whether runtime setup is worth suggesting.
+  if (!hasAnyRuntimeConnector(connectors) && !sourceImpact) {
     const RUNTIME_DIMS = new Set([
       'logs',
       'metrics',
@@ -461,10 +507,12 @@ export function detectMissingEvidence(
         {
           dimension: 'runtime evidence',
           why:
-            'Runtime evidence unavailable — no runtime connectors are configured for this ' +
-            'environment; proceeding with source, topology, git, ownership, and blast-radius evidence.',
+            'No runtime connectors in this config — the investigation proceeds on source, ' +
+            'topology, git, ownership, and blast-radius evidence.',
+          // A statement, not setup advice: config drives behavior, so a zero-connector
+          // config must never be pitched `horus connect` here (it leaks into nextActions).
           nextSource:
-            'Optional: add connectors (`horus connect <type>`) to raise the confidence ceiling',
+            'None — the run used the full evidence this config provides (runtime connectors would raise the confidence ceiling)',
           confidenceImpact: impact,
           // Deliberately NO routeHint: the router must route to a USEFUL configured
           // follow-up (what-changed / owner / explain), never lead with connector setup.

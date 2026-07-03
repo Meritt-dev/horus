@@ -9,7 +9,7 @@
  *   - Suggests, never runs. A `RouteStep` is advisory data only.
  *   - Never fabricates. Every `nextTool` is a REAL shipped command (`init`, `search`,
  *     `blast-radius`, `explain`, `connect <supported-type>`, `readiness`, `investigate`,
- *     `what-changed`, `owner`, `logs`, `metrics`, `queues`) or a real MCP knowledge tool
+ *     `what-changed`, `owner`, `logs`, `metrics`, `queues`, `doctor`) or a real MCP knowledge tool
  *     (`search_project_knowledge`). There is NO `connect tracing`/`connect source` — those
  *     connectors do not exist in `connect.ts` (SUPPORTED = elasticsearch/mongodb/postgres/
  *     sentry/axiom/shopify/grafana/redis), so no rule emits them; the `traces` gap carries no `routeHint`.
@@ -55,8 +55,14 @@ export interface RouterConditions {
    * `detectMissingEvidence` pushes gaps in fixed insertion order, not impact order).
    */
   topGap?: EvidenceGap;
-  /** Runtime intent but no source/runtime connector is configured. */
-  noConnectors?: boolean;
+  /**
+   * `hasAnyRuntimeConnector(connectorFlags)` — at least one runtime connector is
+   * CONFIGURED (available or not). Config drives behavior: connector-setup advice is
+   * only ever routed when the config already shows runtime intent; a zero-connector
+   * config gets source/config follow-ups, never `connect` nags (the consolidated
+   * "runtime evidence" gap carries the optional setup note instead).
+   */
+  anyRuntimeConnector?: boolean;
   /** Source-intelligence host is unreachable. */
   hostUnreachable?: boolean;
   /** The code index is stale and should be rebuilt. */
@@ -77,6 +83,13 @@ interface RouteRule {
   id: string;
   when: (c: RouterConditions) => boolean;
   steps: (c: RouterConditions) => RouteStep[];
+  /**
+   * A fallback rule fires ONLY when no non-fallback rule produced a step — an
+   * investigation must never end with an empty nextSteps while a useful configured
+   * follow-up exists (dogfood: zero-runtime runs whose gaps all lacked a routeHint
+   * returned `[]`). Fallbacks never stack on top of real routes.
+   */
+  fallback?: boolean;
 }
 
 const arg = (s: string | undefined): string => s ?? '';
@@ -135,27 +148,16 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 5 — runtime intent but nothing connected: connect a source + see what's configured.
-  {
-    id: 'investigate-no-connectors',
-    when: (c) => c.command === 'investigate' && Boolean(c.noConnectors),
-    steps: () => [
-      {
-        nextTool: 'connect',
-        args: 'elasticsearch',
-        reason: 'No runtime connector — connect one to gather logs/metrics.',
-      },
-      {
-        nextTool: 'readiness',
-        args: '',
-        reason: 'Check which connectors are configured.',
-      },
-    ],
-  },
-  // 6 — a performance hypothesis with no metrics backend.
+  // 5 — a performance hypothesis with no metrics backend, on a config that already
+  // uses runtime connectors. `investigate-no-connectors` (lead with `connect
+  // elasticsearch` + `readiness` on zero-connector configs) was REMOVED: it directly
+  // contradicted the consolidated "runtime evidence is optional" gap. Zero-connector
+  // configs now route through the low-confidence top-gap rule to configured,
+  // immediately-useful follow-ups (what-changed / owner / explain).
   {
     id: 'investigate-metrics-null',
-    when: (c) => c.command === 'investigate' && Boolean(c.metricsNull),
+    when: (c) =>
+      c.command === 'investigate' && Boolean(c.metricsNull) && Boolean(c.anyRuntimeConnector),
     steps: () => [
       {
         nextTool: 'connect',
@@ -164,7 +166,7 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 7 — low confidence: route to the top evidence gap's colocated, real remedy.
+  // 6 — low confidence: route to the top evidence gap's colocated, real remedy.
   {
     id: 'investigate-low-confidence-top-gap',
     when: (c) =>
@@ -174,7 +176,7 @@ const RULES: RouteRule[] = [
     // The non-null is guaranteed by `when`; clone so callers can't mutate the gap.
     steps: (c) => [{ ...(c.topGap as EvidenceGap).routeHint! }],
   },
-  // 8 — explain with no symbol found → search.
+  // 7 — explain with no symbol found → search.
   {
     id: 'explain-empty',
     when: (c) => c.command === 'explain' && Boolean(c.empty),
@@ -186,7 +188,7 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 9 — blast-radius with no symbol found → search.
+  // 8 — blast-radius with no symbol found → search.
   {
     id: 'blast-radius-empty',
     when: (c) => c.command === 'blast-radius' && Boolean(c.empty),
@@ -198,7 +200,7 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 10 — memory show with nothing stored → run an investigation to populate it.
+  // 9 — memory show with nothing stored → run an investigation to populate it.
   {
     id: 'memory-empty',
     when: (c) => c.command === 'memory' && Boolean(c.empty),
@@ -210,7 +212,7 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 11 — MCP search/ask with 0 matches → broaden the knowledge search.
+  // 10 — MCP search/ask with 0 matches → broaden the knowledge search.
   {
     id: 'mcp-search-empty',
     when: (c) => (c.command === 'mcp.search' || c.command === 'mcp.ask') && Boolean(c.empty),
@@ -222,7 +224,7 @@ const RULES: RouteRule[] = [
       },
     ],
   },
-  // 12 — MCP contract/domain lookup miss → search across knowledge.
+  // 11 — MCP contract/domain lookup miss → search across knowledge.
   {
     id: 'mcp-contract-empty',
     when: (c) =>
@@ -232,6 +234,27 @@ const RULES: RouteRule[] = [
         nextTool: 'search_project_knowledge',
         args: arg(c.query),
         reason: 'No exact match — search across knowledge.',
+      },
+    ],
+  },
+  // 12 (FALLBACK) — an investigate run that matched no rule above still deserves
+  // configured, immediately-useful follow-ups: walk the seed's behavior and diff the
+  // window. Fires only when nothing else routed (never stacks), and never suggests
+  // connector setup — config drives behavior.
+  {
+    id: 'investigate-follow-ups-fallback',
+    fallback: true,
+    when: (c) => c.command === 'investigate' && !c.empty && c.seedName != null && c.seedName !== '',
+    steps: (c) => [
+      {
+        nextTool: 'explain',
+        args: arg(c.seedName),
+        reason: `Walk ${c.seedName}'s behavior, callers, and flows to verify the structural picture.`,
+      },
+      {
+        nextTool: 'what-changed',
+        args: '',
+        reason: 'Diff the recent change window for this repo — changes are the most common cause source.',
       },
     ],
   },
@@ -245,7 +268,13 @@ const RULES: RouteRule[] = [
 export function route(c: RouterConditions): RouteStep[] {
   const out: RouteStep[] = [];
   for (const rule of RULES) {
+    if (rule.fallback === true) continue;
     if (rule.when(c)) out.push(...rule.steps(c));
+  }
+  if (out.length === 0) {
+    for (const rule of RULES) {
+      if (rule.fallback === true && rule.when(c)) out.push(...rule.steps(c));
+    }
   }
   return out;
 }

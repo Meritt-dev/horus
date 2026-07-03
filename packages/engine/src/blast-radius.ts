@@ -1,7 +1,7 @@
 import type { CodeProvider } from '@horus/connectors';
 import type { Symbol } from '@horus/core';
 import { listQueueEdges, type HorusDb } from '@horus/db';
-import { rankSeeds, parseNamedSymbols } from './seeds.js';
+import { rankSeeds, parseNamedSymbols, resolveSeedSymbol, type ResolutionKind } from './seeds.js';
 
 export interface AsyncDependency {
   queueName: string;
@@ -11,6 +11,12 @@ export interface AsyncDependency {
 
 export interface BlastRadiusReport {
   seed: Symbol;
+  /** How the query resolved to the seed (shared resolver semantics — same as explain). */
+  resolution: ResolutionKind;
+  /** True when multiple exact matches tied — `alternatives` disclose them. */
+  ambiguous: boolean;
+  /** Runner-up candidates from the same resolution tier (for disambiguation display). */
+  alternatives: Symbol[];
   upstream: Symbol[];
   downstream: { depth: number; symbols: Symbol[] }[];
   asyncUpstream: AsyncDependency[];
@@ -25,18 +31,34 @@ export async function analyzeBlastRadius(
   query: string,
   deps: { code: CodeProvider; db: HorusDb; project?: string },
   depth = 3,
+  opts?: { includeTests?: boolean },
 ): Promise<BlastRadiusReport | null> {
-  // HOR-385: rank a WIDER candidate pool (rather than blindly taking searchSymbols[0]) and pin the
-  // PROMPT-named symbol so a routed-in blast-radius query (HOR-386) lands on the symbol the user
-  // named, not a central node the raw search happened to rank first.
-  const rawSeeds = await deps.code.searchSymbols(query, 20);
-  const preferNamed = parseNamedSymbols(query)[0];
-  const top = rankSeeds(rawSeeds, undefined, undefined, false, null, preferNamed)[0]?.symbol;
+  // THE canonical resolver (shared with explain/search/investigate): exact-qualified >
+  // exact > fuzzy, product code before tests, deterministic ambiguity. Only a FUZZY
+  // result falls back to the HOR-385 prompt-named seed ranking — for prose-ish routed-in
+  // queries where rankSeeds' heuristics are the right layer.
+  const res = await resolveSeedSymbol(deps.code, query, {
+    limit: 20,
+    includeTests: opts?.includeTests ?? false,
+  });
+  let top = res.candidates[0];
+  if (res.kind === 'fuzzy') {
+    const preferNamed = parseNamedSymbols(query)[0];
+    top = rankSeeds(res.candidates, undefined, undefined, false, null, preferNamed)[0]?.symbol;
+  }
   if (!top) return null;
+  // Alternatives: same-tier runners-up (exact matches only) for disambiguation display.
+  const alternatives =
+    res.kind === 'exact' || res.kind === 'exact-qualified'
+      ? res.candidates
+          .slice(1)
+          .filter((s) => s.name.toLowerCase() === top!.name.toLowerCase())
+          .slice(0, 4)
+      : [];
 
   const [ctx, impact] = await Promise.all([
     deps.code.context(top.id),
-    deps.code.impact(top.id, depth),
+    deps.code.impact(top.id, depth, opts?.includeTests ? { includeTests: true } : undefined),
   ]);
 
   // upstream = what the seed depends on (callees)
@@ -108,6 +130,9 @@ export async function analyzeBlastRadius(
 
   return {
     seed: top,
+    resolution: res.kind,
+    ambiguous: res.ambiguous,
+    alternatives,
     upstream,
     downstream,
     asyncUpstream,

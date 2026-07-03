@@ -562,7 +562,7 @@ describe('runtime-gap consolidation (config-driven — no connectors, no nagging
     expect(without.gaps.filter((g) => runtimeDims.has(g.dimension))).toEqual([]);
     const consolidated = without.gaps.find((g) => g.dimension === 'runtime evidence');
     expect(consolidated).toBeDefined();
-    expect(consolidated!.why).toContain('no runtime connectors are configured');
+    expect(consolidated!.why).toContain('No runtime connectors in this config');
     expect(consolidated!.why).toContain('source, topology, git, ownership');
     // The ceiling math is unchanged relative to the sum of what was consolidated.
     expect(without.confidenceCeiling).toBeLessThanOrEqual(1);
@@ -585,8 +585,10 @@ describe('connector setup never leads (config drives suggestions)', () => {
     const { gaps } = detectMissingEvidence(r, {});
     const actions = gapNextActions(gaps);
     expect(actions.length).toBeGreaterThan(1);
-    expect(actions[0]).not.toContain('horus connect');
-    expect(actions.at(-1)).toContain('horus connect');
+    // Config drives behavior: with zero runtime stanzas NO action pitches connector
+    // setup — the consolidated gap is a statement, and it still trails the real actions.
+    for (const a of actions) expect(a).not.toContain('horus connect');
+    expect(actions.at(-1)).toContain('None —');
     // The router's structured steps skip the optional-setup gap entirely
     // (no routeHint) and land on a real configured remedy.
     const steps = gapNextSteps(gaps);

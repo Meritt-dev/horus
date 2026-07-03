@@ -31,6 +31,7 @@ const REAL_TOOLS = new Set([
   'logs',
   'metrics',
   'queues',
+  'doctor',
   'search_project_knowledge',
 ]);
 
@@ -91,15 +92,23 @@ describe('route() — every rule resolves to a real command', () => {
     expect(steps[0]).toMatchObject({ nextTool: 'explain', args: 'getUser' });
   });
 
-  it('investigate + noConnectors → connect a real source + readiness', () => {
-    const steps = assertRealSteps({ command: 'investigate', noConnectors: true });
-    expect(steps.map((s) => s.nextTool)).toEqual(['connect', 'readiness']);
-    expect(REAL_CONNECTORS.has(steps[0]!.args)).toBe(true);
+  it('investigate on a ZERO-connector config never routes connector setup', () => {
+    // `investigate-no-connectors` was removed: leading with `connect elasticsearch`
+    // contradicted the consolidated "runtime evidence is optional" gap. With no
+    // runtime connectors configured, even a perf hint must not nag `connect`.
+    const steps = route({ command: 'investigate', intent: 'incident', metricsNull: true });
+    expect(steps).toEqual([]);
   });
 
-  it('investigate + metricsNull → connect grafana', () => {
-    const steps = assertRealSteps({ command: 'investigate', metricsNull: true });
+  it('investigate + metricsNull → connect grafana ONLY when runtime connectors exist', () => {
+    const steps = assertRealSteps({
+      command: 'investigate',
+      metricsNull: true,
+      anyRuntimeConnector: true,
+    });
     expect(steps[0]).toMatchObject({ nextTool: 'connect', args: 'grafana' });
+    // Without configured runtime connectors the same condition routes nothing.
+    expect(route({ command: 'investigate', metricsNull: true })).toEqual([]);
   });
 
   it('explain + empty / blast-radius + empty → search', () => {
@@ -139,9 +148,31 @@ describe('route() — determinism & isolation', () => {
     expect(steps.map((s) => s.nextTool)).toEqual(['init', 'blast-radius']);
   });
 
-  it('unknown / unmatched conditions → no fabricated steps', () => {
+  it('unknown / unmatched conditions → no fabricated steps (no seed = no fallback)', () => {
     expect(route({ command: 'packet' })).toEqual([]);
     expect(route({ command: 'investigate', intent: 'incident' })).toEqual([]);
+  });
+
+  it('FALLBACK: an unmatched investigate WITH a seed routes explain + what-changed', () => {
+    // Dogfood: a zero-runtime run whose gaps all lacked a routeHint returned nextSteps []
+    // — an investigation must never end with no follow-up while the seed is walkable.
+    const steps = assertRealSteps({
+      command: 'investigate',
+      intent: 'incident',
+      seedName: 'CheckoutService',
+    });
+    expect(steps.map((s) => s.nextTool)).toEqual(['explain', 'what-changed']);
+    expect(steps[0]!.args).toBe('CheckoutService');
+  });
+
+  it('FALLBACK never stacks on top of a real route', () => {
+    const steps = route({
+      command: 'investigate',
+      intent: 'source-impact',
+      seedName: 'CheckoutService',
+    });
+    // Rule 3 (blast-radius) matched — the fallback must not append its steps.
+    expect(steps.map((s) => s.nextTool)).toEqual(['blast-radius']);
   });
 
   it('new route = new table entry: rule ids are unique and ordered', () => {

@@ -162,3 +162,97 @@ describe('changeImpact', () => {
     expect(report.affectedFlows).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Structural truth: identical refs, derived nodes, test-flow noise
+// ---------------------------------------------------------------------------
+
+describe('changeImpact — structural truth hardening', () => {
+  it('short-circuits identical base/compare to an empty report (never calls the index)', async () => {
+    const code = stubCode({ added: [makeSymbol('Fake')], modified: [], removed: [] });
+    const report = await changeImpact({ base: 'HEAD', compare: 'HEAD' }, { code });
+    expect(report.added).toEqual([]);
+    expect(report.removed).toEqual([]);
+    expect(report.modified).toEqual([]);
+    expect(report.affectedFlows).toEqual([]);
+    expect(report.summary).toContain('same ref');
+    expect(code.detectChanges).not.toHaveBeenCalled();
+    // The implicit compare default (HEAD) short-circuits too.
+    const report2 = await changeImpact({ base: 'HEAD' }, { code });
+    expect(report2.summary).toContain('same ref');
+  });
+
+  it('filters derived/synthetic nodes (community:/process:/folder:/empty filePath) from the changeset', async () => {
+    const real = makeSymbol('OrderProcessor');
+    const community: Symbol = { id: 'community:12', name: 'cluster-12', filePath: '' };
+    const process: Symbol = { id: 'process:emails', name: 'emails', filePath: 'src/x.ts' };
+    const folder: Symbol = { id: 'folder:src/services', name: 'services', filePath: 'src/services' };
+    const noFile: Symbol = { id: 'function:ghost', name: 'ghost', filePath: '' };
+
+    const code = stubCode({
+      added: [real, community, folder],
+      modified: [{ before: process, after: process }, { before: real, after: real }],
+      removed: [noFile],
+    });
+    const report = await changeImpact({ base: 'HEAD~3', compare: 'HEAD' }, { code });
+    expect(report.added.map((s) => s.name)).toEqual(['OrderProcessor']);
+    expect(report.modified.map((m) => m.after.name)).toEqual(['OrderProcessor']);
+    expect(report.removed).toEqual([]);
+    expect(report.summary).toContain('1 added, 1 modified, 0 removed');
+  });
+
+  it('drops test-derived flows for product changes, keeps them for test-scoped changes', async () => {
+    const productSym = makeSymbol('OrderProcessor'); // src/OrderProcessor.ts
+    const testSym: Symbol = {
+      id: 'function:orderSpec',
+      name: 'orderSpec',
+      filePath: 'src/order.test.ts',
+    };
+    const productFlow: Flow = {
+      id: 'flow:checkout',
+      name: 'Checkout',
+      steps: [makeSymbol('checkoutEntry')],
+    };
+    const testFlow: Flow = {
+      id: 'flow:test-suite',
+      name: 'order.test suite',
+      steps: [{ id: 'function:t', name: 't', filePath: 'src/order.test.ts' }],
+    };
+
+    const code = stubCode(
+      { added: [productSym, testSym], modified: [], removed: [] },
+      {
+        'function:OrderProcessor': [productFlow, testFlow],
+        'function:orderSpec': [testFlow],
+      },
+    );
+    const report = await changeImpact({ base: 'HEAD~1', compare: 'HEAD' }, { code });
+    const byId = new Map(report.affectedFlows.map((f) => [f.flowId, f]));
+    // The product change contributes only to the product flow…
+    expect(byId.get('flow:checkout')?.changedSymbols).toEqual(['OrderProcessor']);
+    // …the test flow survives only via the test-scoped changed symbol.
+    expect(byId.get('flow:test-suite')?.changedSymbols).toEqual(['orderSpec']);
+  });
+
+  it('ranks affected flows by changed-symbol count, name as tie-break', async () => {
+    const a = makeSymbol('Alpha');
+    const b = makeSymbol('Beta');
+    const big = makeFlow('flow:big', 'Big flow');
+    const smallB = makeFlow('flow:small-b', 'B small');
+    const smallA = makeFlow('flow:small-a', 'A small');
+
+    const code = stubCode(
+      { added: [a, b], modified: [], removed: [] },
+      {
+        'function:Alpha': [big, smallA],
+        'function:Beta': [big, smallB],
+      },
+    );
+    const report = await changeImpact({ base: 'HEAD~1', compare: 'HEAD' }, { code });
+    expect(report.affectedFlows.map((f) => f.flowId)).toEqual([
+      'flow:big',
+      'flow:small-a',
+      'flow:small-b',
+    ]);
+  });
+});

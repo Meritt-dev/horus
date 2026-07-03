@@ -8,6 +8,7 @@
  */
 
 import { resolve } from 'node:path';
+import { resolveSymbolQuery } from './seeds.js';
 import { fetchHostRepoPath } from '@horus/connectors';
 import type { Symbol } from '@horus/core';
 import type { RepoProvider } from '@horus/connectors';
@@ -91,7 +92,12 @@ export async function searchAcrossRepos(
     providers.map(async (provider): Promise<RepoSearchResult> => {
       try {
         const h = await provider.code.health();
-        const symbols = h.ok ? await provider.code.searchSymbols(query, limit) : [];
+        // Shared-resolver semantics (same as explain/blast-radius/investigate): exact
+        // matches lead — qualified ones first — and product code outranks tests, so
+        // `search Starlette` lists `class Starlette` before `_exception_handler.py`.
+        const symbols = h.ok
+          ? resolveSymbolQuery(query, await provider.code.searchSymbols(query, limit)).candidates
+          : [];
         return {
           repo: provider.name,
           hostUrl: provider.hostUrl,

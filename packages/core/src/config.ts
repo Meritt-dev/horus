@@ -623,8 +623,9 @@ export function resolveEnvironment(
     if (p === undefined) throw new Error('No projects configured.');
     project = p;
   } else {
-    // No --project and multiple projects: infer from the current repo by matching
-    // its root against a project's repository paths (so `cd repo && horus …` works).
+    // No explicit project selector (`--repo`) and multiple projects: infer from the
+    // current repo by matching its root against a project's repository paths (so
+    // `cd repo && horus …` works).
     const cwd = opts?.cwd ?? process.cwd();
     const root = findRepoRoot(cwd) ?? resolve(cwd);
     const matches = config.projects.filter((p) =>
@@ -636,7 +637,7 @@ export function resolveEnvironment(
     } else {
       const names = config.projects.map((p) => p.name).join(', ');
       throw new Error(
-        `Multiple projects configured; pass --project <name> (one of: ${names}) ` +
+        `Multiple projects configured; pass --repo <name> (one of: ${names}) ` +
           `— or run from inside a project's repository.`,
       );
     }

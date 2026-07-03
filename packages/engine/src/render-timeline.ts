@@ -3,8 +3,14 @@
  */
 
 import type { ChangeTimeline } from './deploy-timeline.js';
+import { changeImpactToCompactObject } from './render-changes.js';
 
 const COMMIT_CAP = 25;
+
+// Caps for the compact (default) JSON projection. Dogfood: `timeline --json`
+// produced ~2.6 MB (every commit with its full file list) — unusable for agents.
+const JSON_COMMIT_CAP = 25;
+const JSON_TOP_FILE_CAP = 15;
 
 /** Sectioned text report for terminal output. */
 export function renderChangeTimeline(t: ChangeTimeline): string {
@@ -24,6 +30,24 @@ export function renderChangeTimeline(t: ChangeTimeline): string {
 
   lines.push('> ' + t.note);
   lines.push('');
+
+  // Working tree — uncommitted changes are a change source `git log` can't see.
+  if (t.repoState?.dirty) {
+    lines.push(
+      '## Working tree (uncommitted): ' +
+        t.repoState.stagedCount +
+        ' staged, ' +
+        t.repoState.unstagedCount +
+        ' unstaged, ' +
+        t.repoState.untrackedCount +
+        ' untracked (+' +
+        t.repoState.insertions +
+        '/-' +
+        t.repoState.deletions +
+        ' vs HEAD)',
+    );
+    lines.push('');
+  }
 
   lines.push('## Commits');
   if (t.commits.length === 0) {
@@ -65,7 +89,67 @@ export function renderChangeTimeline(t: ChangeTimeline): string {
   return lines.join('\n');
 }
 
-/** Stable JSON serialization of the full timeline. */
-export function changeTimelineToJSON(t: ChangeTimeline): string {
-  return JSON.stringify(t, null, 2);
+/** Stable JSON serialization — compact by default; `full` restores the raw timeline. */
+export function changeTimelineToJSON(t: ChangeTimeline, opts?: { full?: boolean }): string {
+  if (opts?.full) return JSON.stringify(t, null, 2);
+
+  const commits = t.commits.slice(0, JSON_COMMIT_CAP).map((c) => ({
+    shortSha: c.shortSha,
+    dateIso: c.dateIso,
+    author: c.author,
+    subject: c.subject,
+    fileCount: c.files.length,
+  }));
+
+  // Top changed files across the WHOLE window (not just the shown commits), so the
+  // compact view still answers "what files churned" without the raw per-commit lists.
+  const fileCounts = new Map<string, number>();
+  for (const c of t.commits) {
+    for (const f of c.files) fileCounts.set(f, (fileCounts.get(f) ?? 0) + 1);
+  }
+  const topChangedFiles = [...fileCounts]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, JSON_TOP_FILE_CAP)
+    .map(([file, commitCount]) => ({ file, commits: commitCount }));
+
+  // Compact repo state: counts stay exact, file lists slim to 10 entries each.
+  const compactRepoState =
+    t.repoState == null
+      ? null
+      : {
+          headSha: t.repoState.headSha,
+          branch: t.repoState.branch,
+          dirty: t.repoState.dirty,
+          stagedCount: t.repoState.stagedCount,
+          unstagedCount: t.repoState.unstagedCount,
+          untrackedCount: t.repoState.untrackedCount,
+          insertions: t.repoState.insertions,
+          deletions: t.repoState.deletions,
+          staged: t.repoState.staged.slice(0, 10),
+          unstaged: t.repoState.unstaged.slice(0, 10),
+          untracked: t.repoState.untracked.slice(0, 10),
+        };
+
+  const truncatedCount = t.commits.length - commits.length;
+  return JSON.stringify(
+    {
+      window: t.window,
+      summary: t.summary,
+      note: t.note,
+      repoState: compactRepoState,
+      ...(t.sourceIndex != null ? { sourceIndex: t.sourceIndex } : {}),
+      commitCount: t.commits.length,
+      // Commits are newest-first (git log order) — expose the window edges directly.
+      firstCommitAt: t.commits[t.commits.length - 1]?.dateIso ?? null,
+      lastCommitAt: t.commits[0]?.dateIso ?? null,
+      commits,
+      topChangedFiles,
+      changeImpact: t.changeImpact == null ? null : changeImpactToCompactObject(t.changeImpact),
+      ...(truncatedCount > 0
+        ? { truncated: true, truncatedCount, hint: 're-run with --full for the complete structure' }
+        : {}),
+    },
+    null,
+    2,
+  );
 }

@@ -3,22 +3,33 @@
  * Treats git history as EVIDENCE, not conclusions.
  */
 
-import type { GitCommit } from '@horus/connectors';
+import type { GitCommit, RepoState } from '@horus/connectors';
 import type { CodeProvider } from '@horus/connectors';
 import { changeImpact, type ChangeImpactReport } from './changes.js';
-import { gitLog } from '@horus/connectors';
+import { gitLog, collectRepoState } from '@horus/connectors';
 
 export interface ChangeTimelineInput {
   repoPath: string;
   since?: string;
   until?: string;
   service?: string;
+  /** `.horus/source/meta.json` freshness, injected by the CLI when available. */
+  sourceIndex?: { lastIndexedAt?: string };
 }
 
 export interface ChangeTimeline {
   window: { since: string | null; until: string | null; service: string | null };
   commits: GitCommit[];
   changeImpact: ChangeImpactReport | null;
+  /**
+   * Repo truth beyond commit history: HEAD, branch, and the dirty-worktree state
+   * (staged/unstaged/untracked + insertions/deletions). Null when the repo state
+   * could not be read. `git log` alone said "0 commits" on repos full of
+   * uncommitted work — this is the working-tree change source that closes that.
+   */
+  repoState: RepoState | null;
+  /** When the CLI knows the source index freshness, it is echoed here. */
+  sourceIndex?: { lastIndexedAt?: string } | null;
   summary: string;
   note: string;
 }
@@ -56,11 +67,30 @@ export async function reconstructChangeTimeline(
     }
   }
 
+  // Repo truth beyond `git log`: a dirty worktree is a change source commit history
+  // cannot see. Best-effort — null (not a fabricated "clean") when unreadable.
+  let repoState: RepoState | null = null;
+  try {
+    repoState = await collectRepoState(input.repoPath);
+  } catch {
+    repoState = null;
+  }
+
   // Strip trailing period from impact.summary before embedding — we add our own.
   const impactPart =
     impact !== null
       ? '; ' + (impact.summary.endsWith('.') ? impact.summary.slice(0, -1) : impact.summary)
       : '';
+
+  const dirtyPart = repoState?.dirty
+    ? '; working tree has uncommitted changes (' +
+      repoState.stagedCount +
+      ' staged, ' +
+      repoState.unstagedCount +
+      ' unstaged, ' +
+      repoState.untrackedCount +
+      ' untracked)'
+    : '';
 
   const summary =
     commits.length +
@@ -69,10 +99,15 @@ export async function reconstructChangeTimeline(
     ' in window' +
     (input.since !== undefined ? ' since ' + input.since : '') +
     impactPart +
+    dirtyPart +
     '.';
 
+  // A 0-commit window over a dirty worktree must say WHY it looks empty — the
+  // uncommitted work is excluded from commit history but reported above.
   const note =
-    'Changes are evidence, not conclusions — a change in this window is not automatically the cause.';
+    commits.length === 0 && repoState?.dirty
+      ? 'No commits in the window, but the working tree carries uncommitted changes — they are reported as a working-tree change source above, not in commit history.'
+      : 'Changes are evidence, not conclusions — a change in this window is not automatically the cause.';
 
   return {
     window: {
@@ -82,6 +117,8 @@ export async function reconstructChangeTimeline(
     },
     commits,
     changeImpact: impact,
+    repoState,
+    sourceIndex: input.sourceIndex ?? null,
     summary,
     note,
   };

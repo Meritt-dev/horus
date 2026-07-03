@@ -1,3 +1,4 @@
+import { classifyPath, filterQueueEdges } from '@horus/core';
 import type { CodeProvider } from '@horus/connectors';
 import { listQueueEdges, type HorusDb, type QueueEdge } from '@horus/db';
 
@@ -135,11 +136,12 @@ export function cleanSubsystemName(name: string): string {
   return n || name;
 }
 
-/** A file path under a test/example/docs tree — excluded from external-system detection (HOR-366). */
-const TEST_EXAMPLE_PATH_RE =
-  /(^|\/)(tests?|__tests__|examples?|samples?|demos?|docs|docs_src|tutorials?|fixtures?|spec|specs)(\/|$)/i;
+/** A file path in a test/example/docs tree or file — excluded from external-system
+ *  detection (HOR-366). Delegates to the shared classifier (@horus/core), which also
+ *  catches co-located `*.test.ts` files the old directory regex missed. */
 export function isTestOrExamplePath(p: string): boolean {
-  return TEST_EXAMPLE_PATH_RE.test(p);
+  const kind = classifyPath(p);
+  return kind === 'test' || kind === 'docs' || kind === 'example';
 }
 
 export async function discoverArchitecture(deps: {
@@ -201,19 +203,12 @@ export async function discoverArchitecture(deps: {
     try {
       const rawEdges: QueueEdge[] = await listQueueEdges(deps.db, { project: deps.project });
       // Hygiene (dogfood): the stitcher can pick up queue-name look-alikes from test
-      // fixtures and malformed multiline code fragments. Product architecture shows
-      // PRODUCT boundaries: drop edges whose producer AND worker live in test/example
-      // trees, and reject names that are not plausible queue identifiers.
-      const isValidQueueName = (name: string): boolean =>
-        name.length > 0 &&
-        name.length <= 100 &&
-        !/[\n\r{}()`"';]/.test(name) &&
-        name.trim() === name;
-      const isFixtureEdge = (e: QueueEdge): boolean => {
-        const files = [e.producerFile, e.workerFile].filter((f): f is string => f != null && f !== '');
-        return files.length > 0 && files.every((f) => isTestOrExamplePath(f));
-      };
-      const edges = rawEdges.filter((e) => isValidQueueName(e.queueName) && !isFixtureEdge(e));
+      // fixtures, template placeholders and malformed multiline code fragments. Product
+      // architecture shows PRODUCT boundaries. The canonical rules live in
+      // @horus/core's queue-hygiene module (shared with `horus queues` and the
+      // stitcher's write path): implausible names, fixture-only edges, bare generic
+      // names without file evidence, and producer-only-generic groups all drop here.
+      const edges = filterQueueEdges(rawEdges);
       type SymFile = { symbol: string; file: string | null };
       const byQueue = new Map<string, { producers: Map<string, SymFile>; workers: Map<string, SymFile> }>();
       for (const edge of edges) {
@@ -231,11 +226,15 @@ export async function discoverArchitecture(deps: {
           entry.workers.set(`${edge.workerSymbol}\u0000${file ?? ''}`, { symbol: edge.workerSymbol, file });
         }
       }
-      return Array.from(byQueue.entries()).map(([queueName, { producers, workers }]) => ({
-        queueName,
-        producers: Array.from(producers.values()),
-        workers: Array.from(workers.values()),
-      }));
+      // Note: the producer-only-generic rule (a bare generic name is residue unless
+      // some edge has a WORKER — real consuming code) is applied inside
+      // filterQueueEdges above.
+      return Array.from(byQueue.entries())
+        .map(([queueName, { producers, workers }]) => ({
+          queueName,
+          producers: Array.from(producers.values()),
+          workers: Array.from(workers.values()),
+        }));
     } catch {
       return [];
     }

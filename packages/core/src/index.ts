@@ -6,3 +6,5 @@ export * from './secrets.js';
 export * from './git.js';
 export * from './codeowners.js';
 export * from './redact.js';
+export * from './path-classify.js';
+export * from './queue-hygiene.js';
