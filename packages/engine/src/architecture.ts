@@ -144,6 +144,19 @@ export function isTestOrExamplePath(p: string): boolean {
   return kind === 'test' || kind === 'docs' || kind === 'example';
 }
 
+// Word-list / dataset files are full of proper nouns and common words that collide with
+// integration markers — an external system matched inside one is a coincidence, not a
+// dependency (dogfood 0.21: drizzle-seed `datasets/lastNames.ts` → "kafka"/"django",
+// `jobsTitles.ts` → "clerk", drizzle-kit `words.ts` → "stripe"). Excluded from
+// external-system detection only (they remain product code everywhere else).
+const DATA_FILE_RE =
+  /(^|\/)(datasets?|seed(?:s|-?data)?|dictionar(?:y|ies)|word-?lists?|locales?|i18n|corpus)(\/|$)|(^|\/)(first-?names?|last-?names?|sur-?names?|full-?names?|countries|cities|nouns|adjectives|verbs|words|colou?rs|jobs?-?titles?|emojis?)\.[jt]sx?$/i;
+
+/** A word-list/dataset file whose string contents falsely match integration markers. */
+export function isDataFilePath(p: string): boolean {
+  return DATA_FILE_RE.test(p);
+}
+
 export async function discoverArchitecture(deps: {
   code: CodeProvider;
   db: HorusDb;
@@ -309,7 +322,13 @@ export async function discoverArchitecture(deps: {
       return markers
         .map((marker) => ({
           name: marker,
-          files: (matches[marker] ?? []).filter((p) => p !== '' && !isTestOrExamplePath(p)).length,
+          // Count only genuine product source. `classifyPath === 'product'` additionally drops
+          // config/lockfiles (a marker in `pnpm-lock.yaml`/`package.json` is a transitive dep,
+          // not an integration) and vendored trees over the old test/example-only filter;
+          // data files are excluded because their string contents collide with markers.
+          files: (matches[marker] ?? []).filter(
+            (p) => p !== '' && classifyPath(p) === 'product' && !isDataFilePath(p),
+          ).length,
         }))
         .filter((r) => r.files > 0)
         .sort((a, b) => b.files - a.files);

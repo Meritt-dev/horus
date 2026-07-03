@@ -59,32 +59,45 @@ describe('ensureProjectGitignore', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   const gitignore = () => join(root, '.gitignore');
+  const exclude = () => join(root, '.git', 'info', 'exclude');
 
   it('does nothing when the repo is not a git repository', () => {
     ensureProjectGitignore(root);
     expect(existsSync(gitignore())).toBe(false);
   });
 
-  it('creates .gitignore with a .horus/ entry when the repo is a git repo without one', () => {
+  it('writes .horus/ to .git/info/exclude and NEVER touches the tracked .gitignore', () => {
     mkdirSync(join(root, '.git'), { recursive: true });
     ensureProjectGitignore(root);
-    expect(readFileSync(gitignore(), 'utf8')).toBe('.horus/\n');
+    expect(readFileSync(exclude(), 'utf8')).toBe('.horus/\n');
+    // The tracked .gitignore is left untouched — dirtying it made what-changed report
+    // Horus's own setup edit as a change (dogfood 0.21).
+    expect(existsSync(gitignore())).toBe(false);
   });
 
-  it('appends .horus/ to an existing .gitignore', () => {
-    mkdirSync(join(root, '.git'), { recursive: true });
-    writeFileSync(gitignore(), 'node_modules\ndist\n');
+  it('appends .horus/ to an existing .git/info/exclude, preserving prior entries', () => {
+    mkdirSync(join(root, '.git', 'info'), { recursive: true });
+    writeFileSync(exclude(), '*.log\n.DS_Store\n');
     ensureProjectGitignore(root);
-    expect(readFileSync(gitignore(), 'utf8')).toBe('node_modules\ndist\n.horus/\n');
+    expect(readFileSync(exclude(), 'utf8')).toBe('*.log\n.DS_Store\n.horus/\n');
   });
 
   it('is idempotent — does not duplicate an existing .horus entry (any common spelling)', () => {
-    mkdirSync(join(root, '.git'), { recursive: true });
+    mkdirSync(join(root, '.git', 'info'), { recursive: true });
     for (const entry of ['.horus', '.horus/', '/.horus', '/.horus/']) {
-      writeFileSync(gitignore(), `node_modules\n${entry}\n`);
+      writeFileSync(exclude(), `*.log\n${entry}\n`);
       ensureProjectGitignore(root);
-      expect(readFileSync(gitignore(), 'utf8')).toBe(`node_modules\n${entry}\n`);
+      expect(readFileSync(exclude(), 'utf8')).toBe(`*.log\n${entry}\n`);
     }
+  });
+
+  it('follows a `.git` FILE (worktree/submodule) to its real gitdir', () => {
+    const realGit = join(root, 'realgit');
+    mkdirSync(realGit, { recursive: true });
+    writeFileSync(join(root, '.git'), `gitdir: ${realGit}\n`);
+    ensureProjectGitignore(root);
+    expect(readFileSync(join(realGit, 'info', 'exclude'), 'utf8')).toBe('.horus/\n');
+    expect(existsSync(gitignore())).toBe(false);
   });
 });
 

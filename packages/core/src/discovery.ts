@@ -7,7 +7,7 @@
  * `projects`/`hosts` listings; it is NOT a targeting mechanism (no --name/--project).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, chmodSync, renameSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -298,18 +298,53 @@ export function decryptConnectorSecrets(root: string): DecryptedConnectorSecrets
   return out;
 }
 
-/**
- * Read-only check: is `.horus/` ignored by the repo's root `.gitignore`?
- * Returns true for a non-git directory (nothing can leak). Used by `horus doctor`.
- */
-export function isHorusGitignored(root: string): boolean {
-  if (!existsSync(join(root, '.git'))) return true;
-  const gitignorePath = join(root, '.gitignore');
-  if (!existsSync(gitignorePath)) return false;
-  return readFileSync(gitignorePath, 'utf8')
+/** True when a gitignore/exclude file's text carries a `.horus` ignore line. */
+function hasHorusIgnoreEntry(text: string): boolean {
+  return text
     .split('\n')
     .map((l) => l.trim())
     .some((l) => l === '.horus' || l === '.horus/' || l === '/.horus' || l === '/.horus/');
+}
+
+/**
+ * Resolve the repo-local `.git/info/exclude` path for `root`, following a `.git` FILE
+ * (worktree/submodule `gitdir: <path>`) to its real git dir. Returns null when `root`
+ * is not a git repo or the pointer is unreadable.
+ */
+function gitInfoExcludePath(root: string): string | null {
+  const gitPath = join(root, '.git');
+  if (!existsSync(gitPath)) return null;
+  let gitDir: string;
+  try {
+    const st = statSync(gitPath);
+    if (st.isDirectory()) {
+      gitDir = gitPath;
+    } else {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitPath, 'utf8'));
+      if (!m) return null;
+      const resolved = m[1]!;
+      gitDir = resolved.startsWith('/') ? resolved : join(root, resolved);
+    }
+  } catch {
+    return null;
+  }
+  return join(gitDir, 'info', 'exclude');
+}
+
+/**
+ * Read-only check: is `.horus/` ignored for this repo? Checks the repo-local
+ * `.git/info/exclude` (where {@link ensureProjectGitignore} writes it) AND a legacy tracked
+ * `.gitignore` entry from an older init. Returns true for a non-git directory (nothing can
+ * leak). Used by `horus doctor`.
+ */
+export function isHorusGitignored(root: string): boolean {
+  if (!existsSync(join(root, '.git'))) return true;
+  const excludePath = gitInfoExcludePath(root);
+  if (excludePath !== null && existsSync(excludePath) && hasHorusIgnoreEntry(readFileSync(excludePath, 'utf8'))) {
+    return true;
+  }
+  const gitignorePath = join(root, '.gitignore');
+  return existsSync(gitignorePath) && hasHorusIgnoreEntry(readFileSync(gitignorePath, 'utf8'));
 }
 
 /**
@@ -324,24 +359,24 @@ export function isHorusGitignored(root: string): boolean {
  *   - `.horus` already ignored (any common spelling) → no-op.
  */
 export function ensureProjectGitignore(root: string): void {
-  if (!existsSync(join(root, '.git'))) return;
-
-  const gitignorePath = join(root, '.gitignore');
+  // Ignore `.horus/` through the repo-LOCAL exclude file (`.git/info/exclude`), NEVER the
+  // tracked `.gitignore`. Writing a tracked file dirties the working tree, and Horus's own
+  // dirty-worktree / what-changed detection then reports its setup edit as evidence
+  // (dogfood 0.21). `.git/info/exclude` is per-clone and never committed, so it ignores our
+  // scratch dir without touching anything git tracks.
+  const excludePath = gitInfoExcludePath(root);
+  if (excludePath === null) return;
   const entry = '.horus/';
-
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, entry + '\n');
-    return;
+  try {
+    const infoDir = dirname(excludePath);
+    if (!existsSync(infoDir)) mkdirSync(infoDir, { recursive: true });
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+    if (hasHorusIgnoreEntry(existing)) return;
+    const prefix = existing.trim() === '' ? '' : existing.trimEnd() + '\n';
+    writeFileSync(excludePath, prefix + entry + '\n');
+  } catch {
+    // Best-effort — a read-only .git/info must never fail a connect/init.
   }
-
-  const existing = readFileSync(gitignorePath, 'utf8');
-  const alreadyIgnored = existing
-    .split('\n')
-    .map((l) => l.trim())
-    .some((l) => l === '.horus' || l === '.horus/' || l === '/.horus' || l === '/.horus/');
-  if (alreadyIgnored) return;
-
-  writeFileSync(gitignorePath, existing.trimEnd() + '\n' + entry + '\n');
 }
 
 /**

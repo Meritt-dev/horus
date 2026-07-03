@@ -10,6 +10,7 @@ import {
   GENERIC_QUEUE_NAMES,
   isPlausibleQueueName,
   isGenericQueueName,
+  isConstantShapedQueueName,
   isFixtureQueueEdge,
   shouldKeepQueueEdge,
   filterQueueEdges,
@@ -251,5 +252,56 @@ describe('generic names need a REAL worker to vouch (module-level literals canno
       },
     ];
     expect(filterQueueEdges(edges)).toHaveLength(1);
+  });
+});
+
+// ── dogfood 0.21: enum/constant string literals extracted as queues ─────────────────
+describe('enum/constant string constants are not queues (dogfood 0.21)', () => {
+  it('isPlausibleQueueName rejects dotted attribute keys (bullmq OpenTelemetry constants)', () => {
+    for (const n of ['bullmq.job.id', 'bullmq.queue.name', 'bullmq.worker.options', 'a.b.c']) {
+      expect(isPlausibleQueueName(n), n).toBe(false);
+    }
+    // A single dot is still a plausible queue segment (`email.send`).
+    expect(isPlausibleQueueName('email.send')).toBe(true);
+  });
+
+  it('isConstantShapedQueueName flags SCREAMING_SNAKE enum members only', () => {
+    for (const n of ['GLOBAL_MOUNT', 'INSTANCE_DESTROY', 'CONFIG_DEVTOOLS', 'POST_SEED_PRODUCT_SYNC']) {
+      expect(isConstantShapedQueueName(n), n).toBe(true);
+    }
+    for (const n of ['GZIP', 'payment-processing', 'emailQueue', 'sum_task']) {
+      // single ALLCAPS word / kebab / camel / lower_snake are not multi-segment SCREAMING_SNAKE
+      expect(isConstantShapedQueueName(n), n).toBe(false);
+    }
+  });
+
+  it('drops the bullmq telemetry-attribute "queues" (dotted keys + accessor "workers")', () => {
+    const edges = [
+      { queueName: 'bullmq.job.id', producerSymbol: 'JobId', producerFile: 'src/enums/telemetry-attributes.ts', workerSymbol: 'id', workerFile: 'src/classes/job.ts' },
+      { queueName: 'bullmq.queue.name', producerSymbol: 'QueueName', producerFile: 'src/enums/telemetry-attributes.ts', workerSymbol: 'name', workerFile: 'src/classes/queue.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('drops a same-file enum self-match (Nest Kafka compression GZIP↔Snappy)', () => {
+    const edges = [
+      { queueName: 'GZIP', producerSymbol: 'GZIP', producerFile: 'src/enums/kafka-compression.enum.ts', workerSymbol: 'Snappy', workerFile: 'src/enums/kafka-compression.enum.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('drops an unvouched SCREAMING_SNAKE enum member (Vue lifecycle flags)', () => {
+    const edges = [
+      { queueName: 'GLOBAL_MOUNT', producerSymbol: 'GLOBAL_MOUNT', producerFile: 'packages/runtime-core/src/enums.ts', workerSymbol: 'INSTANCE_DESTROY', workerFile: 'packages/runtime-core/src/enums.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(0);
+  });
+
+  it('KEEPS a real SCREAMING_SNAKE queue vouched by a named worker (maison POST_SEED_PRODUCT_SYNC)', () => {
+    const edges = [
+      { queueName: 'POST_SEED_PRODUCT_SYNC', producerSymbol: 'enqueueSeedSync', producerFile: 'src/products/seed.service.ts', workerSymbol: null, workerFile: null },
+      { queueName: 'POST_SEED_PRODUCT_SYNC', producerSymbol: null, producerFile: null, workerSymbol: 'runSeedProductsForBullMq', workerFile: 'src/products/seed.worker.ts' },
+    ];
+    expect(filterQueueEdges(edges)).toHaveLength(2);
   });
 });

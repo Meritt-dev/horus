@@ -84,6 +84,7 @@ import { computeWeightedEvidenceConfidence } from './confidence.js';
 import {
   collectGitChanges,
   defaultChangeWindowSince,
+  latestCommitDate,
   DEFAULT_CHANGE_WINDOW_DAYS,
   classifyConfigChangeFiles,
 } from './git-collector.js';
@@ -1516,10 +1517,21 @@ export async function investigate(
   // is anchored to the repo's LAST COMMIT (not a bare Date.now()) so it stays deterministic for a
   // given repo state.
   const changeWindowDays = deps.changeWindowDays ?? DEFAULT_CHANGE_WINDOW_DAYS;
-  // Human-readable range label for findings/causes — the literal range for an explicit since, or a
-  // relative phrase for the auto window (its ISO anchor would be noise in user-facing text).
+  // Human-readable range label for findings/causes. An explicit `--since` prints literally.
+  // The auto window is anchored to the repo's LAST COMMIT (not wall-clock), so "the last N
+  // days" is a lie on a dormant repo — a 2023 commit was labelled "the last 14 days" (dogfood
+  // 0.21, node-fetch). Name the anchor date instead so the reader sees whether it is recent;
+  // this stays deterministic (no Date.now()).
+  const autoAnchorIso =
+    input.since === undefined && deps.repoPath !== undefined
+      ? await latestCommitDate(deps.repoPath)
+      : undefined;
   const changeRangeLabel =
-    input.since !== undefined ? `${input.since}..HEAD` : `the last ${changeWindowDays} days`;
+    input.since !== undefined
+      ? `${input.since}..HEAD`
+      : autoAnchorIso !== undefined
+        ? `the ${changeWindowDays} days before the last commit (${autoAnchorIso.slice(0, 10)})`
+        : `the last ${changeWindowDays} days`;
   let recentChanges: BoundedGitChange | undefined;
   if (deps.repoPath) {
     try {

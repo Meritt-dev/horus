@@ -6,6 +6,7 @@
  */
 
 import type { Symbol } from '@horus/core';
+import { classifyPath } from '@horus/core';
 import type { CodeProvider } from '@horus/connectors';
 
 export interface RankedSeed {
@@ -402,15 +403,13 @@ export function scoreSeed(
  * conditional hard-demotion in rankSeeds (HOR-376).
  */
 export function isDeprioritizedSeedPath(filePath: string): boolean {
-  return (
-    /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) ||
-    /(\.|_)(test|spec)\.[jt]sx?$/i.test(filePath) ||
-    /(^|\/)test_[^/]*\.py$/i.test(filePath) ||
-    /_test\.py$/i.test(filePath) ||
-    /(^|\/)(examples?|samples?|demos?|fixtures?|sandbox|playground|docs|docs_src|tutorials?)(\/|$)/i.test(
-      filePath,
-    )
-  );
+  // Delegate to the ONE shared path classifier (@horus/core) so the resolver's
+  // product-over-tests demotion can never drift from architecture/change bucketing again.
+  // The old hand-rolled regex was missing `bench/benchmark/perf/runtime-tests/tutorial`,
+  // so a qualified lookup (zod `ZodObject.parse`) landed on `packages/bench/*` over the
+  // real method (dogfood 0.21). `vendored` (node_modules/dist) is demoted too.
+  const kind = classifyPath(filePath);
+  return kind === 'test' || kind === 'docs' || kind === 'example' || kind === 'vendored';
 }
 
 /**

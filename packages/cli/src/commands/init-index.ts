@@ -422,6 +422,20 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
           console.error(pc.red(`  source analysis failed: ${(err as Error).message}`));
           return 1;
         }
+        // A first analyze can return "successfully" having timed out mid-embedding, leaving
+        // symbols but 0 vectors (dogfood 0.21, drizzle-orm): every later command then fails
+        // with "no source-intelligence connector configured" and `search` reports
+        // reachable:false. Refuse to register a host on that half-built index — fail loudly so
+        // the exit code tells the truth. A re-run resumes from the warm embedding cache.
+        const incomplete = isAnalyzed(root) ? indexNeedsReanalyze(root) : 'no index was produced';
+        if (incomplete) {
+          console.error(
+            pc.red(
+              `  source analysis did not finish (${incomplete}) — the index has symbols but no embeddings. Re-run \`horus init\` to resume (the embedding cache is warm).`,
+            ),
+          );
+          return 1;
+        }
       } else {
         console.log(pc.dim('  already analyzed'));
       }

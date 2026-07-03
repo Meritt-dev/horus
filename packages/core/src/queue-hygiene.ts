@@ -46,13 +46,34 @@ export function isGenericQueueName(name: string): boolean {
 }
 
 /**
+ * A SCREAMING_SNAKE_CASE constant/enum-member name (≥2 segments) — the stitcher grazed an
+ * enum key, not a queue (dogfood 0.21: Vue `GLOBAL_MOUNT`/`INSTANCE_DESTROY`/`CONFIG_DEVTOOLS`,
+ * Nest compression enums). Treated like a generic name: it survives only if a REAL worker
+ * (named consuming symbol in product code) vouches for it.
+ */
+export function isConstantShapedQueueName(name: string): boolean {
+  return /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(name);
+}
+
+/** Names that only ever denote a real queue alongside a real worker — bare generic words
+ *  and enum-shaped constants. Extraction residue otherwise. */
+function needsWorkerVouch(name: string): boolean {
+  return isGenericQueueName(name) || isConstantShapedQueueName(name);
+}
+
+/**
  * Plausible queue identifier: non-empty, bounded, no whitespace and no
  * template/code characters. `{}` / `$` / `<>` reject template placeholders
  * (`{name}`, `${...}`, `<name>`); `\s` rejects multiline code fragments and
- * anything with embedded whitespace.
+ * anything with embedded whitespace. A name with ≥2 dots (`bullmq.job.id`,
+ * `bullmq.queue.name`) is a dotted telemetry/config attribute key, never a
+ * queue identifier (dogfood 0.21: bullmq's OpenTelemetry attribute constants).
  */
 export function isPlausibleQueueName(name: string): boolean {
-  return name.length > 0 && name.length <= 100 && !/[\s<>{}()`"';$]/.test(name);
+  if (name.length === 0 || name.length > 100) return false;
+  if (/[\s<>{}()`"';$]/.test(name)) return false;
+  if ((name.match(/\./g)?.length ?? 0) >= 2) return false;
+  return true;
 }
 
 /** The producer/worker fields hygiene needs — matches `QueueEdge`/`NewQueueEdge`. */
@@ -76,9 +97,24 @@ export function isFixtureQueueEdge(edge: QueueEdgeLike): boolean {
   return isGenericQueueName(edge.queueName);
 }
 
-/** Edge-level keep/drop: plausible name AND not fixture-only. */
+/**
+ * A same-file enum/constants edge: producer and worker are two constants in ONE
+ * enum/constants/attributes/telemetry module (dogfood 0.21: Nest's Kafka compression
+ * enum, where "queue GZIP" had "worker Snappy" — both members of one enum). A real queue
+ * has a producer and a worker in different roles, not two literals the extractor matched
+ * against each other inside a constants file.
+ */
+function isEnumConstantEdge(edge: QueueEdgeLike): boolean {
+  const pf = edge.producerFile;
+  const wf = edge.workerFile;
+  if (pf == null || pf === '' || pf !== wf) return false;
+  const base = (pf.split('/').pop() ?? pf).toLowerCase();
+  return /(enum|constant|attribute|telemetry)/.test(base);
+}
+
+/** Edge-level keep/drop: plausible name, not fixture-only, not an enum-constant self-match. */
 export function shouldKeepQueueEdge(edge: QueueEdgeLike): boolean {
-  return isPlausibleQueueName(edge.queueName) && !isFixtureQueueEdge(edge);
+  return isPlausibleQueueName(edge.queueName) && !isFixtureQueueEdge(edge) && !isEnumConstantEdge(edge);
 }
 
 /**
@@ -90,6 +126,9 @@ export function shouldKeepQueueEdge(edge: QueueEdgeLike): boolean {
 function isRealWorkerEvidence(edge: QueueEdgeLike): boolean {
   const sym = edge.workerSymbol;
   if (sym == null || sym === '') return false;
+  // A SCREAMING_SNAKE constant is another enum member, not consuming code — it cannot
+  // vouch for an enum-shaped queue name (dogfood 0.21: enum members matching each other).
+  if (isConstantShapedQueueName(sym)) return false;
   const file = edge.workerFile;
   if (file != null && file !== '') {
     if (!isProductPath(file)) return false;
@@ -118,6 +157,6 @@ export function filterQueueEdges<T extends QueueEdgeLike>(edges: T[]): T[] {
     if (isRealWorkerEvidence(e)) hasRealWorker.add(e.queueName);
   }
   return kept.filter(
-    (e) => !isGenericQueueName(e.queueName) || hasRealWorker.has(e.queueName),
+    (e) => !needsWorkerVouch(e.queueName) || hasRealWorker.has(e.queueName),
   );
 }

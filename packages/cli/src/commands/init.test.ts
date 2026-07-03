@@ -97,8 +97,12 @@ describe('runInit (degraded: no source backend)', () => {
     const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
     expect(registry.projects[basename(repo)]).toMatchObject({ configPath });
 
-    const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
-    expect(gitignore).toContain('.horus/');
+    // `.horus/` is ignored via the repo-LOCAL .git/info/exclude, NOT the tracked .gitignore
+    // (writing a tracked file dirtied the tree and made what-changed report Horus's own setup
+    // as a change — dogfood 0.21).
+    const exclude = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('.horus/');
+    expect(existsSync(join(repo, '.gitignore'))).toBe(false);
 
     // Degraded path: indexing skipped with the install hint, never delegated.
     expect(seams.runIndex).not.toHaveBeenCalled();
