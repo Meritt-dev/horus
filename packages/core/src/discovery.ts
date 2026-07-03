@@ -6,7 +6,7 @@
  * `~/.horus/registry.json` lets `--name` resolve a project from anywhere.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -75,16 +75,47 @@ export function readRegistry(): Registry {
   }
 }
 
+/**
+ * Read the registry for a read-modify-WRITE cycle. Unlike {@link readRegistry}
+ * (display-only, degrades to empty), an EXISTING-but-unreadable registry throws:
+ * treating a corrupt/locked file as "empty" and then writing it back would WIPE
+ * every registered project on an ordinary `horus init` (dogfood: registered
+ * projects vanished after routine flows). The corrupt file is left in place for
+ * recovery; callers treat registration as best-effort.
+ */
+function readRegistryForUpdate(): Registry {
+  const p = registryPath();
+  if (!existsSync(p)) return { projects: {} };
+  const parsed = JSON.parse(readFileSync(p, 'utf8')) as Partial<Registry>;
+  return { projects: parsed.projects ?? {} };
+}
+
 export function writeRegistry(reg: Registry): void {
   const p = registryPath();
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(reg, null, 2) + '\n');
+  // Atomic: a crash mid-write must never leave a torn registry that the next
+  // read treats as corrupt (and a later write then clobbers).
+  const tmp = `${p}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(reg, null, 2) + '\n');
+  renameSync(tmp, p);
 }
 
-export function registerProject(name: string, root: string, configPath: string): void {
-  const reg = readRegistry();
+/**
+ * Merge one project into the registry. BEST-EFFORT and strictly ADDITIVE:
+ * if the existing registry can't be parsed, registration is skipped (returns
+ * false) rather than replacing everyone's entries with a fresh file — the
+ * registry is informational (`horus projects`/`hosts`), never identity.
+ */
+export function registerProject(name: string, root: string, configPath: string): boolean {
+  let reg: Registry;
+  try {
+    reg = readRegistryForUpdate();
+  } catch {
+    return false; // corrupt registry preserved for recovery; never clobbered
+  }
   reg.projects[name] = { root, configPath };
   writeRegistry(reg);
+  return true;
 }
 
 export function lookupProject(name: string): RegistryEntry | null {
