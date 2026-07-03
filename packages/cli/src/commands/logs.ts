@@ -109,8 +109,6 @@ export async function runLogs(
   service: string | undefined,
   opts: {
     config?: string;
-    name?: string;
-    project?: string;
     env?: string;
     since?: string;
     level?: string;
@@ -142,11 +140,11 @@ export async function runLogs(
     const hasWhere = where.length > 0;
     const whereArg = hasWhere ? where : undefined;
 
-    const config = await loadConfig(opts.config, { name: opts.name });
+    const config = await loadConfig(opts.config);
 
     let renv;
     try {
-      renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+      renv = resolveEnvironment(config, { env: opts.env });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       return 1;

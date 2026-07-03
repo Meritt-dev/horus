@@ -1,7 +1,7 @@
 /**
  * Tests for checkPrerequisites — the advisory prereq checks that open
- * `horus init` (formerly the standalone `horus setup` command, now a hidden
- * deprecation stub). The checks print status/fix-it lines and return a status
+ * `horus init` (the single onboarding command; the old `horus setup` was
+ * removed). The checks print status/fix-it lines and return a status
  * object; they never gate init's exit code, so there is no exit code here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

@@ -135,25 +135,14 @@ Examples:
 
   // Hidden deprecation stub — `setup` was merged into `init`.
   program
-    .command('setup', { hidden: true })
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .action(() => {
-      console.error('`horus setup` has been merged into `horus init`. Run: horus init');
-      process.exitCode = 1;
-    });
-
-  program
     .command('init')
     .description(
       'Set up this repo for Horus: check prerequisites, write/register .horus config, start the source-intelligence host, and index the code',
     )
-    .option('--name <name>', 'project name (new repo) or registered name to resolve (default: repo directory name)')
     .option('--env <name>', 'environment name (default: production)')
     .option('--source <url>', 'external source-intelligence host URL — recorded verbatim, skips the local host/index')
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--project <name>', 'project name within the config')
     .option('--full', 'build a full project-knowledge snapshot (default)')
     .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
     .option('--fast', 'speed hint, used with --changed')
@@ -177,8 +166,6 @@ Examples:
     .addHelpText('after', `
 Examples:
   horus init
-  horus init --name atlas-payments
-  horus init --name atlas-payments --env staging
   horus init --changed --fast          # pre-push: refresh knowledge for changed files only
   horus init --source http://127.0.0.1:8420   # use an already-running external host
 `);
@@ -398,14 +385,10 @@ Examples:
     .command('status')
     .description('Show config, provider health, and project/environment matrix')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name (show only this project)')
     .option('--env <name>', 'environment name (e.g. production)')
     .action(
       async (opts: { config?: string; name?: string; project?: string; env?: string }) => {
         const code = await runStatus(opts.config, {
-          name: opts.name,
-          project: opts.project,
           env: opts.env,
         });
         process.exitCode = code;
@@ -436,15 +419,6 @@ Examples:
     );
 
   // Hidden deprecation stub — `index` was merged into `init`.
-  program
-    .command('index', { hidden: true })
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .action(() => {
-      console.error('`horus index` has been merged into `horus init`. Run: horus init');
-      process.exitCode = 1;
-    });
-
   const knowledge = program
     .command('knowledge')
     .description('Query the local project-knowledge index (.horus/index) — offline, no Cloud');
@@ -778,8 +752,6 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .command('queues [name]')
     .description('Show queue topology from source intelligence; --live adds real-time Redis/BullMQ state')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via registry)')
-    .option('--project <name>', 'filter edges by project')
     .option('--live', 'fetch real-time queue depths and failed-job counts from Redis/BullMQ')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI narration of queue topology and live state (most useful with --live)')
@@ -791,8 +763,6 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
       ) => {
         process.exitCode = await runQueues(name, {
           config: opts.config,
-          name: opts.name,
-          project: opts.project,
           live: opts.live,
           json: opts.json,
           ai: opts.ai,
@@ -805,10 +775,8 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .command('investigate <hint>')
     .description('Run a deterministic investigation for an incident hint')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name to scope to')
     .option('--env <name>', 'environment name (e.g. production)')
-    .option('--repo <name>', 'repository/project to scope to (alias for --project)')
+    .option('--repo <name>', 'repository/project WITHIN this config to scope to (default: inferred from cwd)')
     .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
     .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
@@ -855,8 +823,6 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
       ) => {
         process.exitCode = await runInvestigate(hint, {
           config: opts.config,
-          name: opts.name,
-          project: opts.project,
           env: opts.env,
           repo: opts.repo,
           scope: opts.scope,
@@ -876,8 +842,6 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .addHelpText('after', `
 Examples:
   horus investigate "checkout latency spike"
-  horus investigate --project atlas-payments --env production "checkout timeout"
-  horus investigate --name atlas-payments "queue backlog"
   horus investigate --ai "payment failures"
 `);
 
@@ -885,8 +849,6 @@ Examples:
     .command('packet <hint|savedId>')
     .description('Build a compact, honesty-framed agent packet from a hint (fresh run) or saved investigation id')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name to scope to')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core)')
     .option('--service <name>', 'service name to scope runtime logs, e.g. leadcall-api-prod')
@@ -912,8 +874,6 @@ Examples:
       ) => {
         process.exitCode = await runPacket(hintOrId, {
           config: opts.config,
-          name: opts.name,
-          project: opts.project,
           env: opts.env,
           scope: opts.scope,
           service: opts.service,
@@ -935,8 +895,6 @@ Examples:
     .command('watch')
     .description('Proactively monitor a source (Sentry/Elasticsearch) and auto-investigate each new incident')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name to scope to')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--source <source>', 'sentry | elasticsearch | auto (default: auto — whichever is configured)', 'auto')
     .option('--interval <seconds>', 'poll interval in seconds (default 60)', '60')
@@ -953,8 +911,6 @@ Examples:
       }) => {
         process.exitCode = await runWatch({
           config: opts.config,
-          name: opts.name,
-          project: opts.project,
           env: opts.env,
           source: opts.source as WatchSource | undefined,
           interval: opts.interval,
@@ -967,7 +923,7 @@ Examples:
   horus watch                                  # auto source, poll every 60s until Ctrl-C
   horus watch --source sentry --once           # one sweep over current Sentry issues
   horus watch --source elasticsearch --interval 30
-  horus watch --project atlas-payments --env production --once
+  horus watch --env production --once
 `);
 
   program
@@ -1284,8 +1240,6 @@ Examples:
       'Synthesize error evidence from logs (signatures, first/last, affected services); --raw for lines',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
     .option('--level <level>', 'minimum level (with --raw): trace|debug|info|warn|error|fatal')
@@ -1334,8 +1288,6 @@ Examples:
       'Surface application-state evidence from MongoDB (read-only, allowlisted): counts, staleness, anomalous statuses',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
-    .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--stale-hours <n>', 'staleness threshold in hours (default 24)')
     .option('--json', 'output JSON')
@@ -1362,7 +1314,6 @@ Examples:
       'Grafana metrics evidence: find dashboards/panels for a hint and detect latency spikes, error-rate changes, throughput drops, queue growth',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--since <when>', 'window, e.g. 1h, 6h, 24h')
     .option('--step <secs>', 'range step seconds')
     .option('--dashboard <uid>', 'restrict to a dashboard uid')

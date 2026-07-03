@@ -4,8 +4,8 @@
  * checks print status lines and guide fixes, but never gate init's exit code
  * (config write and indexing degrade gracefully instead).
  *
- * The old standalone `horus setup` command was merged into `horus init`; its
- * registration is now a hidden deprecation stub.
+ * The old standalone `horus setup` command was merged into `horus init` and
+ * then removed entirely — `horus init` is the only onboarding command.
  */
 
 import pc from 'picocolors';

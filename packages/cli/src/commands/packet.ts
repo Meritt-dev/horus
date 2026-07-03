@@ -185,8 +185,6 @@ export async function runPacket(
   hintOrId: string,
   opts: {
     config?: string;
-    name?: string;
-    project?: string;
     env?: string;
     scope?: string;
     service?: string;
@@ -254,10 +252,10 @@ export async function runPacket(
 
   // ── Hint path: run a fresh investigation, then project it ────────────────────
   try {
-    const config = await loadConfig(opts.config, { name: opts.name });
+    const config = await loadConfig(opts.config);
     let renv;
     try {
-      renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+      renv = resolveEnvironment(config, { env: opts.env });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       return 1;

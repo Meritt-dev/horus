@@ -3,7 +3,7 @@
  * (HOR-6), and (HOR-37) the one-command setup: auto-detect the repo, ensure
  * horus-source is hosting it, stitch the queue boundaries, and (for new repos)
  * write/register a `.horus/config.json`. The old standalone `horus index`
- * command is now a hidden deprecation stub; `runIndex` is invoked by `runInit`.
+ * command was removed entirely; `runIndex` is invoked by `runInit`.
  *
  * Host model: horus-source runs at most ONE host per repo (single-writer Kùzu lock),
  * but different repos run their own hosts on their own ports concurrently. So the
@@ -115,8 +115,6 @@ function findConfiguredRepo(
 
 export interface IndexOptions {
   config?: string;
-  name?: string;
-  project?: string;
   env?: string;
   /** Repository root (default: nearest git root, else cwd). Threaded from `horus init --path`. */
   path?: string;
@@ -132,7 +130,7 @@ export interface IndexOptions {
 
 /**
  * Cap per-category pulls so a huge monorepo can't bloat the knowledge base
- * or stall `horus index`. Matches the knowledge bridge's own defensive cap.
+ * or stall `horus init`. Matches the knowledge bridge's own defensive cap.
  */
 const SOURCE_GRAPH_PULL_LIMIT = 5000;
 
@@ -217,7 +215,7 @@ async function extractSourceGraph(
 }
 
 /**
- * Additive project-knowledge pass (HOR-293). Best-effort: never fails `horus index`.
+ * Additive project-knowledge pass (HOR-293). Best-effort: never fails `horus init`.
  * `--changed --fast` is the pre-push-safe path (cheap landscape refresh + changed-file
  * awareness); `--full` rebuilds the landscape. Deeper per-file extraction (contracts,
  * types, data flows) layers on top later using the changed-file set.
@@ -306,41 +304,30 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     const dbUrlDefault =
       process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 
-    // Try to resolve a config (central, .horus, or --name). Non-fatal if absent.
+    // Try to resolve a config (central or .horus). Non-fatal if absent.
     let config: HorusConfig | null = null;
     try {
-      config = await loadConfig(opts.config, { name: opts.name });
+      config = await loadConfig(opts.config);
     } catch {
       config = null;
     }
     const dbUrl = config?.database.url ?? dbUrlDefault;
 
-    // Is this repo already a configured project? Either explicitly (--project/--name)
-    // or by matching its path in the config. If so, we reuse its host and do NOT write
+    // Is this repo already a configured project? Matched by its PATH in the config —
+    // the repo's config is the identity. If so, we reuse its host and do NOT write
     // a local .horus (that would shadow the project's runtime connectors).
     let configuredProject: string | null = null;
     let configuredHost: string | undefined;
     if (config) {
-      if (opts.project !== undefined || opts.name !== undefined) {
-        try {
-          const renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
-          configuredProject = renv.project;
-          configuredHost = renv.repositories[0]?.sourceHostUrl;
-        } catch {
-          /* fall through to path match */
-        }
-      }
-      if (configuredProject === null) {
-        const match = findConfiguredRepo(config, root);
-        if (match) {
-          configuredProject = match.project;
-          configuredHost = match.hostUrl;
-        }
+      const match = findConfiguredRepo(config, root);
+      if (match) {
+        configuredProject = match.project;
+        configuredHost = match.hostUrl;
       }
     }
 
     const isConfigured = configuredProject !== null;
-    const name = opts.name ?? configuredProject ?? basename(root);
+    const name = configuredProject ?? basename(root);
     const label = configuredProject ?? name;
 
     // Resolve a healthy host WITHOUT ever double-starting one for this repo.
@@ -541,7 +528,7 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       console.log(pc.dim(`  ${configPath}`));
       console.log(
         pc.dim(
-          `  investigate: horus investigate --name ${name} "<hint>"  (or from this repo: horus investigate "<hint>")`,
+          `  investigate: horus investigate "<hint>"  (from this repo)`,
         ),
       );
     } else if (hostUrl !== configuredHost) {

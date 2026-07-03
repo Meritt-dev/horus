@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url';
 import {
   discoverLocalConfig,
   findRepoRoot,
-  lookupProject,
   readLocalConfig,
   readLocalSecrets,
   decryptConnectorSecrets,
@@ -983,22 +982,13 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
  */
 export async function loadConfig(
   configPath?: string,
-  opts?: { name?: string; cwd?: string },
+  opts?: { cwd?: string },
 ): Promise<HorusConfig> {
   const cwd = opts?.cwd ?? process.cwd();
 
   let target: string;
   if (configPath) {
     target = resolve(configPath);
-  } else if (opts?.name) {
-    const entry = lookupProject(opts.name);
-    if (entry === null) {
-      throw new Error(
-        `Unknown project "${opts.name}". Run \`horus init --name ${opts.name}\` in its repo, ` +
-          `or list registered projects with \`horus projects\`.`,
-      );
-    }
-    target = entry.configPath;
   } else {
     const discovered = discoverLocalConfig(cwd);
     if (discovered) {
@@ -1014,9 +1004,10 @@ export async function loadConfig(
       // isn't set up. Fail with an ACTIONABLE message instead of a cryptic module-not-found
       // (the recurring "Cannot find module .../config/horus.config.ts").
       if (!existsSync(jsPath) && !existsSync(tsPath)) {
+        // The repo's config IS the project identity — there is no registry targeting.
         throw new Error(
-          `No Horus config found for ${cwd}. Run \`horus init\` in this repo to set it up, ` +
-            `or pass --config <path> / --name <project>.`,
+          `No Horus config found. Run from a configured repo or pass --config <path>. ` +
+            `(Looked under ${cwd}; run \`horus init\` to set this repo up.)`,
         );
       }
       target = existsSync(jsPath) ? jsPath : tsPath;

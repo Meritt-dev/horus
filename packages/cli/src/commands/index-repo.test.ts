@@ -95,7 +95,7 @@ describe('runIndex host-reuse version gate', () => {
       matches: true,
     });
 
-    const code = await runIndex({ name: 'reuse-test', path: repo });
+    const code = await runIndex({ path: repo });
 
     expect(logs.join('\n')).toContain('Reusing source-intelligence host');
     expect(seams.killSpawnedHost).not.toHaveBeenCalled();
@@ -110,7 +110,7 @@ describe('runIndex host-reuse version gate', () => {
       matches: false,
     });
 
-    const code = await runIndex({ name: 'drift-test', path: repo });
+    const code = await runIndex({ path: repo });
 
     const out = logs.join('\n');
     expect(out).not.toContain('Reusing source-intelligence host');
@@ -130,7 +130,7 @@ describe('runIndex host-reuse version gate', () => {
       matches: false,
     });
 
-    const code = await runIndex({ name: 'unknown-test', path: repo });
+    const code = await runIndex({ path: repo });
 
     expect(logs.join('\n')).toContain('Reusing source-intelligence host');
     expect(seams.killSpawnedHost).not.toHaveBeenCalled();

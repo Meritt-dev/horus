@@ -29,8 +29,6 @@ export type WatchSource = 'sentry' | 'elasticsearch' | 'auto';
 
 export interface WatchOptions {
   config?: string;
-  name?: string;
-  project?: string;
   env?: string;
   source?: WatchSource;
   /** Poll interval in seconds (default 60). */
@@ -199,11 +197,11 @@ function resolveSource(
 }
 
 export async function runWatch(opts: WatchOptions): Promise<number> {
-  const config = await loadConfig(opts.config, { name: opts.name });
+  const config = await loadConfig(opts.config);
 
   let renv;
   try {
-    renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+    renv = resolveEnvironment(config, { env: opts.env });
   } catch (err) {
     console.error(pc.red((err as Error).message));
     return 1;

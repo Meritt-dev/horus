@@ -51,17 +51,10 @@ describe('CLI program structure', () => {
     }
   });
 
-  it('setup and index are hidden deprecation stubs (registered, absent from help)', () => {
+  it('top-level help lists init and never setup/index', () => {
     const program = buildProgram();
-    for (const name of ['setup', 'index']) {
-      const cmd = program.commands.find((c) => c.name() === name);
-      expect(cmd, `stub "${name}" should stay registered`).toBeDefined();
-      // Commander hides via the `hidden` flag set by .command(name, { hidden: true }).
-      expect((cmd as unknown as { _hidden: boolean })._hidden, `"${name}" should be hidden`).toBe(true);
-    }
-    // And the top-level help must not advertise them.
     let out = '';
-    program.configureOutput({ writeOut: (s) => { out += s; }, writeErr: (s) => { out += s; } });
+    program.configureOutput({ writeOut: (t) => { out += t; }, writeErr: (t) => { out += t; } });
     program.outputHelp();
     // Commander lists visible commands at exactly two-space indent.
     expect(out).not.toMatch(/\n {2}setup\b/);
@@ -69,10 +62,10 @@ describe('CLI program structure', () => {
     expect(out).toMatch(/\n {2}init\b/);
   });
 
-  it('investigate command has --project, --env, --format options', () => {
+  it('investigate command has --env, --format options (and NO --project)', () => {
     const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
     const longs = investigate.options.map((o) => o.long);
-    expect(longs).toContain('--project');
+    expect(longs).not.toContain('--project');
     expect(longs).toContain('--env');
     expect(longs).toContain('--format');
   });
@@ -98,15 +91,17 @@ describe('CLI program structure', () => {
     expect(aiOpt?.optional).toBe(false);
   });
 
-  it('invoking a stub prints the merge pointer and exits 1', async () => {
+  it('setup and index are fully REMOVED — unknown commands, no stubs, no help pages', () => {
+    // `horus init` is the only onboarding/indexing command. The old names must fail
+    // exactly like any other unknown command (no compatibility shim).
+    const program = buildProgram();
+    expect(program.commands.some((c) => c.name() === 'setup')).toBe(false);
+    expect(program.commands.some((c) => c.name() === 'index')).toBe(false);
     for (const name of ['setup', 'index']) {
-      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      process.exitCode = 0;
-      await buildProgram().parseAsync(['node', 'horus', name]);
-      expect(errSpy.mock.calls.flat().join(' ')).toContain('merged into `horus init`');
-      expect(process.exitCode).toBe(1);
-      process.exitCode = 0;
-      errSpy.mockRestore();
+      expect(() =>
+        buildProgram().exitOverride().configureOutput({ writeErr: () => {} })
+          .parse(['node', 'horus', name]),
+      ).toThrow(/unknown command/i);
     }
   });
 
@@ -119,9 +114,30 @@ describe('CLI program structure', () => {
   it('init carries the full merged option set (old init + index flags)', () => {
     const init = buildProgram().commands.find((c) => c.name() === 'init')!;
     const longs = init.options.map((o) => o.long);
-    for (const opt of ['--name', '--env', '--source', '--path', '--config', '--project',
+    for (const opt of ['--env', '--source', '--path', '--config',
                        '--full', '--changed', '--fast', '--import-kb']) {
       expect(longs, `init should carry ${opt}`).toContain(opt);
+    }
+    // Registry targeting is REMOVED: the repo's config/cwd is the project identity.
+    expect(longs).not.toContain('--name');
+    expect(longs).not.toContain('--project');
+  });
+
+  it('no audited command carries --name/--project (config/cwd is the identity)', () => {
+    // Cross-repo targeting is `--config <path>` (or cd into the repo) — nothing else.
+    // connect keeps --project as the SENTRY PROJECT SLUG (domain data, not targeting);
+    // cloud link keeps --project as the CLOUD project picker.
+    const audited = ['investigate', 'packet', 'logs', 'metrics', 'queues', 'state',
+                     'status', 'init', 'explain', 'architecture', 'blast-radius',
+                     'repos', 'search', 'ask', 'replay', 'postmortem', 'score',
+                     'feedback', 'watch'];
+    const program = buildProgram();
+    for (const name of audited) {
+      const cmd = program.commands.find((c) => c.name() === name);
+      if (cmd === undefined) continue;
+      const longs = cmd.options.map((o) => o.long);
+      expect(longs, `${name} must not carry --name`).not.toContain('--name');
+      expect(longs, `${name} must not carry --project`).not.toContain('--project');
     }
   });
 
@@ -164,7 +180,7 @@ describe('CLI help text examples (HOR-133)', () => {
     const help = captureHelp('init');
     expect(help).toContain('Examples:');
     expect(help).toContain('horus init');
-    expect(help).toContain('--name');
+    expect(help).not.toContain('--name');
   });
 
   it('doctor help includes usage examples', () => {
@@ -178,7 +194,7 @@ describe('CLI help text examples (HOR-133)', () => {
     const help = captureHelp('investigate');
     expect(help).toContain('Examples:');
     expect(help).toContain('horus investigate');
-    expect(help).toContain('--project');
+    expect(help).not.toContain('--project');
   });
 
   it('investigations help includes usage examples', () => {

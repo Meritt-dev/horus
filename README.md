@@ -328,15 +328,15 @@ horus investigate --help
 
 ## Local project workflow (git-style)
 
-A repo carries a `.horus/config.json` (discovered by walking up from the working directory, like `.git`), and a global registry (`~/.horus/registry.json`) lets `--name` resolve a project from anywhere.
+A repo carries a `.horus/config.json` (discovered by walking up from the working directory, like `.git`) — the repo's config IS the project identity. Work from inside the repo, or pass `--config <path>` to target another repo explicitly.
 
 ```bash
 cd /repos/atlas-payments
 horus init
 
 horus investigate "checkout latency spike"
-horus investigate --name atlas-payments "checkout latency spike"
-horus projects
+horus investigate --config /repos/atlas-payments/.horus/config.json "checkout latency spike"   # from anywhere
+horus projects   # list registered repos (informational)
 ```
 
 `horus init` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.

@@ -24,6 +24,6 @@ export async function runProjects(): Promise<number> {
     console.log(`  ${pc.bold(name.padEnd(22))} ${pc.dim(entry.root)}`);
   }
   console.log('');
-  console.log(pc.dim('  horus investigate --name <name> "<hint>"'));
+  console.log(pc.dim('  cd <repo> && horus investigate "<hint>"   (or: horus investigate --config <path>)'));
   return 0;
 }

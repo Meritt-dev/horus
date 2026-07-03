@@ -111,7 +111,7 @@ const FIXTURE_REPORT: InvestigationReport = {
 describe('runInit exit codes', () => {
   it('exits 0 when config is written successfully', async () => {
     const dir = makeTempDir();
-    const code = await runInit({ name: 'exit-test-ok', path: dir });
+    const code = await runInit({ path: dir });
     expect(code).toBe(0);
   });
 
@@ -119,26 +119,25 @@ describe('runInit exit codes', () => {
     const dir = makeTempDir();
     // Make the directory read-only so writeLocalConfig fails with EACCES
     chmodSync(dir, 0o555);
-    const code = await runInit({ name: 'exit-test-fail', path: dir });
+    const code = await runInit({ path: dir });
     expect(code).toBe(1);
   });
 
   it('exits 0 regardless of missing source-intelligence host (optional — not a failure)', async () => {
     const dir = makeTempDir();
-    const code = await runInit({ name: 'exit-test-no-source', path: dir });
+    const code = await runInit({ path: dir });
     expect(code).toBe(0);
   });
 
   it('exits 0 with an explicit env name', async () => {
     const dir = makeTempDir();
-    const code = await runInit({ name: 'exit-test-env', env: 'staging', path: dir });
+    const code = await runInit({ env: 'staging', path: dir });
     expect(code).toBe(0);
   });
 
   it('exits 0 with an explicit source host URL', async () => {
     const dir = makeTempDir();
     const code = await runInit({
-      name: 'exit-test-source',
       path: dir,
       source: 'http://127.0.0.1:8420',
     });

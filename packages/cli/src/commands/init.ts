@@ -31,13 +31,11 @@ import { runIndex } from './index-repo.js';
 import { installBundledBackend, resolveBundledWheel } from '../lib/bundled-backend.js';
 
 export interface InitOptions {
-  name?: string;
   env?: string;
   /** External source-intelligence host URL — recorded verbatim, no local spawn. */
   source?: string;
   path?: string;
   config?: string;
-  project?: string;
   full?: boolean;
   changed?: boolean;
   fast?: boolean;
@@ -87,8 +85,6 @@ export async function runInit(opts: InitOptions): Promise<number> {
     // stitch, knowledge, config write/register for new repos).
     return await runIndex({
       ...(opts.config !== undefined ? { config: opts.config } : {}),
-      ...(opts.name !== undefined ? { name: opts.name } : {}),
-      ...(opts.project !== undefined ? { project: opts.project } : {}),
       ...(opts.env !== undefined ? { env: opts.env } : {}),
       ...(opts.full !== undefined ? { full: opts.full } : {}),
       ...(opts.changed !== undefined ? { changed: opts.changed } : {}),
@@ -105,7 +101,8 @@ export async function runInit(opts: InitOptions): Promise<number> {
 /** Write + register `.horus/config.json` without touching the backend. */
 function writeConfigOnly(root: string, opts: InitOptions, hostUrl: string | undefined): number {
   try {
-    const name = opts.name ?? basename(root);
+    // The repo directory IS the project identity (edit .horus/config.json to rename).
+    const name = basename(root);
     const envName = opts.env ?? 'production';
 
     const repo: Record<string, unknown> = { name, path: root };
@@ -126,7 +123,7 @@ function writeConfigOnly(root: string, opts: InitOptions, hostUrl: string | unde
 
     console.log(`${pc.green('✓')} Initialized Horus project ${pc.bold(name)}`);
     console.log(pc.dim(`  config:     ${configPath}`));
-    console.log(pc.dim(`  registered: horus investigate --name ${name} "<hint>"`));
+    console.log(pc.dim(`  next: horus investigate "<hint>"  (from this repo)`));
     console.log(
       pc.dim('  add runtime connectors with `horus connect <type>` (elasticsearch/mongodb/grafana/...) — credentials are encrypted, never hand-edited into config.json'),
     );

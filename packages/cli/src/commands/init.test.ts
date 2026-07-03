@@ -16,7 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const seams = vi.hoisted(() => ({
   sourceAvailable: vi.fn(async () => false),
@@ -79,7 +79,7 @@ describe('runInit (degraded: no source backend)', () => {
   it('writes .horus/config.json, registers the project, and gitignores .horus/', async () => {
     // ensureProjectGitignore only acts inside a git repo.
     mkdirSync(join(repo, '.git'));
-    const code = await runInit({ name: 'demo-project', path: repo });
+    const code = await runInit({ path: repo });
 
     expect(code).toBe(0);
 
@@ -87,7 +87,7 @@ describe('runInit (degraded: no source backend)', () => {
     expect(existsSync(configPath)).toBe(true);
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
     expect(config.version).toBe(1);
-    expect(config.project.name).toBe('demo-project');
+    expect(config.project.name).toBe(basename(repo)); // repo dir IS the identity
     expect(config.project.environments).toEqual([
       { name: 'production', readOnly: true, connectors: {} },
     ]);
@@ -95,7 +95,7 @@ describe('runInit (degraded: no source backend)', () => {
     const registryPath = join(home, '.horus', 'registry.json');
     expect(existsSync(registryPath)).toBe(true);
     const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
-    expect(registry.projects['demo-project']).toMatchObject({ configPath });
+    expect(registry.projects[basename(repo)]).toMatchObject({ configPath });
 
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
     expect(gitignore).toContain('.horus/');
@@ -106,14 +106,14 @@ describe('runInit (degraded: no source backend)', () => {
   });
 
   it('honors --env for the environment name', async () => {
-    const code = await runInit({ name: 'demo-project', env: 'staging', path: repo });
+    const code = await runInit({ env: 'staging', path: repo });
     expect(code).toBe(0);
     const config = JSON.parse(readFileSync(join(repo, '.horus', 'config.json'), 'utf8'));
     expect(config.project.environments[0].name).toBe('staging');
   });
 
   it('next steps recommend `horus connect`, never hand-editing connectors into config.json', async () => {
-    const code = await runInit({ name: 'demo-project', path: repo });
+    const code = await runInit({ path: repo });
     expect(code).toBe(0);
 
     const out = logs.join('\n');
@@ -126,7 +126,7 @@ describe('runInit (degraded: no source backend)', () => {
     const notADir = join(repo, 'blocker');
     writeFileSync(notADir, '');
 
-    const code = await runInit({ name: 'demo-project', path: join(notADir, 'nested') });
+    const code = await runInit({ path: join(notADir, 'nested') });
 
     expect(code).toBe(1);
     expect(errs.length).toBeGreaterThan(0);
@@ -136,7 +136,6 @@ describe('runInit (degraded: no source backend)', () => {
 describe('runInit (--source: external host escape hatch)', () => {
   it('records the host URL verbatim and never probes or delegates to the index flow', async () => {
     const code = await runInit({
-      name: 'demo-project',
       path: repo,
       source: 'http://127.0.0.1:8420',
     });
@@ -153,12 +152,12 @@ describe('runInit (backend available: delegates to the index flow)', () => {
   it('delegates to runIndex with the resolved root and passthrough flags', async () => {
     seams.sourceAvailable.mockResolvedValue(true);
 
-    const code = await runInit({ name: 'demo-project', env: 'staging', path: repo, changed: true });
+    const code = await runInit({ env: 'staging', path: repo, changed: true });
 
     expect(code).toBe(0);
     expect(seams.runIndex).toHaveBeenCalledTimes(1);
     expect(seams.runIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'demo-project', env: 'staging', changed: true, path: repo }),
+      expect.objectContaining({ env: 'staging', changed: true, path: repo }),
     );
   });
 
@@ -166,7 +165,7 @@ describe('runInit (backend available: delegates to the index flow)', () => {
     seams.sourceAvailable.mockResolvedValue(true);
     seams.runIndex.mockResolvedValue(1);
 
-    const code = await runInit({ name: 'demo-project', path: repo });
+    const code = await runInit({ path: repo });
     expect(code).toBe(1);
   });
 
@@ -174,7 +173,7 @@ describe('runInit (backend available: delegates to the index flow)', () => {
     seams.checkDatabase.mockResolvedValue({ reachable: false, schemaReady: false, schemaDetail: '' });
     seams.sourceAvailable.mockResolvedValue(true);
 
-    const code = await runInit({ name: 'demo-project', path: repo });
+    const code = await runInit({ path: repo });
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('Postgres unreachable');
   });

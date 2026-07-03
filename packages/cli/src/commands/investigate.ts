@@ -215,8 +215,6 @@ export async function runInvestigate(
   hint: string,
   opts: {
     config?: string;
-    name?: string;
-    project?: string;
     env?: string;
     /** @deprecated use project — kept for back-compat with parked commands */
     repo?: string;
@@ -241,7 +239,7 @@ export async function runInvestigate(
   },
 ): Promise<number> {
   try {
-    const config = await loadConfig(opts.config, { name: opts.name });
+    const config = await loadConfig(opts.config);
 
     // Resolve any invocation-time Shopify queries (@file / stdin / raw) before wiring — a bad
     // path or malformed variables JSON should fail fast with a clear message, not mid-run.
@@ -253,8 +251,8 @@ export async function runInvestigate(
       return 1;
     }
 
-    // --repo is the legacy name; --project takes precedence when both are given.
-    const projectName = opts.project ?? opts.repo;
+    // --repo selects a repository/project WITHIN this config; default = cwd inference.
+    const projectName = opts.repo;
 
     let renv;
     try {

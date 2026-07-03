@@ -33,8 +33,6 @@ export async function runQueues(
   name: string | undefined,
   opts: {
     config?: string;
-    project?: string;
-    name?: string;
     live?: boolean;
     json?: boolean;
     ai?: boolean;
@@ -44,7 +42,7 @@ export async function runQueues(
   },
 ): Promise<number> {
   try {
-    const config = await loadConfig(opts.config, { name: opts.name });
+    const config = await loadConfig(opts.config);
     const { db, sql } = await openDb(config.database.url);
 
     try {
@@ -52,16 +50,14 @@ export async function runQueues(
       // returns every project's rows from the shared Horus database, so without this a
       // repo would show other projects' queues as its own (e.g. another repo's Zoho
       // queues bleeding into this one). Resolve the project the same way the rest of the
-      // CLI does: explicit --project, else the single configured project, else infer from
-      // the current repo path. If it can't be resolved (multi-project config, no cwd
-      // match), fall back to the unscoped listing rather than failing.
-      let project = opts.project;
-      if (project === undefined) {
-        try {
-          project = resolveEnvironment(config, { project: opts.project }).project;
-        } catch {
-          // Unresolvable — leave undefined (unscoped) to preserve prior behavior.
-        }
+      // CLI does: the single configured project, else infer from the current repo
+      // path. If it can't be resolved (multi-project config, no cwd match), fall
+      // back to the unscoped listing rather than failing.
+      let project: string | undefined;
+      try {
+        project = resolveEnvironment(config).project;
+      } catch {
+        // Unresolvable — leave undefined (unscoped) to preserve prior behavior.
       }
       const rows = await listQueueEdges(db, { project, queueName: name });
 

@@ -89,7 +89,6 @@ async function captureStatus(
 ): Promise<{ output: string; code: number }> {
   const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const code = await runStatus(configPath, {
-    project: 'my-api',
     env: 'production',
     _mongoFactory: factory ?? undefined,
   });
@@ -240,7 +239,6 @@ async function captureRedisStatus(
 ): Promise<{ output: string; code: number }> {
   const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const code = await runStatus(configPath, {
-    project: 'my-api',
     env: 'production',
     _redisStatus: redisStatusStub(status),
   });

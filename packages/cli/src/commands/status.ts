@@ -387,8 +387,6 @@ function redisServerLabel(raw: string): string {
 export async function runStatus(
   configPath?: string,
   opts?: {
-    name?: string;
-    project?: string;
     env?: string;
     /** Inject a MongoDB provider factory for tests. */
     _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
@@ -409,7 +407,7 @@ export async function runStatus(
   const checks: Check[] = [];
 
   try {
-    config = await loadConfig(configPath, { name: opts?.name });
+    config = await loadConfig(configPath);
     checks.push({ label: 'Config', ok: true, detail: 'loaded & valid' });
   } catch (err) {
     checks.push({
@@ -448,11 +446,11 @@ export async function runStatus(
     return 0;
   }
 
-  if (opts?.project !== undefined || opts?.env !== undefined) {
+  if (opts?.env !== undefined) {
     // Focused: single env
     let renv: ResolvedEnvironment;
     try {
-      renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+      renv = resolveEnvironment(config, { env: opts.env });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       return 1;
@@ -477,6 +475,6 @@ export async function runStatus(
   }
 
   // Exit non-zero only on a fatal failure (bad config). Unreachable providers are
-  // warnings in matrix mode; exit 1 only when --project/--env was given.
+  // warnings in matrix mode; exit 1 only when --env was given.
   return checks.some((c) => c.ok === false && c.fatal) ? 1 : 0;
 }
