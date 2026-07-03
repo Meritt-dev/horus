@@ -427,6 +427,63 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot trace the request end-to-end.');
   }
 
+  // ── Consolidate runtime gaps when the CONFIG has no runtime connectors ──────
+  // Behavior follows the config: connectors configured → used; none configured →
+  // one honest statement, not four separate "connect X" nags (dogfood: OSS repos
+  // with no connectors read as a wall of Elastic/Grafana/tracing suggestions).
+  // The summed confidenceImpact is preserved, so the ceiling math is unchanged.
+  const anyRuntimeConnector = Boolean(
+    connectors.elasticsearch ||
+      connectors.sentry ||
+      connectors.axiom ||
+      connectors.grafana ||
+      connectors.mongodb ||
+      connectors.postgres ||
+      connectors.redis ||
+      connectors.queue ||
+      connectors.shopify,
+  );
+  if (!anyRuntimeConnector && !sourceImpact) {
+    const RUNTIME_DIMS = new Set([
+      'logs',
+      'metrics',
+      'queue runtime state',
+      'application state',
+      'traces',
+    ]);
+    const runtimeGaps = gaps.filter((g) => RUNTIME_DIMS.has(g.dimension));
+    if (runtimeGaps.length > 0) {
+      const impact =
+        Math.round(runtimeGaps.reduce((a, g) => a + g.confidenceImpact, 0) * 100) / 100;
+      const kept = gaps.filter((g) => !RUNTIME_DIMS.has(g.dimension));
+      gaps.length = 0;
+      gaps.push(
+        {
+          dimension: 'runtime evidence',
+          why:
+            'Runtime evidence unavailable — no runtime connectors are configured for this ' +
+            'environment; proceeding with source, topology, git, ownership, and blast-radius evidence.',
+          nextSource:
+            'Optional: add connectors (`horus connect <type>`) to raise the confidence ceiling',
+          confidenceImpact: impact,
+          // Deliberately NO routeHint: the router must route to a USEFUL configured
+          // follow-up (what-changed / owner / explain), never lead with connector setup.
+        },
+        ...kept,
+      );
+      const RUNTIME_BLIND_SPOTS = new Set([
+        'Cannot see the real error.',
+        'Cannot see latency/error-rate trends.',
+        'Cannot see queue backlogs or failed jobs.',
+        'Cannot check for stuck/failed records behind the symptom.',
+        'Cannot trace the request end-to-end.',
+      ]);
+      const keptBlind = blindSpots.filter((b) => !RUNTIME_BLIND_SPOTS.has(b));
+      blindSpots.length = 0;
+      blindSpots.push('No runtime visibility (no connectors configured).', ...keptBlind);
+    }
+  }
+
   // ── Confidence ceiling ───────────────────────────────────────────────────────
   let totalImpact = 0;
   for (const gap of gaps) {
@@ -446,7 +503,14 @@ export function detectMissingEvidence(
  */
 export function gapNextActions(gaps: EvidenceGap[]): string[] {
   return [...gaps]
-    .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
+    .sort((a, b) => {
+      // The consolidated "runtime evidence" gap is OPTIONAL setup advice — it trails
+      // every configured, immediately-useful follow-up (config drives behavior).
+      const at = a.dimension === 'runtime evidence' ? 1 : 0;
+      const bt = b.dimension === 'runtime evidence' ? 1 : 0;
+      if (at !== bt) return at - bt;
+      return b.confidenceImpact - a.confidenceImpact;
+    })
     .map((g) => g.nextSource);
 }
 

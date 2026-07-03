@@ -174,7 +174,12 @@ function bareReport(service?: string): InvestigationReport {
 }
 
 describe('dimensionToStep — keyed off the real EvidenceGap.dimension constants', () => {
-  const gaps = detectMissingEvidence(bareReport('payments')).gaps;
+  // A config WITH a runtime connector keeps per-dimension gaps (an all-unconfigured
+  // config consolidates them into one 'runtime evidence' gap — tested in gaps.test.ts).
+  const gaps = detectMissingEvidence(bareReport('payments'), {
+    shopify: true,
+    shopifyCollected: true,
+  }).gaps;
 
   it('emits exactly the known dimension strings', () => {
     expect(gaps.map((g) => g.dimension).sort()).toEqual(

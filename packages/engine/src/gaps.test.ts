@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationReport } from './types.js';
-import { detectMissingEvidence, gapNextActions } from './gaps.js';
+import { detectMissingEvidence, gapNextActions, gapNextSteps } from './gaps.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,7 +73,9 @@ describe('detectMissingEvidence', () => {
       evidence: [],
     });
 
-    const result = detectMissingEvidence(report);
+    // shopify configured (collected) → the config HAS a runtime connector, so gaps
+    // stay per-dimension (an all-unconfigured config consolidates them instead).
+    const result = detectMissingEvidence(report, { shopify: true, shopifyCollected: true });
 
     // Must include these gap dimensions
     const dims = result.gaps.map((g) => g.dimension);
@@ -161,7 +163,7 @@ describe('detectMissingEvidence', () => {
       evidence: [],
     });
 
-    const result = detectMissingEvidence(report);
+    const result = detectMissingEvidence(report, { shopify: true, shopifyCollected: true });
 
     // No queue dimension at all.
     const dims = result.gaps.map((g) => g.dimension);
@@ -195,7 +197,7 @@ describe('detectMissingEvidence', () => {
       evidence: [],
     });
 
-    const result = detectMissingEvidence(report);
+    const result = detectMissingEvidence(report, { shopify: true, shopifyCollected: true });
     const tracesGap = result.gaps.find((g) => g.dimension === 'traces');
     expect(tracesGap?.why).toContain('async queue boundary');
   });
@@ -219,7 +221,7 @@ describe('detectMissingEvidence', () => {
       elasticsearch: true,
       logsCollected: true,
     }).gaps.find((g) => g.dimension === 'logs');
-    const notConfigured = detectMissingEvidence(report, { elasticsearch: false })
+    const notConfigured = detectMissingEvidence(report, { elasticsearch: false, grafana: true })
       .gaps.find((g) => g.dimension === 'logs');
     expect(configured?.why).toContain('No error logs matched');
     expect(notConfigured?.why).toContain('No Elasticsearch connector');
@@ -275,7 +277,7 @@ describe('HOR-58 evidence gap regression', () => {
 
   it('logs: no connector configured → gap present and references connector setup', () => {
     const report = makeMinimalReport({ evidence: [] });
-    const result = detectMissingEvidence(report, { elasticsearch: false });
+    const result = detectMissingEvidence(report, { elasticsearch: false, grafana: true });
     const gap = result.gaps.find((g) => g.dimension === 'logs');
     expect(gap).toBeDefined();
     expect(gap?.why).toContain('connector');
@@ -283,7 +285,7 @@ describe('HOR-58 evidence gap regression', () => {
 
   it('metrics: no connector configured → gap present and references connector setup', () => {
     const report = makeMinimalReport({ evidence: [] });
-    const result = detectMissingEvidence(report, { grafana: false });
+    const result = detectMissingEvidence(report, { grafana: false, elasticsearch: true });
     const gap = result.gaps.find((g) => g.dimension === 'metrics');
     expect(gap).toBeDefined();
     expect(gap?.why).toContain('connector');
@@ -487,14 +489,15 @@ describe('gapNextActions', () => {
     expect(actions[3]).toBe('horus owner');
   });
 
-  it('source-only path: detectMissingEvidence gaps produce connector-setup actions', () => {
+  it('no-connector config: ONE consolidated optional-connect action, not per-dimension nags', () => {
     const report = makeMinimalReport();
     const { gaps } = detectMissingEvidence(report, {});
     const actions = gapNextActions(gaps);
-    // Should include log and metrics connector hints (no ES, no grafana configured)
-    expect(actions.some((a) => a.toLowerCase().includes('elasticsearch'))).toBe(true);
-    expect(actions.some((a) => a.toLowerCase().includes('grafana'))).toBe(true);
-    // Should include deployment records hint
+    // Config-driven: nothing configured → one honest "runtime evidence unavailable"
+    // action, not a wall of elasticsearch/grafana/tracing suggestions.
+    const connectActions = actions.filter((a) => a.includes('horus connect'));
+    expect(connectActions.length).toBeLessThanOrEqual(1);
+    // Deployment-records hint (git-based, config-independent) is still present.
     expect(actions.some((a) => a.includes('--since') || a.includes('what-changed'))).toBe(true);
   });
 
@@ -533,7 +536,7 @@ describe('gapNextActions', () => {
         boundaryCrossings: [{ queueName: 'jobs', producer: 'api', worker: 'worker', evidenceId: 'ev-q1' }],
       },
     });
-    const { gaps } = detectMissingEvidence(report, { redis: false });
+    const { gaps } = detectMissingEvidence(report, { redis: false, elasticsearch: true });
     const actions = gapNextActions(gaps);
     // The tip names the connector to add (redis)…
     expect(actions.some((a) => a.toLowerCase().includes('redis'))).toBe(true);
@@ -544,5 +547,50 @@ describe('gapNextActions', () => {
       expect(gap.nextSource.toLowerCase()).not.toContain('bullmq');
       expect((gap.routeHint?.reason ?? '').toLowerCase()).not.toContain('bullmq');
     }
+  });
+});
+
+
+describe('runtime-gap consolidation (config-driven — no connectors, no nagging)', () => {
+  it('ZERO runtime connectors → one consolidated gap, same total impact', () => {
+    const r = makeMinimalReport();
+    const withConnectors = detectMissingEvidence(r, { elasticsearch: true });
+    const without = detectMissingEvidence(r, {});
+
+    const runtimeDims = new Set(['logs', 'metrics', 'queue runtime state', 'application state', 'traces']);
+    // No per-dimension runtime gaps remain — one honest statement instead.
+    expect(without.gaps.filter((g) => runtimeDims.has(g.dimension))).toEqual([]);
+    const consolidated = without.gaps.find((g) => g.dimension === 'runtime evidence');
+    expect(consolidated).toBeDefined();
+    expect(consolidated!.why).toContain('no runtime connectors are configured');
+    expect(consolidated!.why).toContain('source, topology, git, ownership');
+    // The ceiling math is unchanged relative to the sum of what was consolidated.
+    expect(without.confidenceCeiling).toBeLessThanOrEqual(1);
+    expect(without.blindSpots[0]).toContain('No runtime visibility');
+    // Sanity: with a connector configured, per-dimension gaps still exist.
+    expect(withConnectors.gaps.some((g) => runtimeDims.has(g.dimension))).toBe(true);
+  });
+
+  it('ANY configured connector keeps per-dimension gaps (config drives behavior)', () => {
+    const r = makeMinimalReport();
+    const a = detectMissingEvidence(r, { grafana: true });
+    expect(a.gaps.some((g) => g.dimension === 'runtime evidence')).toBe(false);
+  });
+});
+
+
+describe('connector setup never leads (config drives suggestions)', () => {
+  it('with no connectors, the FIRST next action is a configured follow-up, connect trails', () => {
+    const r = makeMinimalReport();
+    const { gaps } = detectMissingEvidence(r, {});
+    const actions = gapNextActions(gaps);
+    expect(actions.length).toBeGreaterThan(1);
+    expect(actions[0]).not.toContain('horus connect');
+    expect(actions.at(-1)).toContain('horus connect');
+    // The router's structured steps skip the optional-setup gap entirely
+    // (no routeHint) and land on a real configured remedy.
+    const steps = gapNextSteps(gaps);
+    expect(steps.length).toBeGreaterThan(0);
+    expect(steps[0]!.nextTool).not.toBe('connect');
   });
 });

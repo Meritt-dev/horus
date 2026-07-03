@@ -309,7 +309,7 @@ describe('investigate() WITH metrics provider — Grafana failure', () => {
         connectors: { grafana: true },
       },
     );
-    const metricsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics');
+    const metricsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics' || g.dimension === 'runtime evidence');
     expect(metricsGap).toBeDefined();
     expect(metricsGap?.confidenceImpact).toBe(0.1);
   });
@@ -436,9 +436,13 @@ describe('investigate() WITHOUT metrics provider', () => {
       { hint: 'zoho' },
       { code: fakeCode, db: fakeDb },
     );
-    const metricsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics');
+    // Zero-connector config → covered by the consolidated 'runtime evidence' gap,
+    // whose impact SUMS the dimensions it replaced (so ≥ the old 0.1).
+    const metricsGap = report.gapAnalysis.gaps.find(
+      (g) => g.dimension === 'metrics' || g.dimension === 'runtime evidence',
+    );
     expect(metricsGap).toBeDefined();
-    expect(metricsGap?.confidenceImpact).toBe(0.1);
+    expect(metricsGap!.confidenceImpact).toBeGreaterThanOrEqual(0.1);
   });
 });
 

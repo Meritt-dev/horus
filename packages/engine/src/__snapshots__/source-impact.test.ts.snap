@@ -18,10 +18,8 @@ exports[`incident path is unchanged by source-impact mode (HOR-385 invariant) > 
     "1 symbol(s) changed in range HEAD~5..HEAD..HEAD",
   ],
   "gapDimensions": [
-    "logs",
-    "metrics",
+    "runtime evidence",
     "ownership",
-    "traces",
   ],
   "hypotheses": [
     {

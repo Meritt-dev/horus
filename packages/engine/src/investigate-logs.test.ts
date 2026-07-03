@@ -890,7 +890,7 @@ describe('investigate() WITHOUT logs provider (regression guard)', () => {
       { code: fakeCode, db: fakeDb },
     );
 
-    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs' || g.dimension === 'runtime evidence');
     expect(logsGap).toBeDefined();
   });
 
@@ -922,7 +922,7 @@ describe('investigate() WITHOUT logs provider (regression guard)', () => {
       { code: fakeCode, db: fakeDb, logs: null },
     );
 
-    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs' || g.dimension === 'runtime evidence');
     expect(logsGap).toBeDefined();
   });
 });

@@ -276,9 +276,11 @@ describe('HOR-104 evidence quality — Scenario E: missing evidence', () => {
 // ---------------------------------------------------------------------------
 
 describe('HOR-104 gap analysis — missing log evidence', () => {
-  it('no log evidence → logs gap reported', () => {
+  it('no log evidence → logs gap reported (per-dimension when a connector is configured)', () => {
     const report = stubReport([ev('commit', 'history', 0.85)]);
-    const { gaps } = detectMissingEvidence(report, {});
+    // grafana configured → per-dimension gaps apply (a zero-connector config
+    // consolidates them into one 'runtime evidence' gap instead).
+    const { gaps } = detectMissingEvidence(report, { grafana: true });
     const logsGap = gaps.find((g) => g.dimension === 'logs');
     expect(logsGap, 'expected a logs gap when no log evidence is present').toBeDefined();
   });

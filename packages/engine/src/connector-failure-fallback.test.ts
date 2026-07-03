@@ -721,6 +721,8 @@ describe('HOR-445 source-query fallback — code.impact throws (impact 404)', ()
       'deployment records',
       'ownership',
       'traces',
+      // Consolidated replacement for the runtime dimensions on zero-connector configs.
+      'runtime evidence',
     ]);
     for (const gap of report.gapAnalysis.gaps) {
       expect(knownDimensions.has(gap.dimension), `unexpected gap dimension: ${gap.dimension}`).toBe(true);
