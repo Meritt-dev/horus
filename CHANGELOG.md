@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [0.20.0] — 2026-07-03
 
 - **One codebase, one bundle.** The source-intelligence backend now lives only in this repo (`packages/source-py` — the standalone horus-source repo is archived) and ships **inside the horus bundle**: a Python wheel built at release time and included in the npm package, the Homebrew archives, and the GitHub release. Nothing is published to PyPI anymore. `horus init` installs the backend from the bundled wheel automatically, `horus update` keeps it in lockstep, and the backend version IS the horus version — the paired-version dance is gone. (Python 3.11+ with uv remains the only backend prerequisite; the wheel's third-party dependencies still resolve from PyPI as a normal package install.)
 - **One onboarding command.** `horus setup`, `horus init`, and `horus index` are now a single `horus init`: it checks prerequisites (backend + Postgres, advisory), writes and registers `.horus/config.json`, starts the source-intelligence host, indexes the repo, and stitches queue boundaries. Getting started is now `horus init` → `horus connect <type>` → `horus investigate "<hint>"`. Re-running `horus init` is idempotent (reuses the healthy host, refreshes the index); `--changed --fast` keeps the pre-push knowledge refresh; `--source <url>` records an external host and skips the local spawn. The old `setup`/`index` names are hidden deprecation stubs that point at `horus init` and exit 1.
