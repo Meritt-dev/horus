@@ -39,9 +39,11 @@ check() { # check "<description>" "<expected substring>" "<haystack>"
 
 echo "== HOR-17 acceptance: $PROJECT/$ENVIRONMENT \"$HINT\" =="
 
-# Build the project's queue map, then run the scoped investigation.
-$BIN index --project "$PROJECT" --env "$ENVIRONMENT" >/dev/null 2>&1
-REPORT="$($BIN investigate --project "$PROJECT" --env "$ENVIRONMENT" "$HINT" 2>&1)"
+# Build the project's index + queue map, then run the scoped investigation.
+# The config/cwd is the project identity — run from the configured repo (or point
+# HORUS_CONFIG at its config); `index`/`--project` targeting no longer exists.
+$BIN init --env "$ENVIRONMENT" >/dev/null 2>&1
+REPORT="$($BIN investigate --env "$ENVIRONMENT" "$HINT" 2>&1)"
 if [ -z "$REPORT" ]; then
   echo "  ✗ investigate produced no output (is the source-intelligence host on :8420 and Postgres up?)"
   exit 1

@@ -76,17 +76,18 @@ check_help_omits() {
   fi
 }
 
-# check_stub: deprecated stub must print the pointer to `horus init` and exit 1.
-check_stub() {
+# check_unknown: a REMOVED command (setup/index/generate-config) must fail nonzero as
+# an unknown command — no stubs, no help pages, including the --help form.
+check_unknown() {
   local desc="$1"
   shift
   local out status
   out="$("${HORUS[@]}" "$@" 2>&1)" && status=0 || status=$?
-  if [ "$status" -eq 1 ] && printf '%s' "$out" | grep -qF 'has been merged into `horus init`'; then
+  if [ "$status" -ne 0 ] && printf '%s' "$out" | grep -qi 'unknown command'; then
     printf '  %s %s\n' "$(green '✓')" "$desc"
   else
     printf '  %s %s\n' "$(red '✗')" "$desc"
-    printf '    expected: pointer to horus init + exit 1 (got exit %s)\n' "$status"
+    printf '    expected: unknown command + nonzero exit (got exit %s)\n' "$status"
     printf '    got:      %s\n' "$(printf '%s' "$out" | head -3)"
     fail=1
   fi
@@ -106,9 +107,12 @@ check_output  "--help lists init"        "init"        --help
 check_help_omits "--help omits setup (merged into init)" "setup"
 check_help_omits "--help omits index (merged into init)" "index"
 
-# setup/index: hidden deprecation stubs — must point at `horus init` and exit 1
-check_stub    "setup stub points to horus init and exits 1" setup
-check_stub    "index stub points to horus init and exits 1" index
+# setup/index/generate-config are REMOVED — unknown commands, even with --help.
+check_unknown "setup is an unknown command" setup
+check_unknown "setup --help is an unknown command" setup --help
+check_unknown "index is an unknown command" index
+check_unknown "index --help is an unknown command" index --help
+check_unknown "generate-config is an unknown command" generate-config
 
 # doctor: must print the readiness header and CLI version (no live services needed)
 check_output  "doctor prints readiness header" "Horus readiness check" doctor

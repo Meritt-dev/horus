@@ -32,20 +32,20 @@
 #   ✓ --version shows expected version (if HORUS_EXPECTED_VERSION is set)
 #   ✓ --help exits 0
 #   ✓ --help lists investigate
-#   ✓ --help omits setup (merged into init)
-#   ✓ --help omits index (merged into init)
+#   ✓ --help omits setup (removed)
+#   ✓ --help omits index (removed)
 #   ✓ --help lists connect
 #   ✓ --help usage line names product 'horus'
-#   ✓ setup --help exits 0 (hidden deprecation stub)
+#   ✓ setup --help fails (removed command)
 #   ✓ config loading: no babel.cjs error (HOR-83 regression guard)
 #   ✓ config loading: doctor printed expected output
-#   ✓ index --help exits 0 (hidden deprecation stub)
+#   ✓ index --help fails (removed command)
 #   ✓ investigate --help exits 0
 #   ✓ connect --help exits 0
 #   ✓ hosts --help exits 0
 #   ✓ stop --help exits 0
-#   ✓ setup stub points to horus init and exits 1
-#   ✓ index stub points to horus init and exits 1
+#   ✓ setup fails (removed command)
+#   ✓ index fails (removed command)
 #   ✓ init: created project in clean temp dir        (HOR-98 clean-env validation)
 #   ✓ init: .horus/config.json exists                (HOR-98)
 #   ✓ doctor: prints readiness header                (HOR-98)
@@ -186,6 +186,30 @@ check_contains() {
   fi
 }
 
+# Nonzero exit, no output requirement (for forms that print usage on failure).
+check_fails() {
+  local desc="$1"; shift
+  if "${HORUS[@]}" "$@" >/dev/null 2>&1; then
+    fail_check "${desc} (exited 0)"
+  else
+    ok "${desc}"
+  fi
+}
+
+# A REMOVED command must fail nonzero as an unknown command (no stub, no help page).
+check_nonzero() {
+  local desc="$1"; shift
+  local out status
+  out="$("${HORUS[@]}" "$@" 2>&1)" && status=0 || status=$?
+  if [ "${status}" -ne 0 ] && printf '%s' "${out}" | grep -qi 'unknown command'; then
+    ok "${desc}"
+  else
+    fail_check "${desc}"
+    printf '    expected: unknown command + nonzero exit (got exit %s)\n' "${status}"
+    printf '    got:      %s\n' "$(printf '%s' "${out}" | head -3)"
+  fi
+}
+
 check_not_contains() {
   local desc="$1" needle="$2"; shift 2
   local out
@@ -215,20 +239,22 @@ fi
 check_exit0       "--help exits 0"                               --help
 check_contains    "--help lists investigate"  "investigate"      --help
 check_contains    "--help lists init"         "init"             --help
-# setup/index were merged into init — they are hidden deprecation stubs and must
-# be ABSENT from the --help command list (anchored to the command-list indent so
-# descriptions mentioning "index" don't false-positive).
-check_not_contains "--help omits setup (merged into init)" "^  setup" --help
-check_not_contains "--help omits index (merged into init)" "^  index" --help
+# setup/index were REMOVED (merged into init — no stubs) and must be ABSENT from
+# the --help command list (anchored to the command-list indent so descriptions
+# mentioning "index" don't false-positive).
+check_not_contains "--help omits setup (removed)" "^  setup" --help
+check_not_contains "--help omits index (removed)" "^  index" --help
 check_contains    "--help lists connect"      "connect"          --help
 # The usage line must name the installed CLI as "horus".
 check_contains "--help usage line names product 'horus'" "Usage: horus" --help
 
 # ── 5. sub-command help ──────────────────────────────────────────────────────
 
-# setup/index are hidden deprecation stubs — their --help must still work.
-check_exit0  "setup --help exits 0 (hidden deprecation stub)" setup --help
-check_exit0  "index --help exits 0 (hidden deprecation stub)" index --help
+# setup/index are REMOVED — even their --help forms must fail as unknown commands.
+check_nonzero "setup --help fails (removed command)" setup --help
+check_nonzero "index --help fails (removed command)" index --help
+check_nonzero "setup fails (removed command)" setup
+check_nonzero "index fails (removed command)" index
 check_exit0  "investigate --help exits 0" investigate --help
 check_exit0  "connect --help exits 0"     connect     --help
 check_exit0  "hosts --help exits 0"       hosts       --help
@@ -275,25 +301,18 @@ fi
 
 rm -rf "${_config_tmpdir}"
 
-# ── 7. deprecated setup/index stubs (merged into `horus init`) ────────────────
+# ── 7. removed commands (setup/index/generate-config merged into `horus init`) ─
 
-# `horus setup` and `horus index` were merged into `horus init`. The hidden
-# stubs must print a single pointer to `horus init` and exit 1.
-check_stub() {
-  local desc="$1" cmd="$2"
-  local out status
-  out="$("${HORUS[@]}" "${cmd}" 2>&1)" && status=0 || status=$?
-  if [ "${status}" -eq 1 ] && printf '%s' "${out}" | grep -qF 'has been merged into `horus init`'; then
-    ok "${desc}"
-  else
-    fail_check "${desc}"
-    printf '    expected: pointer to horus init + exit 1 (got exit %s)\n' "${status}"
-    printf '    got:      %s\n' "$(printf '%s' "${out}" | head -3)"
-  fi
-}
-
-check_stub "setup stub points to horus init and exits 1" setup
-check_stub "index stub points to horus init and exits 1" index
+# The old names are fully REMOVED — they must fail as unknown commands, in every
+# form (bare, --help, and via the implicit `help` command).
+check_nonzero "setup fails as unknown command" setup
+check_nonzero "index fails as unknown command" index
+check_nonzero "generate-config fails as unknown command" generate-config
+check_nonzero "setup --help fails as unknown command" setup --help
+check_nonzero "index --help fails as unknown command" index --help
+# `help <removed>` prints top-level usage but must still exit nonzero.
+check_fails "help setup exits nonzero" help setup
+check_fails "help index exits nonzero" help index
 
 # ── 8. horus init — clean temp directory (HOR-98) ────────────────────────────
 #

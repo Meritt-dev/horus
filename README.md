@@ -78,10 +78,8 @@ Trace reconstruction is not shipped yet. Connectors are read-only and project-sc
 ## Example output (illustrative)
 
 ```bash
-horus investigate \
-  --project atlas-payments \
-  --env production \
-  "checkout latency spike"
+cd ~/code/atlas-payments
+horus investigate --env production "checkout latency spike"
 ```
 
 ```text
@@ -113,7 +111,9 @@ Hint: checkout latency spike
 
 **Local-first** — Connectors read from your own clusters, not a hosted black box.
 
-**Project-scoped** — Every investigation belongs to a specific project and environment.
+**Project-scoped** — The repo you run in (its `.horus/config.json`) is the project identity; `--config <path>` targets another repo.
+
+**Agent-ready** — Every investigation/analysis command takes `--json` (compact by default, `--full` for the raw structure) with a `nextSteps` array to chain from. `horus packet` builds a compact, honesty-framed briefing sized for an agent's context window.
 
 ## Capabilities
 
@@ -312,16 +312,18 @@ horus investigate --help
 
 | Command | What it does |
 | --- | --- |
-| `horus status [--project --env]` | Per-project/env connector-health matrix |
+| `horus status [--env]` | Per-project/env connector-health matrix |
 | `horus connect <type>` | Add/update a runtime connector — `elasticsearch` / `mongodb` / `postgres` / `sentry` / `axiom` / `grafana` / `redis` (plus `ai` to configure an AI provider) |
-| `horus init --project <p> --env <e>` | Build the queue map (stitcher) for a project |
+| `horus init [--env <e>]` | Set up the current repo: config, source-intelligence host, index, queue map |
 | `horus hosts [--reap]` | List source-intelligence hosts and live status; `--reap` stops orphaned hosts |
 | `horus stop [--all]` | Stop this repo's source-intelligence host (`--all` stops every host) |
-| `horus investigate --project <p> --env <e> "<hint>"` | Full deterministic investigation report |
-| `horus logs [service] --project <p> --env <e>` | Error-signature evidence (`--raw` for lines) |
-| `horus state --project <p> --env <e>` | MongoDB application-state evidence (read-only) |
-| `horus metrics [hint] --project <p> --env <e>` | Grafana metrics evidence |
-| `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (requires source intelligence backend) |
+| `horus investigate --env <e> "<hint>"` | Full deterministic investigation report (`--format json` for agents) |
+| `horus packet <hint\|savedId> [--for claude] [--json]` | Compact, honesty-framed briefing for a coding-agent context window |
+| `horus logs [service] --env <e>` | Error-signature evidence (`--raw` for lines) |
+| `horus state --env <e>` | MongoDB application-state evidence (read-only) |
+| `horus metrics [hint] --env <e>` | Grafana metrics evidence |
+| `horus queues [name] [--live]` | Queue topology from source intelligence; `--live` reads real-time Redis/BullMQ state |
+| `horus search <query>` · `explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence — one canonical resolver, so a query resolves to the same symbol across commands (qualified `Class.method` supported) |
 | `horus memory <show\|add\|list\|link\|...>` | Inspect/author deterministic incident memory; `memory link` adds `supersedes` / `contradicts` / `recurs-with` edges |
 | `horus feedback <id> [--resolved] [--note] [--cause]` | Record outcome feedback on an investigation (improves Horus) |
 | `horus report [hint] [--title --body --labels]` | File a Horus bug or capability gap — opens a pre-filled GitHub issue (no auth, nothing sent automatically) |
@@ -340,6 +342,17 @@ horus projects   # list registered repos (informational)
 ```
 
 `horus init` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
+
+## For coding agents
+
+Horus is built to be an agent's evidence layer. Install a skill that teaches your agent to reach for Horus before guessing:
+
+```bash
+horus skill install claude    # .claude/skills/horus/SKILL.md  (also: codex · gemini · cursor · generic)
+horus mcp                     # expose the local knowledge index to agents over MCP (stdio)
+```
+
+Every investigation/analysis command takes `--json` (`--format json` for `investigate`/`replay`) — compact by default, `--full` for the raw structure — and each result carries a deterministic `nextSteps` array. `horus packet "<hint>" --json` returns a compact briefing sized for a context window.
 
 ## Layout
 

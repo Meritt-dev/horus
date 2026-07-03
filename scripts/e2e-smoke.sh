@@ -79,9 +79,10 @@ check_output "--version shows semver"            "0."          --version
 check_output "--help lists investigate"          "investigate" --help
 check_output "--help lists postmortem"           "postmortem"  --help
 
-step "deprecated stubs (setup/index merged into init)"
-check_output "setup stub points to horus init" "has been merged into \`horus init\`" setup
-check_output "index stub points to horus init" "has been merged into \`horus init\`" index
+step "removed commands (setup/index/generate-config are unknown)"
+check_output "setup is an unknown command" "unknown command" setup
+check_output "index is an unknown command" "unknown command" index
+check_output "generate-config is an unknown command" "unknown command" generate-config
 
 step "doctor (no live services required)"
 check_output "doctor prints readiness header" "Horus readiness check" doctor
@@ -127,7 +128,8 @@ else
       ok "Existing .horus/config.json found — using as-is"
     fi
   else
-    INIT_OUT="$("${HORUS[@]}" init --name "$PROJECT_NAME" --env staging 2>&1 || true)"
+    # The config/cwd IS the project identity — init names the project after the repo dir.
+    INIT_OUT="$("${HORUS[@]}" init --env staging 2>&1 || true)"
     if printf '%s' "$INIT_OUT" | grep -qF 'Initialized Horus project'; then
       ok "horus init: project '$PROJECT_NAME' created"
       CREATED_CONFIG=1
@@ -144,7 +146,6 @@ else
   # any saved investigation for the replay/postmortem chain.
   step "investigate (git-only: HEAD~3)"
   INV_OUT="$("${HORUS[@]}" investigate \
-    --name "$PROJECT_NAME" \
     --env staging \
     --since HEAD~3 \
     "e2e smoke test — git evidence only" 2>&1 || true)"
