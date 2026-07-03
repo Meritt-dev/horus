@@ -8,7 +8,7 @@
  * pin and only `horus status` flagged the mismatch.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,9 +17,12 @@ const seams = vi.hoisted(() => ({
   checkSourceCompatibility: vi.fn(),
   killSpawnedHost: vi.fn(async () => {}),
   sourceAvailable: vi.fn(async () => true),
-  assertSourceVersionPinned: vi.fn(async () => {
+  assertSourceVersionPinned: vi.fn(async (): Promise<void> => {
     throw new Error('SPAWN-PATH-SENTINEL');
   }),
+  isAnalyzed: vi.fn(() => false),
+  indexNeedsReanalyze: vi.fn(() => null as string | null),
+  analyzeRepo: vi.fn(async () => {}),
   hostInfo: vi.fn(),
   loadConfig: vi.fn(async () => {
     throw new Error('no config');
@@ -35,6 +38,9 @@ vi.mock('@horus/connectors', async (importOriginal) => {
     killSpawnedHost: seams.killSpawnedHost,
     sourceAvailable: seams.sourceAvailable,
     assertSourceVersionPinned: seams.assertSourceVersionPinned,
+    isAnalyzed: seams.isAnalyzed,
+    indexNeedsReanalyze: seams.indexNeedsReanalyze,
+    analyzeRepo: seams.analyzeRepo,
     // hostServesRepo probes the candidate via hostInfo(); point it at our repo.
     SourceHttpClient: class {
       hostInfo = seams.hostInfo;
@@ -135,5 +141,26 @@ describe('runIndex host-reuse version gate', () => {
     expect(logs.join('\n')).toContain('Reusing source-intelligence host');
     expect(seams.killSpawnedHost).not.toHaveBeenCalled();
     expect(code).toBe(0);
+  });
+});
+
+describe('runIndex leaves a clean tree even when init fails', () => {
+  it('REGRESSION: writes .horus/ to .git/info/exclude BEFORE analyze, so a mid-index abort stays clean', async () => {
+    // A git repo whose `.horus/` must never dirty `git status` — even on failure.
+    mkdirSync(join(repo, '.git'));
+    // Force the spawn path (no reusable host) and fail inside analyze.
+    seams.isHostHealthy.mockResolvedValue(false);
+    seams.assertSourceVersionPinned.mockResolvedValue(undefined);
+    seams.isAnalyzed.mockReturnValue(false);
+    seams.analyzeRepo.mockRejectedValue(new Error('analyze timed out'));
+
+    const code = await runIndex({ path: repo });
+
+    // The index failed…
+    expect(code).toBe(1);
+    expect(errs.join('\n')).toContain('source analysis failed');
+    // …but the exclude write happened up front, so the tree is still clean.
+    const exclude = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('.horus/');
   });
 });

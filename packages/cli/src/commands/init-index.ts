@@ -312,6 +312,10 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
   try {
     const cwd = process.cwd();
     const root = opts.path !== undefined ? resolve(opts.path) : (findRepoRoot(cwd) ?? cwd);
+    // Ignore `.horus/` up front — BEFORE the (slow, abortable) analyze/host-spawn work below,
+    // so a timeout/abort mid-index still leaves a clean tree. The success paths call this again
+    // (idempotent). Without it, a failed init left `?? .horus/` dirtying git status (dogfood 0.21.1).
+    ensureProjectGitignore(root);
     const dbUrlDefault =
       process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 
