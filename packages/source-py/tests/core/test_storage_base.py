@@ -229,6 +229,9 @@ class TestStorageBackend:
             def content_contains_any(self, tokens, limit):
                 return []
 
+            def files_containing(self, tokens, per_token_limit):
+                return {}
+
             def flows_for_symbol(self, node_id):
                 return {"processes": [], "steps": []}
 
