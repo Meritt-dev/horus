@@ -128,9 +128,22 @@ export interface MemoryContextItem {
   driftDetected: boolean;
 }
 
+/**
+ * Repo identity for a packet — WHICH repo/branch/commit the evidence came from. Agents
+ * consuming a packet otherwise only see `meta.investigationId`, with no way to tell which
+ * checkout produced it. Collected CLI-side from git (fields are null when unknown/not a repo).
+ */
+export interface RepoIdentity {
+  name: string | null;
+  branch: string | null;
+  commit: string | null;
+}
+
 export interface Packet {
   honesty: HonestyHeader;
   problem: ProblemSection;
+  /** WHICH repo/branch/commit this packet describes (top-level identity for agents). */
+  repo?: RepoIdentity;
   relevantFiles: RelevantFile[];
   evidence: EvidenceItem[];
   lowerPriority: LowerPriorityArea[];
@@ -179,6 +192,8 @@ export interface PacketOptions {
   topMemory?: number; // default 5
   preset?: AgentPreset;
   freshness?: PacketFreshness;
+  /** Repo identity (name/branch/commit) — collected CLI-side from git; surfaced top-level. */
+  repo?: RepoIdentity;
   /**
    * Remembered context, ALREADY recalled in the CLI (`recallMemory` is async I/O) and passed in so
    * `buildPacket` stays pure + synchronous. Order is honoured verbatim — the packet never re-ranks.
@@ -197,6 +212,8 @@ export interface PacketSection<T> {
 export interface PacketJSON {
   honesty: HonestyHeader;
   problem: ProblemSection;
+  /** WHICH repo/branch/commit this packet describes — omitted when not collected. */
+  repo?: RepoIdentity;
   relevantFiles: PacketSection<RelevantFile>;
   evidence: PacketSection<EvidenceItem>;
   lowerPriority: PacketSection<LowerPriorityArea>;
@@ -761,6 +778,7 @@ export function buildPacket(report: InvestigationReport, opts: PacketOptions = {
   return {
     honesty: header,
     problem,
+    ...(opts.repo !== undefined ? { repo: opts.repo } : {}),
     relevantFiles,
     evidence,
     lowerPriority: lower.items,
@@ -896,6 +914,7 @@ export function packetToJSON(packet: Packet): PacketJSON {
   return {
     honesty: packet.honesty,
     problem: packet.problem,
+    ...(packet.repo !== undefined ? { repo: packet.repo } : {}),
     relevantFiles: { items: packet.relevantFiles, truncatedCount: packet.truncation.relevantFiles },
     evidence: { items: packet.evidence, truncatedCount: packet.truncation.evidence },
     lowerPriority: { items: packet.lowerPriority, truncatedCount: packet.truncation.lowerPriority },

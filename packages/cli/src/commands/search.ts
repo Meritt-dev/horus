@@ -2,8 +2,22 @@ import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { repoProviders } from '@horus/connectors';
 import { searchAcrossRepos } from '@horus/engine';
+import { failCommand } from '../lib/command-failure.js';
 
 export async function runSearch(
+  query: string,
+  opts: { config?: string; limit?: number; json?: boolean },
+): Promise<number> {
+  try {
+    return await search(query, opts);
+  } catch (err) {
+    // Shared machine-JSON failure contract: a no-config/host failure yields the clean
+    // one-liner on stderr (no raw stack) and, under --json, one parseable object on stdout.
+    return failCommand(err, opts.json);
+  }
+}
+
+async function search(
   query: string,
   opts: { config?: string; limit?: number; json?: boolean },
 ): Promise<number> {
@@ -12,7 +26,9 @@ export async function runSearch(
   const results = await searchAcrossRepos(query, providers, opts.limit ?? 8);
 
   if (opts.json) {
-    console.log(JSON.stringify(results, null, 2));
+    // Object contract (agent parity): every other command's --json is an object, so search
+    // wraps its rows as `{ results: [...] }` instead of a bare top-level array.
+    console.log(JSON.stringify({ results }, null, 2));
     return 0;
   }
 

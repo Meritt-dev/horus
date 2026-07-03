@@ -16,6 +16,7 @@ import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
 import { reportCloudError } from './context.js';
 import { computeFreshness, renderFreshness, readIndexMeta, commitsSince } from '../lib/freshness.js';
+import { failCommand } from '../lib/command-failure.js';
 import {
   buildInvestigationContext,
   runOneInvestigation,
@@ -334,8 +335,7 @@ export async function runInvestigate(
     try {
       renv = resolveEnvironment(config, { project: projectName, env: opts.env });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      return 1;
+      return failCommand(err, opts.json || opts.format === 'json');
     }
 
     const repoRoot = repoRootOrCwd(renv.path);
@@ -365,8 +365,7 @@ export async function runInvestigate(
       });
     } catch (err) {
       // No source-intelligence connector configured — same hard requirement as before.
-      console.error(pc.red((err as Error).message));
-      return 1;
+      return failCommand(err, opts.json || opts.format === 'json');
     }
 
     try {
@@ -555,10 +554,13 @@ export async function runInvestigate(
     return 0;
   } catch (err) {
     // Never fail silently: surface a message even when the error carries none,
-    // and include the stack under HORUS_DEBUG for diagnosis.
+    // and include the stack under HORUS_DEBUG for diagnosis. Route through the shared
+    // machine-JSON failure contract so `--json`/`--format json` still emits ONE parseable
+    // object on stdout (agents pipe stdout to json.load) instead of leaving it empty.
     const msg = (err as Error)?.message || String(err);
-    console.error(pc.red(msg.trim() ? msg : 'Investigation failed (unknown error).'));
+    const detail = msg.trim() ? msg : 'Investigation failed (unknown error).';
+    const code = failCommand(new Error(detail), opts.json || opts.format === 'json');
     if (process.env.HORUS_DEBUG) console.error(pc.dim((err as Error)?.stack ?? String(err)));
-    return 1;
+    return code;
   }
 }

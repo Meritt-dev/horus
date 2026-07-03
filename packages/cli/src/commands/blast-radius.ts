@@ -6,6 +6,7 @@ import { analyzeBlastRadius, renderBlastRadius, blastRadiusToJSON, route, format
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { failCommand } from '../lib/command-failure.js';
 
 export const BLAST_RADIUS_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
 
@@ -133,7 +134,6 @@ export async function runBlastRadius(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
-    return 1;
+    return failCommand(err, opts.json);
   }
 }

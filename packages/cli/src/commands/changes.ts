@@ -5,6 +5,7 @@ import { changeImpact, renderChangeImpact, changeImpactToJSON } from '@horus/eng
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { failCommand } from '../lib/command-failure.js';
 
 export const CHANGES_AI_CONTRACT = `Provide a clearly separated AI change-impact review with:
 
@@ -76,7 +77,6 @@ export async function runChanges(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
-    return 1;
+    return failCommand(err, opts.json);
   }
 }

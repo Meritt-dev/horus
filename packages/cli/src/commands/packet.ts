@@ -25,7 +25,7 @@ import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { ResolvedEnvironment } from '@horus/core';
 import { openDb, getInvestigation } from '@horus/db';
 import type { HorusDb } from '@horus/db';
-import { memoryIndexForEnv } from '@horus/connectors';
+import { memoryIndexForEnv, collectRepoState } from '@horus/connectors';
 import type { CodeProvider } from '@horus/connectors';
 import {
   buildPacket,
@@ -45,6 +45,7 @@ import type {
   RecallQuery,
   RecallOptions,
   MemoryVectorIndex,
+  RepoIdentity,
 } from '@horus/engine';
 import { resolveDbUrl } from '../lib/db-url.js';
 import { repoRootOrCwd } from '../lib/cloud/session.js';
@@ -160,6 +161,23 @@ async function recallPacketMemory(args: {
   }
 }
 
+/**
+ * Repo identity for the packet — WHICH checkout produced the evidence. Best-effort git:
+ * a missing/broken repo simply yields null fields (never blocks packet delivery). The repo
+ * NAME is the resolved project (config-derived), branch/commit come from the working tree.
+ */
+async function collectPacketRepo(
+  name: string | undefined,
+  repoPath: string,
+): Promise<RepoIdentity> {
+  const state = await collectRepoState(repoPath);
+  return {
+    name: name && name.trim() !== '' ? name : null,
+    branch: state?.branch ?? null,
+    commit: state?.headSha ?? null,
+  };
+}
+
 /** Emit the packet in the requested format. */
 function emitPacket(
   report: InvestigationReport,
@@ -168,12 +186,14 @@ function emitPacket(
     for_?: AgentPreset;
     freshness?: PacketFreshness;
     memory?: RecalledMemory[];
+    repo?: RepoIdentity;
   },
 ): void {
   const packet = buildPacket(report, {
     ...(opts.for_ !== undefined ? { preset: opts.for_ } : {}),
     ...(opts.freshness !== undefined ? { freshness: opts.freshness } : {}),
     ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+    ...(opts.repo !== undefined ? { repo: opts.repo } : {}),
   });
   if (opts.json) {
     console.log(JSON.stringify(packetToJSON(packet), null, 2));
@@ -229,7 +249,9 @@ export async function runPacket(
         return 1;
       }
       const report = migrateReport(row.report) as InvestigationReport;
-      const freshness = await computePacketFreshness(repoRootOrCwd(), report);
+      const repoRoot = repoRootOrCwd();
+      const freshness = await computePacketFreshness(repoRoot, report);
+      const repo = await collectPacketRepo(report.input.repo, repoRoot);
       // Remembered context: scoped to the report's own project (HOR-46 fail-closed via
       // recallPacketMemory). No live source host here, so drift detection is skipped — recall ranks
       // by stored confidence × read-time freshness; a missing project simply yields no memory.
@@ -238,7 +260,7 @@ export async function runPacket(
         project: report.input.repo,
         report,
       });
-      emitPacket(report, { json: opts.json, for_: preset, freshness, memory });
+      emitPacket(report, { json: opts.json, for_: preset, freshness, memory, repo });
       return 0;
     } catch (err) {
       const msg = (err as Error)?.message || String(err);
@@ -292,6 +314,7 @@ export async function runPacket(
         { timeoutMs: timeoutSec * 1000 },
       );
       const freshness = await computePacketFreshness(repoRoot, report);
+      const repo = await collectPacketRepo(renv.project, repoRoot);
       // Remembered context: recall against the SAME open DB + project, with the Source-when-available
       // vector index for relevance and the live code provider for read-time drift detection. Reuses
       // ctx's handles (no extra connections) and is best-effort — a recall failure never blocks here.
@@ -302,7 +325,7 @@ export async function runPacket(
         vectorIndex: packetVectorIndex(renv),
         code: ctx.code,
       });
-      emitPacket(report, { json: opts.json, for_: preset, freshness, memory });
+      emitPacket(report, { json: opts.json, for_: preset, freshness, memory, repo });
     } finally {
       // Close EVERY connector + the DB or the process lingers forever (unclosed pg/ioredis handle).
       await disposeInvestigationContext(ctx);

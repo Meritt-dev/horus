@@ -4,6 +4,7 @@ import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@ho
 import { codeForRepo } from '@horus/connectors';
 import { symbolDisplayName, route, formatRouteStep, resolveSeedSymbol, type RouteStep } from '@horus/engine';
 import { openDb, listQueueEdges } from '@horus/db';
+import { failCommand } from '../lib/command-failure.js';
 
 /** Print the router's suggestions as human "Suggested next:" lines (HOR-386). */
 function printSuggested(steps: RouteStep[]): void {
@@ -11,6 +12,19 @@ function printSuggested(steps: RouteStep[]): void {
 }
 
 export async function runExplain(
+  query: string,
+  opts: { config?: string; depth?: number; json?: boolean; full?: boolean; repo?: string },
+): Promise<number> {
+  try {
+    return await explain(query, opts);
+  } catch (err) {
+    // Shared machine-JSON failure contract: a no-config/host failure yields the clean
+    // one-liner on stderr (no raw stack) and, under --json, one parseable object on stdout.
+    return failCommand(err, opts.json);
+  }
+}
+
+async function explain(
   query: string,
   opts: { config?: string; depth?: number; json?: boolean; full?: boolean; repo?: string },
 ): Promise<number> {
@@ -158,6 +172,9 @@ export async function runExplain(
                   ...(s.className != null ? { className: s.className } : {}),
                   ...(s.startLine != null ? { startLine: s.startLine } : {}),
                 })),
+                // Never drop collisions silently: mark the overflow with a count sibling
+                // (mirrors investigate/packet's truncatedCount convention).
+                ...(siblings.length > 10 ? { alternativesTruncatedCount: siblings.length - 10 } : {}),
               }
             : {}),
           ...(fuzzyNotice !== null ? { notice: fuzzyNotice } : {}),

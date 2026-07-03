@@ -191,6 +191,19 @@ describe('runPacket — saved-id path', () => {
     expect(parsed.evidence).toHaveProperty('truncatedCount');
   });
 
+  it('carries top-level repo identity {name, branch, commit} (dogfood A1)', async () => {
+    db.getInvestigation.mockResolvedValueOnce({
+      id: UUID,
+      report: { ...FIXTURE, input: { ...FIXTURE.input, repo: 'my-api' } },
+    });
+    const code = await runPacket(UUID, { json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    // repo is a top-level sibling of honesty/problem (NOT buried in meta). name comes from the
+    // resolved project; branch/commit are git truth (null here — repoRootOrCwd is a fake path).
+    expect(parsed.repo).toEqual({ name: 'my-api', branch: null, commit: null });
+  });
+
   it('renders Markdown by default', async () => {
     db.getInvestigation.mockResolvedValueOnce({ id: UUID, report: FIXTURE });
     const code = await runPacket(UUID, {});

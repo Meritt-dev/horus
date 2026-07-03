@@ -10,6 +10,7 @@ import {
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { failCommand } from '../lib/command-failure.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 
@@ -63,8 +64,7 @@ export async function runWhatChanged(
     try {
       renv = resolveEnvironment(config, { project: opts.repo });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      return 1;
+      return failCommand(err, opts.json);
     }
 
     const { code } = createConnectors(config);
@@ -116,8 +116,7 @@ export async function runWhatChanged(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
-    return 1;
+    return failCommand(err, opts.json);
   }
 }
 

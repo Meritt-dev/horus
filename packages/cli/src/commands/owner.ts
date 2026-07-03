@@ -3,10 +3,10 @@
  * (HOR-20). Confidence is probabilistic; never treat as authoritative.
  */
 
-import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { estimateOwnership, renderOwnership, ownershipToJSON } from '@horus/engine';
+import { failCommand } from '../lib/command-failure.js';
 
 export async function runOwner(
   query: string,
@@ -19,8 +19,7 @@ export async function runOwner(
     try {
       renv = resolveEnvironment(config, { project: opts.repo });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      return 1;
+      return failCommand(err, opts.json);
     }
 
     const code = codeForRepo(config, renv.project);
@@ -31,7 +30,6 @@ export async function runOwner(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
-    return 1;
+    return failCommand(err, opts.json);
   }
 }

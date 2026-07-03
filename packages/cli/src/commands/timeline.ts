@@ -9,6 +9,7 @@ import {
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { failCommand } from '../lib/command-failure.js';
 import { readIndexMeta } from '../lib/freshness.js';
 
 // Same default window as `horus what-changed` — a bounded, investigation-useful range
@@ -71,8 +72,7 @@ export async function runTimeline(
     try {
       renv = resolveEnvironment(config, { project: opts.repo });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      return 1;
+      return failCommand(err, opts.json);
     }
 
     const { code } = createConnectors(config);
@@ -130,7 +130,6 @@ export async function runTimeline(
     }
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
-    return 1;
+    return failCommand(err, opts.json);
   }
 }

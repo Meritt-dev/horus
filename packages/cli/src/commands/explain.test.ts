@@ -230,4 +230,57 @@ describe('explain --json exposes disambiguation candidates (agent parity with bl
       { name: 'hijack', filePath: 'test/reply.test.js', startLine: 5 },
     ]);
   });
+
+  it('caps alternatives at 10 and marks the overflow with alternativesTruncatedCount', async () => {
+    // 12 same-named product symbols → 11 siblings after the top → capped list + a count marker.
+    const syms: Symbol[] = Array.from({ length: 12 }, (_v, i) => ({
+      id: `function:src/f${i}.ts:hijack`,
+      name: 'hijack',
+      filePath: `src/f${i}.ts`,
+      startLine: i + 1,
+      endLine: i + 5,
+      language: 'typescript',
+    }));
+    mocks.searchSymbols.mockResolvedValue(syms);
+    mocks.listQueueEdges.mockResolvedValue([]);
+    mocks.context.mockResolvedValue({ symbol: syms[0], callers: [], callees: [], community: null, isDead: false });
+    mocks.impact.mockResolvedValue({ byDepth: [], affected: 0 });
+    mocks.flowsFor.mockResolvedValue([]);
+
+    const logged: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { logged.push(String(a[0])); });
+    const code = await runExplain('hijack', { json: true });
+    consoleSpy.mockRestore();
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(logged.join('\n')) as {
+      alternatives?: unknown[];
+      alternativesTruncatedCount?: number;
+    };
+    expect(parsed.alternatives).toHaveLength(10);
+    expect(parsed.alternativesTruncatedCount).toBe(1);
+  });
+});
+
+describe('explain — shared JSON-failure contract (dogfood A1)', () => {
+  it('routes a no-config failure to a clean { ok:false } object on stdout, exit 1', async () => {
+    const { loadConfig } = await import('@horus/core');
+    vi.mocked(loadConfig).mockRejectedValueOnce(
+      new Error('No Horus config found. Run from a configured repo or pass --config <path>.'),
+    );
+
+    const out: string[] = [];
+    const err: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { out.push(String(a[0])); });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...a) => { err.push(String(a[0])); });
+    const code = await runExplain('anything', { json: true });
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+
+    expect(code).toBe(1);
+    const parsed = JSON.parse(out.join('\n')) as { ok: boolean; detail: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.detail).toContain('No Horus config found');
+    expect(err.join('\n')).toContain('No Horus config found');
+  });
 });
