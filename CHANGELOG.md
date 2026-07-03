@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.1] — 2026-07-03
+
+Dogfood-driven fixes (wide TS/JS cycle on 0.21.0); all validated live, no behavior changes to real projects.
+
+- **`horus init` no longer dirties your repo.** It ignored `.horus/` by writing to the tracked `.gitignore`, which left the working tree dirty and made Horus's own `what-changed` / dirty-worktree detection report its setup edit as evidence. It now writes to the repo-local `.git/info/exclude` (never a tracked file; follows a `.git` *file* for worktrees/submodules). After init, `git status` is clean.
+- **Resolver stops landing on non-product code.** The resolver's product-over-tests filter had drifted from the shared path classifier and missed `bench/`, `benchmark/`, `perf/`, docs-site trees (`www/`, `site/`), and jscodeshift `__testfixtures__/`. Qualified lookups like `ZodObject.parse` now resolve to the real method instead of a `packages/bench/` file.
+- **`horus queues` stops inventing queues from constants.** Enum/constant string literals were extracted as queues — bullmq's OpenTelemetry attributes became 35 fake queues with property accessors as "workers". Dotted-attribute names (`bullmq.job.id`), SCREAMING_SNAKE enum members, and same-file enum self-matches are now rejected; real queues (which have a named worker) are unaffected.
+- **`horus architecture` external systems stop matching data/docs.** Word-list & dataset files, lockfiles, config, and docs-site content no longer count as integrations (e.g. drizzle's "kafka/django/clerk/stripe" came from seed name datasets). Detection is now product-source-only.
+- **Honest change windows.** An investigation's auto change-window is anchored to the repo's last commit; on a dormant repo the label now names that date — *"the 14 days before the last commit (2023-05-10)"* — instead of "the last 14 days", so an old commit no longer reads as recent.
+- **Loud on incomplete indexing.** If source analysis times out mid-embedding (symbols present, 0 vectors), `horus init` now fails with a resume hint instead of exiting 0 and leaving every later command to fail with "no source-intelligence connector configured".
+
 ## [0.21.0] — 2026-07-03
 
 - **Config/cwd is the only project identity.** `--name` and `--project` targeting are gone from every command. The repo you run in — its `.horus/config.json` — IS the project; `-c, --config <path>` (or `cd`) targets a different repo, and `--repo <name>` selects a repository *within* the loaded config for monorepos/multi-project setups. The outside-a-repo error is now a single actionable line: *"No Horus config found. Run from a configured repo or pass --config <path>."* Domain flags keep their own spellings: `connect --sentry-project` (the Sentry project slug), and `horus cloud link <org/workspace/project>` (positional, no flag).
