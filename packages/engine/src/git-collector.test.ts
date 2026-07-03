@@ -7,6 +7,7 @@ import {
   isRefLike,
   parseDiffStat,
   collectGitChanges,
+  commitsTouchingRange,
   changeWindowSinceFrom,
   latestCommitDate,
   defaultChangeWindowSince,
@@ -397,6 +398,49 @@ describe('collectGitChanges — HOR-423 base + degenerate detection', () => {
     mockGitLog.mockResolvedValue([]);
     const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
     expect(result.degenerate).toBe(false);
+  });
+});
+
+// ── A7: commitsTouchingRange (symbol-line-range intersection) ───────────────────
+
+describe('commitsTouchingRange', () => {
+  it('parses unique commit SHAs from git log -L output', async () => {
+    stubExec('584c5e5785f68bcf\n600e61b223bcaf03\n584c5e5785f68bcf\n');
+    const shas = await commitsTouchingRange('/repo', 'src/options.ts', 40, 120);
+    expect(shas).toEqual(['584c5e5785f68bcf', '600e61b223bcaf03']);
+  });
+
+  it('builds the -L<start>,<end>:<file> arg and adds --since for a date window', async () => {
+    stubExec('');
+    await commitsTouchingRange('/repo', 'src/options.ts', 40, 120, '2024-01-01T00:00:00Z');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (mockExecFile as any).mock.calls.at(-1);
+    const args = call[1] as string[];
+    expect(args).toContain('-L40,120:src/options.ts');
+    expect(args).toContain('--format=%H');
+    expect(args).toContain('--since=2024-01-01T00:00:00Z');
+  });
+
+  it('omits --since when the window boundary is ref-like (a SHA, not a date)', async () => {
+    stubExec('');
+    await commitsTouchingRange('/repo', 'src/options.ts', 40, 120, 'abc1234');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const args = (mockExecFile as any).mock.calls.at(-1)[1] as string[];
+    expect(args.some((a) => a.startsWith('--since='))).toBe(false);
+  });
+
+  it('returns null when git fails (shallow clone / rename boundary / out-of-range)', async () => {
+    stubExecError('fatal: -L range out of bounds');
+    expect(await commitsTouchingRange('/repo', 'src/options.ts', 40, 120)).toBeNull();
+  });
+
+  it('returns null for a relative repo path (security guard)', async () => {
+    expect(await commitsTouchingRange('relative/path', 'a.ts', 1, 5)).toBeNull();
+  });
+
+  it('returns null for a non-sensical range', async () => {
+    expect(await commitsTouchingRange('/repo', 'a.ts', 0, 5)).toBeNull();
+    expect(await commitsTouchingRange('/repo', 'a.ts', 10, 5)).toBeNull();
   });
 });
 

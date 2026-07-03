@@ -172,6 +172,55 @@ export async function latestCommitDate(repoPath: string): Promise<string | undef
 }
 
 /**
+ * List the commits (full SHAs) that touched a specific LINE RANGE of a file — the
+ * symbol-level analogue of a file-level change check. Uses `git log -L<start>,<end>:<file>`
+ * so a commit that merely edited ANOTHER part of a large file which happens to CONTAIN the
+ * symbol is NOT reported (dogfood: a 4000-line options.ts where the seed's retry block was
+ * untouched, yet two unrelated commits to the same file were blamed for a retry regression).
+ * Best-effort: returns null on any git failure — a shallow clone, a rename boundary git can't
+ * follow, an out-of-bounds range, or a non-absolute repo path — so callers can fall back to
+ * file-level attribution. `sinceIso`, when it is a date/duration (not a ref), bounds the scan.
+ */
+export async function commitsTouchingRange(
+  repoPath: string,
+  file: string,
+  startLine: number,
+  endLine: number,
+  sinceIso?: string,
+): Promise<string[] | null> {
+  if (!repoPath.startsWith('/')) return null;
+  if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) return null;
+  if (startLine < 1 || endLine < startLine) return null;
+  try {
+    // `git log -L` implies patch output; `--format=%H` + `--no-patch`/`-s` prints one SHA per
+    // touching commit with no diff body. The line range is embedded in a single `-L` arg so
+    // the file path can never smuggle a leading-dash flag.
+    const args = [
+      '-C', repoPath,
+      'log',
+      '--format=%H',
+      '--no-patch',
+      '-s',
+      `-L${startLine},${endLine}:${file}`,
+    ];
+    // A ref-like `since` (HEAD~5, a SHA) is not a valid `--since` value — skip it and let the
+    // caller's intersection with the in-window commits bound the result instead.
+    if (sinceIso !== undefined && sinceIso !== '' && !isRefLike(sinceIso)) {
+      args.push(`--since=${sinceIso}`);
+    }
+    const { stdout } = await exec('git', args, { maxBuffer: 10 * 1024 * 1024 });
+    const seen = new Set<string>();
+    for (const line of stdout.split('\n')) {
+      const sha = line.trim();
+      if (/^[0-9a-f]{7,40}$/i.test(sha)) seen.add(sha);
+    }
+    return [...seen];
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Derive a default change-window `since` value when the caller supplied no explicit one,
  * anchored to the repo's last commit rather than wall-clock time so the window is
  * deterministic for a given repo state (HOR-333). Returns an ISO-8601 timestamp suitable

@@ -29,14 +29,19 @@ import type { BoundedGitChange } from './git-collector.js';
 
 vi.mock('./git-collector.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-collector.js')>();
-  return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn() };
+  return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn(), commitsTouchingRange: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier, isNoiseCommit, seedTouchedByRelevantChange, seedTouchingCommitFocus, regressionSeedTouchedScore } from './engine.js';
-import { collectGitChanges, defaultChangeWindowSince } from './git-collector.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier, isNoiseCommit, isChoreLikeCommit, seedTouchedByRelevantChange, seedTouchingCommitFocus, regressionSeedTouchedScore } from './engine.js';
+import { collectGitChanges, defaultChangeWindowSince, commitsTouchingRange } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
 const mockDefaultChangeWindowSince = vi.mocked(defaultChangeWindowSince);
+const mockCommitsTouchingRange = vi.mocked(commitsTouchingRange);
+// Default: the symbol-line-range intersection is unavailable (as on a shallow clone) so the
+// regression cause falls back to file-level attribution. Individual tests override this to
+// exercise the confirmed-range ("to <seed>") path.
+mockCommitsTouchingRange.mockResolvedValue(null);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -115,6 +120,8 @@ const fakeDb = {
 
 describe('investigate() — regression cause cites commit + changed functions (HOR-333)', () => {
   it('enriches the deployment-regression title with commit SHA, subject, and changed symbol names', async () => {
+    // The seed-touching commit provably edits the seed's LINE RANGE → the title names the SYMBOL.
+    mockCommitsTouchingRange.mockResolvedValueOnce(['a1b2c3d4e5f6']);
     mockCollectGitChanges.mockResolvedValue({
       commits: [
         makeCommit('a1b2c3d4e5f6', 'fix throttle'),
@@ -531,6 +538,96 @@ describe('investigate() — irrelevant most-recent commit does not inflate the r
     expect(regression!.baseScore).toBeCloseTo(0.45, 5);
     expect(regression!.title).toContain('Recent change');
     expect(regression!.title).toContain('real000');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A7 (dogfood 0.21.2): a change window whose only seed-touching commits are
+// maintenance (chore/formatting/lint) is not blamed for a behavioural bug; and
+// when the symbol-line-range intersection can't confirm the commit touched the
+// seed itself, the title names the FILE ("touching <file>") not the symbol.
+// ---------------------------------------------------------------------------
+
+describe('investigate() — chore-only change window is down-weighted (A7)', () => {
+  it('a window of ONLY chore/formatting/lint commits halves the score and reads as maintenance', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [
+        makeCommit('c0be1234', 'chore: fix typos'),
+        makeCommit('f0a71234', 'chore: reapply formatting to fix lint checks'),
+      ],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 6,
+      totalDeletions: 4,
+      window: { since: 'c0be123', until: undefined },
+      truncated: false,
+      degenerate: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'c0be123' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    // Maintenance wording — never blames the typo/formatting fixup for the regression.
+    expect(regression!.title).toContain('only maintenance commits');
+    expect(regression!.title).not.toContain('may have introduced the regression');
+    // The chore subjects are NOT cited as the anchor culprit.
+    expect(regression!.title).not.toContain('fix typos');
+    // Confidence halved: the seed-touched prior (0.45) → 0.225.
+    expect(regression!.baseScore).toBeCloseTo(0.225, 5);
+  });
+
+  it('softens "to <seed>" → "touching <file>" when the range intersection cannot confirm the seed was touched', async () => {
+    // The commit touches the seed's FILE, but the line-range helper returns a DIFFERENT commit
+    // set (it edited other parts of the file) — so the title must not claim it was "to <seed>".
+    mockCommitsTouchingRange.mockResolvedValueOnce(['ffffffffffff']);
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('abcd1234abcd', 'refactor internals', ['src/services/sale.service.ts'])],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 8,
+      totalDeletions: 2,
+      window: { since: 'abcd123', until: undefined },
+      truncated: false,
+      degenerate: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'abcd123' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    expect(regression!.title).toContain('touching src/services/sale.service.ts');
+    expect(regression!.title).not.toContain('to SaleService');
+    expect(regression!.title).toContain('may have introduced the regression');
+  });
+});
+
+describe('isChoreLikeCommit (A7)', () => {
+  it('flags chore/style/docs/ci/build prefixes and typo/formatting/lint fixups', () => {
+    for (const s of [
+      'chore: fix typos',
+      'chore(deps): bump',
+      'style: reindent',
+      'docs: update readme',
+      'ci: pin runner',
+      'build: tweak rollup',
+      'fix a nasty typo',
+      'reapply formatting to fix lint checks',
+    ]) {
+      expect(isChoreLikeCommit({ subject: s })).toBe(true);
+    }
+  });
+
+  it('does NOT flag behavioural commits', () => {
+    for (const s of ['fix throttle on activateSale', 'feat: add retry backoff', 'perf: cache lookups']) {
+      expect(isChoreLikeCommit({ subject: s })).toBe(false);
+    }
   });
 });
 

@@ -83,6 +83,7 @@ import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import {
   collectGitChanges,
+  commitsTouchingRange,
   defaultChangeWindowSince,
   latestCommitDate,
   DEFAULT_CHANGE_WINDOW_DAYS,
@@ -1389,17 +1390,36 @@ export function regressionSeedTouchedScore(focus: number | null): number {
 export const BROAD_CHANGE_FILE_THRESHOLD = 14;
 
 /**
+ * A commit whose SUBJECT declares a maintenance intent — a chore/style/docs/ci/build
+ * conventional-commit prefix, or a typo/formatting/lint fixup — is behaviourally inert and
+ * must never be the ANCHOR (the named culprit) of a deployment-regression cause. Dogfood
+ * (yargs): a behavioural bug was headlined on "chore: fix typos" / "chore: reapply formatting
+ * to fix lint checks" purely because they were the most-recent commits touching the file.
+ * Broader than {@link isNoiseCommit} on this axis (it catches `chore`/`build`/typo/formatting/
+ * lint that the noise filter deliberately leaves as real commits); such a commit may still
+ * appear in the change SUMMARY, just not as the cause's headline. Pure + deterministic.
+ */
+export function isChoreLikeCommit(commit: Pick<GitCommit, 'subject'>): boolean {
+  const subject = (commit.subject ?? '').trim();
+  return /^(chore|style|docs|ci|build)(\(|:)|\btypo\b|\bformatting\b|\blint\b/i.test(subject);
+}
+
+/**
  * HOR-333: build the commit + changed-symbol citation clauses for the regression
  * cause title. Cites the most-recent 1-2 commits (short SHA + subject) from the
  * bounded git history and the changed symbol name(s) from the source-backend
  * ChangeSet. Bounded so the headline stays scannable. Returns empty clauses when
  * no commits/symbols are available, so the title degrades to the prior wording.
+ *
+ * `maintenanceOnly` is true when there WERE seed-touching non-noise commits but every one of
+ * them is {@link isChoreLikeCommit maintenance} — the caller then softens the wording and halves
+ * the confidence rather than blaming a typo/formatting fixup for a behavioural regression.
  */
 export function formatRegressionCitation(
   recentChanges: BoundedGitChange | undefined,
   changes: ChangeSet | null,
   seedFile?: string,
-): { commitClause: string; symbolClause: string } {
+): { commitClause: string; symbolClause: string; maintenanceOnly: boolean } {
   const matchesSeed = (f: string): boolean =>
     seedFile === undefined || f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile);
 
@@ -1412,7 +1432,10 @@ export function formatRegressionCitation(
   // ignores those commits, so the headline must not name one either.
   const all = (recentChanges?.commits ?? []).filter((c) => !isNoiseCommit(c));
   const seedCommits = seedFile ? all.filter((c) => c.files.some(matchesSeed)) : all;
-  const commits = seedCommits.slice(0, 2);
+  // Never ANCHOR on a maintenance commit; a chore/typo/formatting fixup is behaviourally inert.
+  const behavioural = seedCommits.filter((c) => !isChoreLikeCommit(c));
+  const maintenanceOnly = seedCommits.length > 0 && behavioural.length === 0;
+  const commits = behavioural.slice(0, 2);
   const commitParts = commits.map((c) => {
     const sha = c.shortSha || c.sha.slice(0, 7);
     const subject = (c.subject ?? '').replace(/\s+/g, ' ').trim();
@@ -1438,7 +1461,7 @@ export function formatRegressionCitation(
     symbolClause = ` touched ${shown}${more}`;
   }
 
-  return { commitClause, symbolClause };
+  return { commitClause, symbolClause, maintenanceOnly };
 }
 
 export async function investigate(
@@ -3540,17 +3563,52 @@ export async function investigate(
     // [unrelated symptom]") misleads, especially when no runtime evidence corroborates it. Reframe
     // honestly rather than confidently blaming the broad change.
     const isBroadChange = seedChangeBroad;
+    // A change window whose only seed-touching commits are maintenance (chore/formatting/lint)
+    // cannot be blamed for a behavioural regression — soften the wording and halve the score.
+    const maintenanceOnly = seedInChanges && citation.maintenanceOnly;
+    // Symbol-line-range intersection: commit attribution is file-level, but a seed can live inside
+    // a 4000-line file whose OTHER parts churn constantly (dogfood: got's options.ts). Confirm an
+    // in-window commit actually touched the seed's LINE RANGE before saying the change was "to
+    // <seed>"; when we can't confirm it (helper unavailable on a shallow clone, or the commits
+    // touched other parts of the file), soften to "touching <file>" so the cause never overclaims.
+    let rangeConfirmed = false;
+    if (
+      seedInChanges &&
+      top?.filePath &&
+      top.startLine !== undefined &&
+      deps.repoPath !== undefined
+    ) {
+      const touching = await commitsTouchingRange(
+        deps.repoPath,
+        top.filePath,
+        top.startLine,
+        top.endLine ?? top.startLine,
+        recentChanges?.window.since,
+      );
+      if (touching && touching.length > 0) {
+        const inRange = new Set(touching);
+        rangeConfirmed = (recentChanges?.commits ?? []).some(
+          (c) => !isNoiseCommit(c) && !isChoreLikeCommit(c) && inRange.has(c.sha),
+        );
+      }
+    }
+    // The seed reference in the confident title: name the SYMBOL only when a commit provably
+    // touched its line range; otherwise name the FILE it lives in (honest, never overclaiming).
+    const seedRef =
+      top !== undefined ? (rangeConfirmed ? `to ${top.name}` : `touching ${top.filePath ?? top.name}`) : '';
     // #3: only attribute the regression to the seed when an in-window commit actually touched the
     // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
     // pinning it on the newest unrelated commit.
     const regressionTitle =
-      top && seedInChanges && !isBroadChange
-        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
-        : top && seedInChanges && isBroadChange
-          ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; treat it as unconfirmed without corroborating runtime evidence`
-          : top
-            ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
-            : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
+      top && seedInChanges && maintenanceOnly
+        ? `The change window in ${changeRangeLabel} contains only maintenance commits (chore/formatting/lint) touching ${top.filePath ?? top.name} — no behavioural change is evident; treat as unconfirmed without corroborating runtime evidence`
+        : top && seedInChanges && !isBroadChange
+          ? `Recent change${citation.commitClause} ${seedRef}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
+          : top && seedInChanges && isBroadChange
+            ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; treat it as unconfirmed without corroborating runtime evidence`
+            : top
+              ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
+              : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: regressionTitle,
@@ -3559,9 +3617,12 @@ export async function investigate(
       // A regression NOT backed by a seed-touching commit must not score like one that is.
       // HOR-451: scale the seed-touched prior by commit focus — a broad/diffuse commit that merely
       // touched the seed no longer outranks an evidence-backed runtime cause.
+      // A maintenance-only window halves the prior — a typo/formatting fixup is weak regression
+      // evidence even when it touches the seed's file.
       baseScore: clamp01(
-        (seedInChanges ? regressionSeedTouchedScore(seedFocus) : 0.18) +
-          (queueHits.length > 0 ? 0.05 : 0),
+        ((seedInChanges ? regressionSeedTouchedScore(seedFocus) : 0.18) +
+          (queueHits.length > 0 ? 0.05 : 0)) *
+          (maintenanceOnly ? 0.5 : 1),
       ),
       metadata: { blastRadius },
     });
