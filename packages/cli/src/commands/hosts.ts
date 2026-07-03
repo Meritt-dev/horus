@@ -4,9 +4,11 @@
  */
 
 import pc from 'picocolors';
+import { resolve } from 'node:path';
 import { readRegistry } from '@horus/core';
 import {
   readSourceHostUrl,
+  fetchHostRepoPath,
   isHostHealthy,
   readSourceHostPid,
   readSpawnedHost,
@@ -44,8 +46,15 @@ export async function runHosts(opts: { reap?: boolean } = {}): Promise<number> {
         (hostUrl ? extractPort(hostUrl) : null) ??
         (rec && Number.isFinite(rec.port) ? rec.port : null);
       const healthy = hostUrl ? await isHostHealthy(hostUrl) : false;
+      // Identity check (dogfood finding 5): the default port is shared across repos,
+      // so "something healthy on the port" is NOT "this repo's host is running".
+      let servesRepo: boolean | null = null;
+      if (healthy && hostUrl) {
+        const served = await fetchHostRepoPath(hostUrl);
+        servesRepo = served === null ? null : resolve(served) === resolve(entry.root);
+      }
       const pidAlive = pid != null ? isPidAlive(pid) : null;
-      const state: RegisteredHostState = { name, hostUrl, pid, port, healthy, pidAlive };
+      const state: RegisteredHostState = { name, hostUrl, pid, port, healthy, pidAlive, servesRepo };
       rows.push({ ...state, root: entry.root, live: isLiveRegisteredHost(state) });
     }),
   );
@@ -56,7 +65,11 @@ export async function runHosts(opts: { reap?: boolean } = {}): Promise<number> {
   for (const row of rows) {
     if (row.hostUrl === null) continue;
     printedAny = true;
-    const status = row.live ? pc.green('● running') : pc.red('● stopped');
+    const status = row.live
+      ? pc.green('● running')
+      : row.healthy && row.servesRepo === false
+        ? pc.yellow('● foreign — port serves another repo')
+        : pc.red('● stopped');
     const port = row.port ?? '?';
     console.log(
       `  ${status}  ${pc.bold(row.name.padEnd(24))} port ${String(port).padEnd(6)} ${pc.dim(row.root)}`,

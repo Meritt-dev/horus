@@ -88,6 +88,13 @@ export interface RegisteredHostState {
   port: number | null;
   healthy: boolean;
   pidAlive: boolean | null;
+  /**
+   * Does the live host at `hostUrl` actually serve THIS entry's repo? (dogfood
+   * finding 5: the default port is shared, so a healthy FOREIGN host on the port
+   * made every entry read "running".) `null` = identity unknown (host down, or an
+   * older backend that can't report it — treated as matching for back-compat).
+   */
+  servesRepo?: boolean | null;
 }
 
 /**
@@ -99,7 +106,9 @@ export interface RegisteredHostState {
  * is NOT live.
  */
 export function isLiveRegisteredHost(h: RegisteredHostState): boolean {
-  if (h.healthy) return true;
+  // A healthy port is NOT enough: the host must serve this entry's repo
+  // (identity from GET /api/host), or be unable to report identity (null).
+  if (h.healthy) return h.servesRepo !== false;
   if (h.hostUrl === null && h.pidAlive === true) return true;
   return false;
 }

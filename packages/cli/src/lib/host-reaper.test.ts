@@ -130,3 +130,21 @@ describe('countDistinctLiveHosts', () => {
     expect(countDistinctLiveHosts(rows)).toBe(0);
   });
 });
+
+
+describe('host identity (dogfood finding 5 — foreign host on the shared port)', () => {
+  const base = { name: 'p', hostUrl: 'http://127.0.0.1:8420', pid: 1, port: 8420, pidAlive: true };
+
+  it('a healthy port serving ANOTHER repo is NOT live', () => {
+    expect(isLiveRegisteredHost({ ...base, healthy: true, servesRepo: false })).toBe(false);
+  });
+
+  it('a healthy port serving THIS repo is live', () => {
+    expect(isLiveRegisteredHost({ ...base, healthy: true, servesRepo: true })).toBe(true);
+  });
+
+  it('identity-unknown (old backend / no report) keeps back-compat liveness', () => {
+    expect(isLiveRegisteredHost({ ...base, healthy: true, servesRepo: null })).toBe(true);
+    expect(isLiveRegisteredHost({ ...base, healthy: true })).toBe(true);
+  });
+});
