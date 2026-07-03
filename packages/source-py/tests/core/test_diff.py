@@ -215,3 +215,25 @@ class TestFormatDiffFullSummary:
         result = format_diff(diff)
 
         assert "3 changes" in result
+
+
+class TestSyntheticNodesExcluded:
+    """Dogfood cycle-2 N5: derived process/community nodes churn with every snapshot
+    and surfaced as bogus added symbols ("test_invalid → ResponseValidationError ()"
+    with no file) in `horus changes`."""
+
+    def test_process_and_community_nodes_never_diff(self) -> None:
+        base = {}
+        current = {
+            "process:x": _node(
+                "process:x",
+                label=NodeLabel.PROCESS,
+                name="test_invalid → ResponseValidationError",
+                file_path="",
+            ),
+            "community:y": _node("community:y", label=NodeLabel.COMMUNITY, name="Docs+Scripts", file_path=""),
+            "function:src/app.py:real_fn": _node("function:src/app.py:real_fn"),
+        }
+        result = diff_graphs(base, current, {}, {})
+        names = [n.name for n in result.added_nodes]
+        assert names == ["real_fn"]
