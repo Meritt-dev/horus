@@ -140,6 +140,14 @@ class StorageBackend(Protocol):
         """Execute a raw backend-specific query string."""
         ...
 
+    def name_contains_search(self, token: str, limit: int = 20) -> list[SearchResult]:
+        """Symbols whose ``name`` contains *token* (case-insensitive substring).
+
+        The retrieval channel FTS can't provide (`router` → `APIRouter`); public
+        names rank before underscore-private, shorter before longer.
+        """
+        ...
+
     def exact_name_search(self, name: str, limit: int = 5) -> list[SearchResult]:
         """Search for nodes with an exact name match."""
         ...

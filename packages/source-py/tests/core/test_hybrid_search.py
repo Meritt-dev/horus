@@ -491,3 +491,36 @@ class TestExactNameSeed:
         )
         results = hybrid_search("syncOrders", storage, query_embedding=None, limit=5)
         assert [r.node_id for r in results[:2]] == ["byname", "byarg"]
+
+
+class TestNameSubstringChannel:
+    """Dogfood cycle-2 N9: `router` must reach `APIRouter` — FTS tokenizes the name
+    as one token and near-flat vector scores buried it below _private internals."""
+
+    def test_name_containing_symbol_joins_the_merge(self) -> None:
+        from unittest.mock import MagicMock
+
+        storage = MagicMock()
+        storage.fts_search.return_value = [
+            SearchResult(node_id="f:_contains_router", score=0.9, node_name="_contains_router", file_path="fastapi/routing.py"),
+        ]
+        storage.vector_search.return_value = []
+        storage.name_contains_search.return_value = [
+            SearchResult(node_id="c:APIRouter", score=0.5, node_name="APIRouter", file_path="fastapi/routing.py", label="class"),
+        ]
+        storage.exact_name_search.return_value = []
+        results = hybrid_search("router", storage, query_embedding=None, limit=10)
+        names = [r.node_name for r in results]
+        assert "APIRouter" in names
+        storage.name_contains_search.assert_called_once()
+
+    def test_multi_word_query_skips_the_name_channel(self) -> None:
+        from unittest.mock import MagicMock
+
+        storage = MagicMock()
+        storage.fts_search.return_value = []
+        storage.fuzzy_search.return_value = []
+        storage.vector_search.return_value = []
+        storage.exact_name_search.return_value = []
+        hybrid_search("orders stuck in queue", storage, query_embedding=None, limit=10)
+        storage.name_contains_search.assert_not_called()

@@ -79,3 +79,37 @@ describe('SourceCodeProvider.searchSymbols — exact-name wins (HOR-208)', () =>
     expect(results[0]?.endLine).toBe(387);
   });
 });
+
+describe('SourceCodeProvider.searchSymbols — public API outranks private internals (dogfood N9)', () => {
+  function n9Client(): SourceHttpClient {
+    return {
+      async exactSymbols() {
+        return []; // concept query — no exact-name hit
+      },
+      // Backend hybrid scores are near-flat and rank the private internals first
+      // (the fastapi "router" failure: APIRouter missed the top-8 entirely).
+      async search() {
+        return [
+          { nodeId: 'class:fastapi/routing.py:_RouterIncludeContext', score: 0.016, name: '_RouterIncludeContext', filePath: 'fastapi/routing.py', label: 'class', snippet: '' },
+          { nodeId: 'function:fastapi/routing.py:_contains_router', score: 0.016, name: '_contains_router', filePath: 'fastapi/routing.py', label: 'function', snippet: '' },
+          { nodeId: 'method:fastapi/routing.py:__init__', score: 0.016, name: '__init__', filePath: 'fastapi/routing.py', label: 'method', snippet: '' },
+          { nodeId: 'class:fastapi/routing.py:APIRouter', score: 0.015, name: 'APIRouter', filePath: 'fastapi/routing.py', label: 'class', snippet: '' },
+          { nodeId: 'method:fastapi/routing.py:matches', score: 0.015, name: 'matches', filePath: 'fastapi/routing.py', label: 'method', snippet: '' },
+        ];
+      },
+      async nodesLines() {
+        return {};
+      },
+    } as unknown as SourceHttpClient;
+  }
+
+  it('APIRouter (public class) leads; _private and dunder internals sink', async () => {
+    const provider = new SourceCodeProvider(n9Client());
+    const results = await provider.searchSymbols('router', 5);
+    expect(results[0]?.name).toBe('APIRouter');
+    const names = results.map((r) => r.name);
+    // Private internals are still FINDABLE, just not ahead of the public API.
+    expect(names.indexOf('_RouterIncludeContext')).toBeGreaterThan(names.indexOf('APIRouter'));
+    expect(names.indexOf('__init__')).toBeGreaterThan(names.indexOf('matches'));
+  });
+});

@@ -1196,6 +1196,42 @@ class KuzuBackend:
         ranked.sort(key=lambda t: t[0])
         return [r for _, r in ranked][:limit]
 
+    def name_contains_search(self, token: str, limit: int = 20) -> list[SearchResult]:
+        """Symbols whose ``name`` CONTAINS *token* — mirrors SQLiteBackend (dogfood N9)."""
+        limit = int(limit)
+        if not token:
+            return []
+        out: list[tuple[int, int, int, SearchResult]] = []
+        for table in _SEARCHABLE_TABLES:
+            rows = self._exec_rows(
+                f"MATCH (n:{table}) "
+                f"WHERE lower(n.name) CONTAINS lower('{escape_cypher(token)}') "
+                f"RETURN n.id, n.name, n.file_path, n.content LIMIT {limit}"
+            )
+            for node_id, name, file_path, content in rows:
+                node_id = node_id or ""
+                name = name or ""
+                label_prefix = node_id.split(":", 1)[0] if node_id else ""
+                private = 1 if name.startswith(("_", "#")) else 0
+                decl_rank = 0 if label_prefix in ("class", "interface") else 1
+                out.append(
+                    (
+                        private,
+                        len(name),
+                        decl_rank,
+                        SearchResult(
+                            node_id=node_id,
+                            score=0.5,
+                            node_name=name,
+                            file_path=file_path or "",
+                            label=label_prefix,
+                            snippet=(content or "")[:200],
+                        ),
+                    )
+                )
+        out.sort(key=lambda t: (t[0], t[1], t[2], t[3].node_id))
+        return [r for _, _, _, r in out[:limit]]
+
     def exact_name_search(self, name: str, limit: int) -> list[SearchResult]:
         """Symbols whose ``name`` equals *name* exactly (case-insensitive).
 

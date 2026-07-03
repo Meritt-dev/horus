@@ -95,11 +95,22 @@ def hybrid_search(
     if query_embedding is not None:
         vector_results = storage.vector_search(query_embedding, limit=candidate_limit)
 
+    # Name-substring channel (dogfood cycle-2 N9): FTS tokenizes `APIRouter` as ONE
+    # token, so the query `router` never reaches it, and near-flat vector scores bury
+    # it — fastapi's marquee class missed the top-20 entirely while _private internals
+    # filled the page. A symbol whose NAME contains the query token is prime evidence
+    # for a symbol search; single-token queries only (a multi-word query is a concept,
+    # not a name fragment).
+    name_results: list[SearchResult] = []
+    if " " not in query.strip() and hasattr(storage, "name_contains_search"):
+        name_results = storage.name_contains_search(query.strip(), limit=candidate_limit)
+
     rrf_scores: dict[str, float] = {}
     metadata: dict[str, SearchResult] = {}
 
     _accumulate_ranks(fts_results, fts_weight, rrf_k, rrf_scores, metadata)
     _accumulate_ranks(vector_results, vector_weight, rrf_k, rrf_scores, metadata)
+    _accumulate_ranks(name_results, 1.2, rrf_k, rrf_scores, metadata)
 
     merged: list[SearchResult] = []
     for node_id, score in rrf_scores.items():

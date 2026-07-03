@@ -1452,6 +1452,51 @@ class SqliteBackend:
         candidates.sort(key=lambda r: (-r.score, r.node_id))
         return candidates[:limit]
 
+    def name_contains_search(self, token: str, limit: int = 20) -> list[SearchResult]:
+        """Symbols whose ``name`` CONTAINS *token* (case-insensitive substring).
+
+        The retrieval channel FTS can't provide: `router` must reach `APIRouter`,
+        but FTS tokenizes the name as one token and never prefix-matches inside it
+        (dogfood cycle-2 N9). Public (non-underscore) names rank first, then
+        shorter names (tighter matches), then declarations before members.
+        """
+        conn = self._require_conn()
+        limit = int(limit)
+        if not token:
+            return []
+        placeholders = ",".join("?" * len(_NON_SEARCHABLE_LABELS))
+        with self._lock:
+            rows = conn.execute(
+                f"SELECT id, name, file_path, content FROM nodes "
+                f"WHERE lower(name) LIKE ? ESCAPE '\\' AND label NOT IN ({placeholders})",
+                [f"%{_like_escape(token.lower())}%", *sorted(_NON_SEARCHABLE_LABELS)],
+            ).fetchall()
+
+        ranked: list[tuple[int, int, int, SearchResult]] = []
+        for node_id, sym_name, file_path, content in rows:
+            node_id = node_id or ""
+            sym_name = sym_name or ""
+            label_prefix = node_id.split(":", 1)[0] if node_id else ""
+            private = 1 if sym_name.startswith(("_", "#")) else 0
+            decl_rank = 0 if label_prefix in ("class", "interface") else 1
+            ranked.append(
+                (
+                    private,
+                    len(sym_name),
+                    decl_rank,
+                    SearchResult(
+                        node_id=node_id,
+                        score=0.5,
+                        node_name=sym_name,
+                        file_path=file_path or "",
+                        label=label_prefix,
+                        snippet=(content or "")[:200],
+                    ),
+                )
+            )
+        ranked.sort(key=lambda t: (t[0], t[1], t[2], t[3].node_id))
+        return [r for _, _, _, r in ranked[:limit]]
+
     def exact_name_search(self, name: str, limit: int = 5) -> list[SearchResult]:
         """Symbols whose ``name`` equals *name* exactly (case-insensitive).
 
