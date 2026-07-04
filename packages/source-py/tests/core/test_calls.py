@@ -454,6 +454,109 @@ class TestCallBlocklist:
         # apply_func is not in the graph so no edge for it; 'str' is blocklisted.
         assert len(calls_rels) == 0
 
+    def test_blocklisted_name_kept_when_defined_same_file(self) -> None:
+        # B3.3: `format` is in the blocklist (Python's str.format) but a JS file
+        # that DEFINES a local `function format(){}` and calls it same-file must
+        # get a real CALL edge — otherwise prettier's format.js reads isDead:true,
+        # a dead-code verdict a user could act on by deleting live code.
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/format.js")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/format.js", "printDoc", 1, 10)
+        format_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/format.js", "format", 12, 40
+        )
+
+        parse_data = [
+            FileParseData(
+                file_path="src/format.js",
+                language="javascript",
+                # printDoc() at line 5 calls the same-file format() helper.
+                parse_result=ParseResult(
+                    calls=[CallInfo(name="format", line=5)],
+                ),
+            ),
+        ]
+
+        process_calls(parse_data, g)
+        targets = {r.target for r in g.get_relationships_by_type(RelType.CALLS)}
+        assert format_id in targets
+
+    def test_blocklisted_name_kept_when_imported(self) -> None:
+        # A blocklisted name (`send`) imported from another file resolves to the
+        # imported definition and keeps its edge (import-resolved, confidence 1.0).
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/mailer.js")
+        send_id = _add_symbol_node(g, NodeLabel.FUNCTION, "src/mailer.js", "send", 1, 10)
+        _add_file_node(g, "src/app.js")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.js", "notify", 1, 20)
+
+        app_file_id = generate_id(NodeLabel.FILE, "src/app.js")
+        mailer_file_id = generate_id(NodeLabel.FILE, "src/mailer.js")
+        g.add_relationship(
+            GraphRelationship(
+                id=f"imports:{app_file_id}->{mailer_file_id}",
+                type=RelType.IMPORTS,
+                source=app_file_id,
+                target=mailer_file_id,
+                properties={"symbols": "send"},
+            )
+        )
+
+        parse_data = [
+            FileParseData(
+                file_path="src/app.js",
+                language="javascript",
+                parse_result=ParseResult(calls=[CallInfo(name="send", line=5)]),
+            ),
+        ]
+
+        process_calls(parse_data, g)
+        rels = g.get_relationships_by_type(RelType.CALLS)
+        confidences = {r.target: r.properties.get("confidence") for r in rels}
+        assert send_id in confidences
+        assert confidences[send_id] == 1.0
+
+    def test_unresolved_blocklisted_name_stays_blocklisted(self) -> None:
+        # A bare `format()` with NO same-file / imported definition — only a
+        # cross-file homonym — stays blocklisted (no false global-fuzzy edge).
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/other.js")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/other.js", "format", 1, 10)
+        _add_file_node(g, "src/app.js")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/app.js", "render", 1, 20)
+
+        parse_data = [
+            FileParseData(
+                file_path="src/app.js",
+                language="javascript",
+                parse_result=ParseResult(calls=[CallInfo(name="format", line=5)]),
+            ),
+        ]
+
+        process_calls(parse_data, g)
+        assert len(g.get_relationships_by_type(RelType.CALLS)) == 0
+
+    def test_python_str_format_method_call_still_dropped(self) -> None:
+        # A Python `.py` caller of `x.format()` (str.format) has no same-file /
+        # imported `format` definition, so it stays blocklisted — the original
+        # reason `format` is in the blocklist is preserved.
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/report.py")
+        _add_symbol_node(g, NodeLabel.FUNCTION, "src/report.py", "build", 1, 20)
+
+        parse_data = [
+            FileParseData(
+                file_path="src/report.py",
+                language="python",
+                parse_result=ParseResult(
+                    calls=[CallInfo(name="format", line=5, receiver="template")],
+                ),
+            ),
+        ]
+
+        process_calls(parse_data, g)
+        assert len(g.get_relationships_by_type(RelType.CALLS)) == 0
+
     def test_non_blocklisted_call_still_resolves(self) -> None:
         g = KnowledgeGraph()
         _add_file_node(g, "src/main.py")

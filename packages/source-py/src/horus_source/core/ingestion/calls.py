@@ -541,6 +541,39 @@ def _resolve_di_member_call(
     )
 
 
+def _resolves_to_local_definition(
+    name: str,
+    file_path: str,
+    call_index: dict[str, list[str]],
+    graph: KnowledgeGraph,
+    import_cache: dict[str, set[str]],
+) -> bool:
+    """True when *name* resolves to a same-file or imported definition.
+
+    The ``_CALL_BLOCKLIST`` exists only to stop LOW-confidence global-fuzzy
+    matches on ubiquitous names (Python builtins / JS globals like ``format``,
+    ``parse``, ``send``). But those very names are ALSO real product functions
+    in other languages: prettier's same-file ``format()`` (format.js) and any
+    repo defining a symbol that collides with a builtin name were dropped by
+    the blocklist and read as dead code — a verdict a user could act on.
+
+    So the blocklist must never suppress a HIGH-confidence edge: if *name*
+    resolves to a definition in the caller's own file, or to a symbol imported
+    into it, the call is real and keeps its edge. This mirrors the same-file
+    (calls.py exact-match) + import resolution arms of :func:`resolve_call`;
+    the low-confidence global-fuzzy arm the blocklist guards is deliberately
+    NOT consulted here, so unresolved bare builtin names stay blocklisted.
+    """
+    candidate_ids = call_index.get(name, [])
+    if not candidate_ids:
+        return False
+    for nid in candidate_ids:
+        node = graph.get_node(nid)
+        if node is not None and node.file_path == file_path:
+            return True
+    return _resolve_via_imports(name, candidate_ids, graph, import_cache) is not None
+
+
 def resolve_file_calls(
     fpd: FileParseData,
     call_index: dict[str, list[str]],
@@ -562,6 +595,9 @@ def resolve_file_calls(
             call.name in _CALL_BLOCKLIST
             and call.receiver not in ("self", "this")
             and not is_di_receiver
+            and not _resolves_to_local_definition(
+                call.name, fpd.file_path, call_index, graph, import_cache
+            )
         ):
             continue
 
