@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -73,14 +73,17 @@ const MULTI_ENV_CONFIG = horusConfigSchema.parse({
 // ---------------------------------------------------------------------------
 
 describe('horusConfigSchema', () => {
-  it('applies defaults and requires a database url', () => {
-    const parsed = horusConfigSchema.parse({ database: DB });
+  it('applies defaults (models, projects) with no input', () => {
+    const parsed = horusConfigSchema.parse({});
     expect(parsed.models.reasoning).toBe('claude-opus-4-8');
     expect(parsed.projects).toEqual([]);
   });
 
-  it('rejects a config without a database url', () => {
-    expect(() => horusConfigSchema.parse({})).toThrow();
+  it('accepts a config without a database block (deprecated — defaults to the placeholder)', () => {
+    // `database` is no longer required: local persistence is embedded, so an omitted block
+    // is valid and defaults to the ignored placeholder rather than throwing.
+    const parsed = horusConfigSchema.parse({});
+    expect(parsed.database.url).toBe('embedded');
   });
 
   it('rejects a repository with a non-url source hostUrl', () => {
@@ -553,7 +556,8 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
 
   it('throws a readable validation error when .js config is structurally invalid', async () => {
     const configPath = join(tmpDir, 'invalid-schema.js');
-    writeFileSync(configPath, `export default { notAValidKey: true };\n`);
+    // `projects` must be an array — a wrong-typed value is a genuine schema violation.
+    writeFileSync(configPath, `export default { projects: "not-an-array" };\n`);
     await expect(loadConfig(configPath)).rejects.toThrow(/Invalid Horus config/);
   });
 
@@ -578,33 +582,48 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
 
 describe('parseConfig — actionable validation errors (HOR-102)', () => {
   it('includes the config source path in the error', () => {
-    expect(() => horusConfigSchema.parse({})).toThrow();
+    expect(() => horusConfigSchema.parse({ projects: 'nope' })).toThrow();
     // Verify via loadConfig that the source path appears in the message
   });
 
-  it('missing database.url shows a postgresql example', () => {
-    let caught: Error | null = null;
-    try {
-      horusConfigSchema.parse({ projects: [] });
-    } catch (e) {
-      caught = e as Error;
-    }
-    // Zod throws on missing database — the parseConfig wrapper adds the example hint
-    // Here we test the schema rejects it; example hint is tested via loadConfig below
-    expect(caught).not.toBeNull();
+  it('a config omitting the deprecated database block is valid (no error)', () => {
+    // Previously `database` was required; it is now optional (embedded persistence), so a
+    // config without it parses cleanly instead of raising a validation error.
+    expect(() => horusConfigSchema.parse({ projects: [] })).not.toThrow();
   });
 
-  it('loadConfig shows database.url example in error for missing database', async () => {
+  it('loadConfig loads a config that omits the deprecated database block', async () => {
     const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
     writeFileSync(configPath, `export default { projects: [] };\n`);
     try {
-      let err: Error | null = null;
-      try { await loadConfig(configPath); } catch (e) { err = e as Error; }
-      expect(err).not.toBeNull();
-      expect(err!.message).toContain('Invalid Horus config');
-      expect(err!.message).toContain(configPath);
-      expect(err!.message).toContain('postgresql://');
+      const cfg = await loadConfig(configPath);
+      expect(cfg.projects).toEqual([]);
+      expect(cfg.database.url).toBe('embedded'); // placeholder — never connected to
     } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+
+  it('warns exactly once when configs still set the deprecated database block', async () => {
+    // Fresh module registry so the process-scoped "warn once" flag starts unset, making the
+    // assertion independent of the many other tests in this file that load database configs.
+    vi.resetModules();
+    const { loadConfig: freshLoad } = await import('./config.js');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const configPath = join(tmpdir(), `horus-deprecate-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(
+      configPath,
+      `export default { database: { url: "postgresql://legacy/db" }, projects: [] };\n`,
+    );
+    try {
+      await freshLoad(configPath);
+      await freshLoad(configPath); // a second load must NOT warn again
+      const deprecationWarnings = warn.mock.calls.filter((c) =>
+        String(c[0]).includes('database config is deprecated'),
+      );
+      expect(deprecationWarnings).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
       rmSync(configPath, { force: true });
     }
   });

@@ -1,28 +1,27 @@
 /**
- * Local-vs-Cloud database guardrail (HOR-298).
+ * Cloud-database guardrail (HOR-298).
  *
- * The Horus CLI's local Postgres (its execution state) and the Horus Cloud
- * Postgres (the shared team source of truth) are deliberately separate. The CLI
- * must reach Cloud ONLY through the `/v1` REST API — never by repointing its own
- * `DATABASE_URL` at the Cloud database. This guard makes that boundary
- * un-bypassable at the connection chokepoint: any attempt to open a CLI database
- * connection against the Cloud database throws.
+ * Horus's local state lives in the embedded database; the Horus Cloud Postgres is the
+ * shared team source of truth. The CLI must reach Cloud ONLY through the `/v1` REST API —
+ * never by opening a direct connection to the Cloud database. The remaining place a raw
+ * Postgres URL is accepted is the one-time `horus db import --from <url>` cutover, so this
+ * guard makes the boundary un-bypassable there: importing directly from the Cloud database
+ * throws (use the API-backed sync instead).
  *
  * See `docs/cloud-vs-cli-databases.md`.
  */
 
-/** Known Horus Cloud database markers (see horus-cloud docker-compose + .env). */
+/** Known Horus Cloud database markers (its database name and Postgres port). */
 const CLOUD_DB_NAME = 'horus_cloud';
 const CLOUD_DB_PORT = '5434';
 
 export class CloudDatabaseUrlError extends Error {
   constructor(reason: string) {
     super(
-      `Refusing to connect: DATABASE_URL points at the Horus Cloud database (${reason}). ` +
-        `The Horus CLI must use only its LOCAL database (default port 5433, db "horus"); ` +
+      `Refusing to connect: the URL points at the Horus Cloud database (${reason}). ` +
         `Cloud is reached through the /v1 REST API, never a direct DB connection. ` +
-        `Fix your DATABASE_URL (do not set it to the Cloud database / HORUS_CLOUD_DATABASE_URL). ` +
-        `See docs/cloud-vs-cli-databases.md.`,
+        `Import from your own local Postgres instead (do not point --from at the Cloud ` +
+        `database / HORUS_CLOUD_DATABASE_URL). See docs/cloud-vs-cli-databases.md.`,
     );
     this.name = 'CloudDatabaseUrlError';
   }

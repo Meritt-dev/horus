@@ -5,7 +5,7 @@ import {
   assertLocalDatabaseUrl,
   CloudDatabaseUrlError,
 } from './guard.js';
-import { createDb } from './client.js';
+import { importFromPostgres, type HorusDb } from './client.js';
 
 const LOCAL = 'postgresql://horus:horus@localhost:5433/horus';
 const CLOUD_PORT = 'postgresql://horus:pw@localhost:5434/horus';
@@ -60,8 +60,10 @@ describe('cloud database guard (HOR-298)', () => {
     expect(cloudDatabaseUrlReason('')).toBeNull();
   });
 
-  it('createDb refuses to construct a client against the Cloud database', () => {
-    expect(() => createDb(CLOUD_FULL)).toThrow(CloudDatabaseUrlError);
-    expect(() => createDb(CLOUD_PORT)).toThrow(CloudDatabaseUrlError);
+  it('importFromPostgres refuses a Cloud database as its --from source', async () => {
+    // The guard fires before any connection is opened, so no live Postgres is needed.
+    const db = {} as HorusDb;
+    await expect(importFromPostgres(CLOUD_FULL, db)).rejects.toBeInstanceOf(CloudDatabaseUrlError);
+    await expect(importFromPostgres(CLOUD_PORT, db)).rejects.toBeInstanceOf(CloudDatabaseUrlError);
   });
 });

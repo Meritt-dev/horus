@@ -131,7 +131,7 @@ export interface LocalConfigFile {
   version: number;
   /** A single ProjectConfig-shaped object (name, repositories[], environments[]). */
   project: unknown;
-  /** Optional Postgres override; defaults to DATABASE_URL / the local default. */
+  /** @deprecated Ignored — local persistence is embedded (pglite); teams use Horus Cloud. */
   database?: { url: string };
   /** Optional AI narrative settings (provider + Anthropic key/model) — HOR-206. */
   ai?: unknown;

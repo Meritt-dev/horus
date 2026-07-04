@@ -1,6 +1,7 @@
-import postgres from 'postgres';
+import { sql } from 'drizzle-orm';
+import { openDb, localDbPath, isDbUnavailable } from './client.js';
 
-/** The tables the first migration must have created. */
+/** The tables the embedded migrations create (used for the schema-count detail). */
 export const EXPECTED_TABLES = [
   'projects',
   'repositories',
@@ -18,50 +19,51 @@ export const EXPECTED_TABLES = [
 ] as const;
 
 export interface DbHealth {
-  /** Postgres is reachable and accepting queries. */
+  /** The embedded database opened and accepted a query. */
   reachable: boolean;
-  /** All expected tables exist (migrations have been applied). */
+  /** Schema is present (embedded migrations applied — always true once reachable). */
   schemaReady: boolean;
   reachableDetail: string;
   schemaDetail: string;
 }
 
 /**
- * Probe Postgres for `horus status`: is it reachable, and is the schema migrated?
- * Never throws — failures are reported as `false` with a human detail.
+ * Probe the embedded local database for `horus status`/`doctor`/`readiness`: it is the single
+ * local persistence tier (no user-run Postgres, `DATABASE_URL` ignored). Opening it applies the
+ * embedded migrations, so a reachable db is always schema-ready. `reachable` is only false in a
+ * packaging variant that ships without pglite's assets (the single-file download) — then the db
+ * degrades to display-only. Never throws — failures are reported as `false` with a human detail.
  */
-export async function checkDatabase(url: string): Promise<DbHealth> {
-  const sql = postgres(url, {
-    max: 1,
-    connect_timeout: 3,
-    idle_timeout: 1,
-    onnotice: () => {},
-  });
+export async function checkEmbeddedDb(): Promise<DbHealth> {
+  const path = localDbPath();
   try {
-    const rows = await sql<{ table_name: string }[]>`
-      SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public'
-        AND table_name = ANY(${[...EXPECTED_TABLES]})
-    `;
-    const present = new Set(rows.map((r) => r.table_name));
-    const missing = EXPECTED_TABLES.filter((t) => !present.has(t));
-    return {
-      reachable: true,
-      schemaReady: missing.length === 0,
-      reachableDetail: 'connected',
-      schemaDetail:
-        missing.length === 0
-          ? `${EXPECTED_TABLES.length} tables present`
-          : `missing: ${missing.join(', ')} — run \`pnpm db migrate\``,
-    };
+    const { db, sql: conn } = await openDb();
+    try {
+      // Touch the db so a display-only build (assets missing → Proxy throws) surfaces here.
+      await db.execute(sql`select 1`);
+      return {
+        reachable: true,
+        schemaReady: true,
+        reachableDetail: `embedded (${path})`,
+        schemaDetail: `${EXPECTED_TABLES.length} tables present`,
+      };
+    } finally {
+      await conn.end();
+    }
   } catch (err) {
+    if (isDbUnavailable(err)) {
+      return {
+        reachable: false,
+        schemaReady: false,
+        reachableDetail: 'embedded database unavailable — this build ships no local persistence',
+        schemaDetail: 'install via npm or Homebrew for local persistence',
+      };
+    }
     return {
       reachable: false,
       schemaReady: false,
-      reachableDetail: `unreachable — \`docker compose up -d\` (${(err as Error).message})`,
-      schemaDetail: 'cannot check — Postgres unreachable',
+      reachableDetail: `embedded database error — ${(err as Error).message}`,
+      schemaDetail: '',
     };
-  } finally {
-    await sql.end({ timeout: 2 });
   }
 }

@@ -1,43 +1,39 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createLocalDb, shouldUseEmbeddedDb, isDbUnavailable, DB_UNAVAILABLE_PREFIX } from './client.js';
+import {
+  createLocalDb,
+  importFromPostgres,
+  isDbUnavailable,
+  DB_UNAVAILABLE_PREFIX,
+} from './client.js';
 import { listInvestigations, listInvestigationsWithReports, getLastInvestigationId } from './investigations.js';
-import { investigations, incidentMemory, memoryItem, memoryLink, memoryAudit } from './schema.js';
+import {
+  investigations,
+  incidentMemory,
+  memoryItem,
+  memoryLink,
+  memoryAudit,
+  outcomeLabel,
+} from './schema.js';
 import { eq } from 'drizzle-orm';
 
-const DEFAULT = 'postgresql://horus:horus@localhost:5433/horus';
-
-describe('shouldUseEmbeddedDb (driver selection)', () => {
-  const saved = process.env['DATABASE_URL'];
-  beforeEach(() => {
-    delete process.env['DATABASE_URL'];
-  });
-  afterEach(() => {
-    if (saved === undefined) delete process.env['DATABASE_URL'];
-    else process.env['DATABASE_URL'] = saved;
-  });
-
-  it('uses embedded for empty/unset url', () => {
-    expect(shouldUseEmbeddedDb(undefined)).toBe(true);
-    expect(shouldUseEmbeddedDb('')).toBe(true);
-    expect(shouldUseEmbeddedDb('   ')).toBe(true);
-  });
-
-  it('uses embedded for the local-default placeholder when DATABASE_URL is unset', () => {
-    expect(shouldUseEmbeddedDb(DEFAULT)).toBe(true);
-  });
-
-  it('uses postgres-js when DATABASE_URL is explicitly set', () => {
-    process.env['DATABASE_URL'] = DEFAULT;
-    expect(shouldUseEmbeddedDb(DEFAULT)).toBe(false);
-  });
-
-  it('uses postgres-js for a non-default configured url', () => {
-    expect(shouldUseEmbeddedDb('postgresql://u:p@db.example.com:5432/app')).toBe(false);
-  });
+// Mock the postgres-js source so importFromPostgres runs offline: `postgres()` yields a
+// closeable stub and `drizzle()` a select-only stub that serves fixture rows per table
+// (keyed by the very table objects client.ts imports, so identity matches). The embedded
+// TARGET is a real pglite db — we assert the copied rows actually land + upsert idempotently.
+const h = vi.hoisted(() => {
+  const rowsByTable = new Map<unknown, Record<string, unknown>[]>();
+  const sqlEnd = vi.fn(async () => {});
+  const sourceStub = {
+    select: () => ({ from: (table: unknown) => Promise.resolve(rowsByTable.get(table) ?? []) }),
+  };
+  return { rowsByTable, sqlEnd, sourceStub };
 });
+
+vi.mock('postgres', () => ({ default: vi.fn(() => ({ end: h.sqlEnd })) }));
+vi.mock('drizzle-orm/postgres-js', () => ({ drizzle: vi.fn(() => h.sourceStub) }));
 
 describe('isDbUnavailable (display-only fallback detection)', () => {
   it('matches errors thrown by the unavailable-db fallback', () => {
@@ -213,9 +209,77 @@ describe('createLocalDb (embedded pglite)', () => {
   it('gap 7: holds a write-lock for the session and releases it on close', async () => {
     const path = join(dir, 'horus.db');
     const lockPath = `${path}.lock`;
-    const h = await createLocalDb({ path });
+    const handle = await createLocalDb({ path });
     expect(existsSync(lockPath)).toBe(true); // lock held while the session is open
-    await h.sql.end();
+    await handle.sql.end();
     expect(existsSync(lockPath)).toBe(false); // released on close, so the next run can acquire it
+  }, 30_000);
+});
+
+describe('importFromPostgres (one-time cutover from a legacy Postgres)', () => {
+  const LOCAL = 'postgresql://horus:horus@localhost:5433/horus';
+  const INV_ID = '11111111-1111-1111-1111-111111111111';
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'horus-import-test-'));
+    h.rowsByTable.clear();
+    h.sqlEnd.mockClear();
+    // Fixture source rows (drizzle property names, as a real postgres-js select returns).
+    h.rowsByTable.set(investigations, [
+      { id: INV_ID, title: 'legacy incident', incidentInput: { repo: 'r' }, status: 'open', project: 'r' },
+    ]);
+    h.rowsByTable.set(outcomeLabel, [
+      { id: '22222222-2222-2222-2222-222222222222', investigationId: INV_ID, resolved: 'yes', source: 'confirm', project: 'r' },
+    ]);
+    h.rowsByTable.set(memoryItem, [
+      { id: 'mem_legacy', kind: 'decision', claim: 'ack before processing', scope: 'repo', source: 'human', confidence: 0.9, repo: 'r' },
+    ]);
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('copies investigation/outcome/memory rows into the embedded db and closes the source', async () => {
+    const { db, sql } = await createLocalDb({ path: join(dir, 'horus.db') });
+    try {
+      const counts = await importFromPostgres(LOCAL, db);
+      expect(counts.investigations).toBe(1);
+      expect(counts.outcome_label).toBe(1);
+      expect(counts.memory_item).toBe(1);
+      expect(counts.evidence).toBe(0); // empty source table → 0, still reported
+
+      const inv = await db.select().from(investigations).where(eq(investigations.id, INV_ID));
+      expect(inv[0]!.title).toBe('legacy incident');
+      const labels = await db.select().from(outcomeLabel);
+      expect(labels[0]!.resolved).toBe('yes');
+      const mem = await db.select().from(memoryItem);
+      expect(mem[0]!.claim).toBe('ack before processing');
+
+      // Source connection is opened READ-ONLY and always closed.
+      expect(h.sqlEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
+  it('is idempotent: re-importing upserts by id rather than duplicating rows', async () => {
+    const { db, sql } = await createLocalDb({ path: join(dir, 'horus.db') });
+    try {
+      await importFromPostgres(LOCAL, db);
+      // Mutate the source row, then re-import — the existing row is UPDATED, not duplicated.
+      h.rowsByTable.set(investigations, [
+        { id: INV_ID, title: 'legacy incident (corrected)', incidentInput: { repo: 'r' }, status: 'resolved', project: 'r' },
+      ]);
+      const counts = await importFromPostgres(LOCAL, db);
+      expect(counts.investigations).toBe(1);
+
+      const inv = await db.select().from(investigations);
+      expect(inv).toHaveLength(1); // upsert by id — no duplicate
+      expect(inv[0]!.title).toBe('legacy incident (corrected)');
+      expect(inv[0]!.status).toBe('resolved');
+    } finally {
+      await sql.end();
+    }
   }, 30_000);
 });

@@ -1,6 +1,7 @@
-import { drizzle } from 'drizzle-orm/postgres-js';
+import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
-import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT, PgTable, PgColumn } from 'drizzle-orm/pg-core';
+import { getTableColumns, sql as drizzleSql } from 'drizzle-orm';
 import { PGlite } from '@electric-sql/pglite';
 import postgres from 'postgres';
 import { homedir } from 'node:os';
@@ -12,22 +13,18 @@ import { assertLocalDatabaseUrl } from './guard.js';
 import { EMBEDDED_MIGRATIONS } from './migrations-bundle.js';
 
 /**
- * Horus's Drizzle handle, typed as the common Postgres base so a query written against
- * it runs identically on the two local drivers Horus uses:
- *   - postgres-js  → a user-run local Postgres (when DATABASE_URL is configured)
- *   - pglite       → an embedded, file-backed database (the zero-setup default)
- *
- * Both `PostgresJsDatabase` and `PgliteDatabase` extend this `PgDatabase`, so every
- * `.select()/.insert()/.update()/.returning()` the engine and db helpers use is
- * available — and using the base (rather than a union of the two concrete classes)
- * keeps overload resolution intact (a union collapses `.returning()` to 0 args).
+ * Horus's Drizzle handle, typed as the common Postgres base. Horus persists ONLY to an
+ * embedded, file-backed pglite database (the single local persistence tier — teams that
+ * need shared state use Horus Cloud's REST API, never a self-run Postgres). Typing on the
+ * base `PgDatabase` (rather than the concrete `PgliteDatabase`) keeps every
+ * `.select()/.insert()/.update()/.returning()` overload intact and lets `importFromPostgres`
+ * reuse the same query surface against a postgres-js source during a one-time import.
  */
 export type HorusDb = PgDatabase<PgQueryResultHKT, typeof schema>;
 
 /**
- * A closeable handle around the active database. `sql.end()` releases resources for
- * either driver (postgres-js connection pool, or the embedded pglite instance), so the
- * one-shot-CLI shutdown path (`await handle.sql.end()`) is identical regardless of driver.
+ * A closeable handle around the active database. `sql.end()` closes the embedded pglite
+ * instance, so the one-shot-CLI shutdown path (`await handle.sql.end()`) stays uniform.
  */
 export interface DbHandle {
   db: HorusDb;
@@ -35,46 +32,10 @@ export interface DbHandle {
   sql: { end: () => Promise<void> };
 }
 
-/**
- * Create a Drizzle client bound to a user-run **local Postgres**. Caller owns the
- * lifecycle and should call `handle.sql.end()` on shutdown (e.g. after a one-shot CLI
- * command).
- */
-export function createDb(url: string, opts?: { max?: number }): DbHandle {
-  // Guardrail (HOR-298): the CLI must never open a connection to the Cloud DB.
-  assertLocalDatabaseUrl(url);
-  const sql = postgres(url, { max: opts?.max ?? 5, onnotice: () => {} });
-  const db = drizzle(sql, { schema });
-  return { db, sql };
-}
-
 /** Default location for the embedded local database (override with HORUS_DB_DIR). */
 export function localDbPath(): string {
   const dir = process.env['HORUS_DB_DIR'] || join(homedir(), '.horus');
   return join(dir, 'horus.db');
-}
-
-/**
- * The local-default Postgres URL the config layer fills in when the user has NOT
- * configured a database. Reaching this value means "no user-run Postgres" — the signal
- * to fall back to the embedded pglite database. Kept in sync with core's DEFAULT_DB_URL.
- */
-const DEFAULT_LOCAL_PG_URL = 'postgresql://horus:horus@localhost:5433/horus';
-
-/**
- * Decide whether a given resolved database URL means "use the embedded pglite database".
- *
- * True when the user has not actually configured a Postgres: the URL is empty/unset, or
- * it is the local-default placeholder AND no DATABASE_URL was explicitly set in the env.
- * Any explicit DATABASE_URL (or a `database` block in config that yields a non-default
- * url) opts into the postgres-js driver, preserving existing local-Postgres workflows.
- */
-export function shouldUseEmbeddedDb(url: string | undefined): boolean {
-  const u = (url ?? '').trim();
-  if (u === '') return true;
-  const envSet = (process.env['DATABASE_URL'] ?? '').trim() !== '';
-  if (envSet) return false;
-  return u === DEFAULT_LOCAL_PG_URL;
 }
 
 /**
@@ -114,8 +75,8 @@ function unavailableDbHandle(): DbHandle {
       get() {
         throw new Error(
           'HORUS_DB_UNAVAILABLE: the embedded local database is not available in this build ' +
-            '(pglite assets are missing). Install via npm or Homebrew for local persistence, ' +
-            'or set DATABASE_URL to a local Postgres. Results are display-only.',
+            '(pglite assets are missing). Install via npm or Homebrew for local persistence. ' +
+            'Results are display-only.',
         );
       },
     },
@@ -124,98 +85,22 @@ function unavailableDbHandle(): DbHandle {
 }
 
 /**
- * Open the right database for a resolved url: the embedded pglite database when no
- * user-run Postgres is configured (the zero-setup default), otherwise the user's local
- * Postgres via postgres-js. This is the single chokepoint CLI commands should use so the
- * driver choice is consistent everywhere.
+ * Open Horus's local database. This is ALWAYS the embedded, file-backed pglite database
+ * (default `~/.horus/horus.db`, overridable via `HORUS_DB_DIR`) — the single local
+ * persistence tier. There is no user-run Postgres runtime and `DATABASE_URL` is ignored;
+ * teams that need shared state use Horus Cloud (an API mirror). A legacy `url` argument is
+ * still accepted for call-site compatibility while the `database` config block is
+ * deprecated, but it is never consulted.
  *
- * The embedded path is wrapped in try/catch: if pglite can't initialize (its WASM/FS
- * assets aren't shipped next to the bundle), we return a no-op handle so the command
- * degrades to display-only instead of crashing. The postgres-js path is left as-is — an
- * explicitly-configured but unreachable Postgres is a real user error worth surfacing,
- * and the CLI already has a display-only path for it.
+ * Wrapped in try/catch: if pglite can't initialize (its WASM/FS assets aren't shipped next
+ * to the bundle), returns a no-op handle so the command degrades to display-only instead
+ * of crashing. This is the single chokepoint CLI commands use so the driver is consistent.
  */
-export async function openDb(url: string | undefined, opts?: { max?: number }): Promise<DbHandle> {
-  if (shouldUseEmbeddedDb(url)) {
-    try {
-      return await createLocalDb();
-    } catch {
-      return unavailableDbHandle();
-    }
-  }
-  const handle = createDb(url as string, opts);
-  // Bring an existing user Postgres up to the current schema (dogfood N10): the
-  // installer only migrates FRESH databases and `horus update` never migrates, so a
-  // new release adding a column had NO delivery path to existing installs — its
-  // inserts would silently fail. Best-effort: schema drift degrades exactly as before.
+export async function openDb(_url?: string, _opts?: { max?: number }): Promise<DbHandle> {
   try {
-    await ensurePostgresMigrations(handle.sql as postgres.Sql);
+    return await createLocalDb();
   } catch {
-    /* best-effort — commands surface real DB errors themselves */
-  }
-  return handle;
-}
-
-/**
- * Postgres error codes meaning "this DDL already happened" — safe to skip when
- * REPLAYING migrations on a database that predates tag tracking (created by
- * drizzle-kit or the installer, which record nothing the CLI can read).
- */
-const ALREADY_APPLIED_PG_CODES = new Set([
-  '42701', // duplicate_column
-  '42P07', // duplicate_table / duplicate_index
-  '42710', // duplicate_object
-  '42723', // duplicate_function
-]);
-
-/** Cross-process serialization key for migration convergence (pg_advisory_lock). */
-const MIGRATION_LOCK_KEY = 913_736_500_1;
-
-/**
- * Idempotently converge a user-run Postgres to the bundled schema, mirroring the
- * pglite path: applied tags are recorded in `__horus_migrations`; a database that
- * predates the tag table replays every migration with per-statement tolerance for
- * "already exists" errors (the bundled migrations contain no destructive statements).
- * Concurrent CLI processes serialize on an advisory lock. Fast path: one SELECT.
- */
-export async function ensurePostgresMigrations(sql: postgres.Sql): Promise<void> {
-  await sql.unsafe(
-    `CREATE TABLE IF NOT EXISTS "__horus_migrations" (
-       "tag" text PRIMARY KEY,
-       "applied_at" timestamptz NOT NULL DEFAULT now()
-     );`,
-  );
-  const doneRows = await sql.unsafe(`SELECT tag FROM "__horus_migrations";`);
-  const done = new Set(doneRows.map((r) => String((r as unknown as { tag: string }).tag)));
-  if (EMBEDDED_MIGRATIONS.every((m) => done.has(m.tag))) return;
-
-  // A dedicated connection so the advisory lock and the statements share a session.
-  const conn = await sql.reserve();
-  try {
-    await conn.unsafe(`SELECT pg_advisory_lock(${MIGRATION_LOCK_KEY});`);
-    try {
-      // Re-read under the lock — another process may have converged while we waited.
-      const lockedDone = await conn.unsafe(`SELECT tag FROM "__horus_migrations";`);
-      const applied = new Set(lockedDone.map((r) => String((r as unknown as { tag: string }).tag)));
-      for (const migration of EMBEDDED_MIGRATIONS) {
-        if (applied.has(migration.tag)) continue;
-        for (const statement of migration.statements) {
-          try {
-            await conn.unsafe(statement);
-          } catch (e) {
-            const code = (e as { code?: string }).code ?? '';
-            if (!ALREADY_APPLIED_PG_CODES.has(code)) throw e;
-          }
-        }
-        await conn.unsafe(`INSERT INTO "__horus_migrations" (tag) VALUES ($1) ON CONFLICT DO NOTHING;`, [
-          migration.tag,
-        ]);
-      }
-    } finally {
-      await conn.unsafe(`SELECT pg_advisory_unlock(${MIGRATION_LOCK_KEY});`);
-    }
-  } finally {
-    conn.release();
+    return unavailableDbHandle();
   }
 }
 
@@ -256,8 +141,7 @@ async function applyEmbeddedMigrations(client: PGlite): Promise<void> {
 /**
  * Create a Drizzle client bound to the **embedded, file-backed pglite database**
  * (default `~/.horus/horus.db`, overridable via `HORUS_DB_DIR`). This activates
- * incident memory, `horus ask`, `score`, and `feedback` with zero setup — no
- * user-run Postgres required.
+ * incident memory, `horus ask`, `score`, and `feedback` with zero setup.
  *
  * Migrations are embedded in the bundle and applied idempotently on first use, so the
  * file is created and brought to schema on demand. The returned `sql.end()` closes the
@@ -301,6 +185,100 @@ export async function createLocalDb(opts?: { path?: string }): Promise<DbHandle>
     releaseLock();
     throw e;
   }
+}
+
+/**
+ * Tables copied by {@link importFromPostgres}, in FK-safe order (parents before children):
+ * an investigation and its evidence/findings/hypotheses (the cause scores), the incident
+ * and outcome-label records keyed off it, then the authored memory items and their
+ * link/audit rows. Registry (`projects`/`repositories`) and derived caches
+ * (`queue_edges`/`provider_cache`) are intentionally excluded — they are rebuilt locally.
+ */
+const IMPORT_TABLES: ReadonlyArray<{ name: string; table: PgTable }> = [
+  { name: 'investigations', table: schema.investigations },
+  { name: 'evidence', table: schema.evidence },
+  { name: 'findings', table: schema.findings },
+  { name: 'hypotheses', table: schema.hypotheses },
+  { name: 'incident_memory', table: schema.incidentMemory },
+  { name: 'outcome_label', table: schema.outcomeLabel },
+  { name: 'memory_item', table: schema.memoryItem },
+  { name: 'memory_link', table: schema.memoryLink },
+  { name: 'memory_audit', table: schema.memoryAudit },
+];
+
+/** Rows inserted per batch — keeps a large export from exceeding the bind-parameter limit. */
+const IMPORT_CHUNK = 500;
+
+/**
+ * Build the `SET` clause for an idempotent upsert: every non-`id` column takes the value
+ * from the row being inserted (`excluded.<col>`), so re-importing the same source updates
+ * changed rows in place rather than duplicating or erroring on the id primary key.
+ */
+function upsertSetFromExcluded(table: PgTable): Record<string, ReturnType<typeof drizzleSql>> {
+  const cols = getTableColumns(table);
+  const set: Record<string, ReturnType<typeof drizzleSql>> = {};
+  for (const key of Object.keys(cols)) {
+    if (key === 'id') continue;
+    const columnName = cols[key]!.name;
+    set[key] = drizzleSql`excluded.${drizzleSql.identifier(columnName)}`;
+  }
+  return set;
+}
+
+/** The `id` primary-key column of a table (every imported table is keyed on `id`). */
+function idColumn(table: PgTable): PgColumn {
+  return getTableColumns(table)['id'] as PgColumn;
+}
+
+function chunk<T>(rows: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
+/**
+ * One-time import of a legacy user-run Postgres into the embedded database. Copies the
+ * investigation, cause-score, incident-memory and outcome tables (see {@link IMPORT_TABLES})
+ * from `sourceUrl` into `db`, upserting by primary key so it is fully idempotent (re-running
+ * refreshes rather than duplicates). The source is opened READ-ONLY (only SELECTs are
+ * issued) and closed before returning; `db` is the caller's already-open embedded handle.
+ *
+ * Returns the number of source rows processed per table. This is the migration path for a
+ * team cutting over from the removed local-Postgres tier — after `horus db import` their
+ * history lives in the embedded db and the old Postgres can be decommissioned.
+ */
+export async function importFromPostgres(
+  sourceUrl: string,
+  db: HorusDb,
+): Promise<Record<string, number>> {
+  // Guardrail (HOR-298): never open a direct connection to the Horus Cloud database — cloud
+  // state is reached through the /v1 REST API, so importing from it directly is refused.
+  assertLocalDatabaseUrl(sourceUrl);
+  const sql = postgres(sourceUrl, { max: 1, onnotice: () => {} });
+  const source = drizzlePostgres(sql, { schema });
+  const counts: Record<string, number> = {};
+  try {
+    for (const { name, table } of IMPORT_TABLES) {
+      counts[name] = 0;
+      let rows: Record<string, unknown>[];
+      try {
+        rows = (await source.select().from(table)) as Record<string, unknown>[];
+      } catch {
+        // A source that predates a table (older schema) simply has nothing to copy for it.
+        continue;
+      }
+      if (rows.length === 0) continue;
+      const set = upsertSetFromExcluded(table);
+      const target = idColumn(table);
+      for (const batch of chunk(rows, IMPORT_CHUNK)) {
+        await db.insert(table).values(batch).onConflictDoUpdate({ target, set });
+      }
+      counts[name] = rows.length;
+    }
+  } finally {
+    await sql.end();
+  }
+  return counts;
 }
 
 /**
@@ -372,7 +350,7 @@ function assertEmbeddedAssetsPresent(): void {
     if (!existsSync(join(selfDir, asset))) {
       throw new Error(
         `HORUS_DB_UNAVAILABLE: embedded database asset missing (${asset}). This build does ` +
-          `not ship local persistence — install via npm or Homebrew, or set DATABASE_URL.`,
+          `not ship local persistence — install via npm or Homebrew.`,
       );
     }
   }

@@ -39,10 +39,9 @@ export type {
   ProviderCacheRow,
 } from './schema.js';
 export {
-  createDb,
   createLocalDb,
   openDb,
-  shouldUseEmbeddedDb,
+  importFromPostgres,
   localDbPath,
   isDbUnavailable,
   DB_UNAVAILABLE_PREFIX,
@@ -81,5 +80,4 @@ export {
   updateInvestigationReport,
   type InvestigationScope,
 } from './investigations.js';
-export { runMigrations } from './migrate.js';
-export { checkDatabase, EXPECTED_TABLES, type DbHealth } from './health.js';
+export { checkEmbeddedDb, EXPECTED_TABLES, type DbHealth } from './health.js';

@@ -11,7 +11,13 @@ import {
   decryptConnectorSecrets,
 } from './discovery.js';
 
-const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
+/**
+ * Placeholder URL filled into the deprecated `database` block when a config omits it.
+ * Local persistence is embedded (pglite) and this value is NEVER connected to — it exists
+ * only so back-compat consumers that still read `config.database.url` keep type-checking
+ * while the block is deprecated.
+ */
+const DEPRECATED_DB_PLACEHOLDER = 'embedded';
 
 /**
  * Horus configuration schema. Loaded from `config/horus.config.ts` (or a path given
@@ -346,10 +352,18 @@ const projectSchema = z.object({
   environments: z.array(environmentSchema).min(1),
 });
 
-const databaseSchema = z.object({
-  /** Postgres connection string. Plain Postgres — no pgvector in v0. */
-  url: z.string().min(1),
-});
+/**
+ * DEPRECATED (Batch A8): the `database` block is ignored. Local persistence is embedded
+ * (pglite) — there is no user-run Postgres runtime and `DATABASE_URL` is not consulted at
+ * runtime; teams needing shared state use Horus Cloud. Parsing keeps the field for
+ * backward compatibility (and emits a one-time deprecation warning when a config sets it),
+ * defaulting the URL to a placeholder so `config.database.url` keeps resolving.
+ */
+const databaseSchema = z
+  .object({
+    url: z.string().min(1),
+  })
+  .default({ url: DEPRECATED_DB_PLACEHOLDER });
 
 const modelsSchema = z.object({
   reasoning: z.string().default('claude-opus-4-8'),
@@ -827,9 +841,7 @@ export function defineConfig(config: HorusConfig): HorusConfig {
  * Path segments that are array indices are replaced with '*' before lookup.
  */
 const CONFIG_EXAMPLES: Record<string, string> = {
-  '(root)': 'add `database: { url: "postgresql://..." }` and at least one project',
-  'database': 'e.g. database: { url: "postgresql://horus:horus@localhost:5433/horus" }',
-  'database.url': 'e.g. "postgresql://horus:horus@localhost:5433/horus"',
+  '(root)': 'add at least one project',
   'projects.*.name': 'e.g. name: "my-api"',
   'projects.*.repositories': 'e.g. [{ name: "my-api", path: "/path/to/repo" }]',
   'projects.*.repositories.*.name': 'e.g. name: "my-api"',
@@ -848,8 +860,27 @@ function normalizePath(path: (string | number)[]): string {
   return path.map((seg) => (typeof seg === 'number' ? '*' : seg)).join('.');
 }
 
+/** Emitted at most once per process when a config still sets the deprecated `database` block. */
+let databaseDeprecationWarned = false;
+
+/** Warn once that the `database` config block is ignored (local persistence is embedded). */
+function warnDatabaseDeprecated(): void {
+  if (databaseDeprecationWarned) return;
+  databaseDeprecationWarned = true;
+  console.warn(
+    'database config is deprecated — local persistence is embedded; teams use Horus Cloud',
+  );
+}
+
 /** Validate a raw config object, throwing a readable error on failure. */
 function parseConfig(raw: unknown, source: string): HorusConfig {
+  if (
+    raw !== null &&
+    typeof raw === 'object' &&
+    (raw as Record<string, unknown>)['database'] != null
+  ) {
+    warnDatabaseDeprecated();
+  }
   const parsed = horusConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -928,9 +959,10 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
     hydrateConnectorSecrets(file.project, root);
     const raw = {
       projects: file.project ? [file.project] : [],
-      database: file.database ?? {
-        url: process.env['DATABASE_URL'] ?? DEFAULT_DB_URL,
-      },
+      // `database` is deprecated and ignored (local persistence is embedded). Only forwarded
+      // when the file still sets it, so parseConfig can emit the one-time deprecation warning;
+      // otherwise the schema default fills the placeholder.
+      ...(file.database !== undefined ? { database: file.database } : {}),
       ...(ai !== undefined ? { ai } : {}),
     };
     return parseConfig(raw, target);
