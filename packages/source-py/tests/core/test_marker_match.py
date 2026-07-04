@@ -35,6 +35,33 @@ class TestContentHasMarker:
         content = "// header comment\nconst q = new Queue('bullmq')\n// trailer"
         assert content_has_marker(content, "bullmq")
 
+    def test_skips_marker_inside_multiline_block_comment(self) -> None:
+        # dogfood 0.21.2: a markdown link inside a /* */ block whose body line does NOT
+        # lead with `*` (jest-message-util) minted a false `axios` external.
+        content = (
+            "export function foo() {}\n"
+            "/*\n"
+            "See [verror](https://npm.im/verror) or [axios](https://axios-http.com).\n"
+            "*/\n"
+            "return foo\n"
+        )
+        assert not content_has_marker(content, "axios")
+
+    def test_block_comment_does_not_swallow_trailing_code(self) -> None:
+        # A block comment that opens and closes, then real code with the marker, on later lines.
+        content = "/* a mongo note */\nconst c = connectRedis()\n"
+        assert content_has_marker(content, "redis")  # real code after the block
+        assert not content_has_marker(content, "mongo")  # only inside the block
+
+    def test_inline_block_comment_span_removed_keeps_code(self) -> None:
+        # `redis` in code before an inline /* */ still matches; `stripe` only in the span does not.
+        assert content_has_marker("const r = redis /* not stripe */", "redis")
+        assert not content_has_marker("const r = plain /* uses stripe */", "stripe")
+
+    def test_url_with_double_slash_is_not_a_block_comment(self) -> None:
+        # `//` in https:// must NOT be treated as a block-comment open (only `/*` is).
+        assert content_has_marker('const u = "redis://localhost"', "redis")
+
     def test_empty_inputs(self) -> None:
         assert not content_has_marker("", "redis")
         assert not content_has_marker("redis", "")
