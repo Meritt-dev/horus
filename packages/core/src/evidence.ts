@@ -128,6 +128,18 @@ export interface Symbol {
    * semantic hit could outrank the real raise site (dogfood gap 3).
    */
   score?: number;
+  /**
+   * B2 (anonymous/default-export synthesis): the NAME of the implementation symbol this
+   * public export name aliases, when this symbol is an export-alias stub. The parser emits
+   * `export { BaseComponent as Component }` (preact) and `module.exports = { sign: signImpl }`
+   * as an EXPORTS_ALIAS edge public→impl plus a searchable stub carrying `alias_of` in
+   * `properties_json`; the source host surfaces it here. The resolver
+   * ({@link resolveSymbolQuery}) follows it to REDIRECT a hit on the public name to the
+   * implementation, so explain/blast-radius/search land on product code, not the empty alias
+   * stub (whose callers/callees belong to the impl). Same-file only. Undefined for the vast
+   * majority of symbols.
+   */
+  aliasOf?: string;
 }
 
 /** A reference to a source-intelligence community cluster. */

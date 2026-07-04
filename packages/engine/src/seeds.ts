@@ -616,6 +616,30 @@ export function parseSymbolQuery(query: string): SeedQualifier | null {
 }
 
 /**
+ * B2 EXPORTS_ALIAS following. A public export name that aliases a differently-named
+ * implementation (`export { BaseComponent as Component }` in preact;
+ * `module.exports = { sign: signImpl }`) resolves to an alias STUB carrying
+ * {@link Symbol.aliasOf}. Downstream explain/blast-radius/impact must operate on the
+ * IMPLEMENTATION, not the stub — the stub has no callers/callees of its own (they belong
+ * to the impl node the EXPORTS_ALIAS edge points at). Given the ranked candidate list, if
+ * the head is such an alias and its implementation is present in the pool, promote the impl
+ * to the head. Same-file preferred (the parser only emits same-file aliases); the impl is
+ * de-duplicated out of its old position so nothing is counted twice. A no-op for every
+ * candidate list whose head carries no `aliasOf` (i.e. all pre-B2 / non-alias resolutions).
+ */
+export function redirectExportAlias(candidates: Symbol[]): Symbol[] {
+  const head = candidates[0];
+  if (head === undefined || head.aliasOf === undefined || head.aliasOf === '') return candidates;
+  const implName = head.aliasOf.toLowerCase();
+  const impl =
+    candidates.find(
+      (s) => s.id !== head.id && s.name.toLowerCase() === implName && s.filePath === head.filePath,
+    ) ?? candidates.find((s) => s.id !== head.id && s.name.toLowerCase() === implName);
+  if (impl === undefined) return candidates; // impl not in pool — keep the stub (better than nothing)
+  return [impl, ...candidates.filter((s) => s.id !== impl.id)];
+}
+
+/**
  * Resolve a symbol-shaped query against a candidate pool — THE shared resolution
  * semantics (requirement: explain/search/investigate/blast-radius agree):
  *
@@ -698,7 +722,10 @@ export function resolveSymbolQuery(
 
   return {
     kind,
-    candidates: [...scoredTier.map((s) => s.symbol), ...rest],
+    // B2: redirect a public export-alias hit (`Component` → `BaseComponent`) to the
+    // implementation so explain/blast-radius/search land on real product code, not the
+    // empty alias stub. No-op unless the head candidate carries `aliasOf`.
+    candidates: redirectExportAlias([...scoredTier.map((s) => s.symbol), ...rest]),
     ambiguous,
     qualifier,
   };
@@ -727,7 +754,24 @@ export async function resolveSeedSymbol(
     const seen = new Set(pool.map((s) => s.id));
     for (const s of extra) if (!seen.has(s.id)) pool.push(s);
   }
-  return resolveSymbolQuery(query, pool, { includeTests: opts?.includeTests ?? false });
+  const includeTests = opts?.includeTests ?? false;
+  let resolution = resolveSymbolQuery(query, pool, { includeTests });
+  // B2: the query resolved to a public export-alias stub (`Component`) whose implementation
+  // (`BaseComponent`) may not be in the search pool — a bare-name search for the alias won't
+  // surface the differently-named impl. Fetch it so redirectExportAlias can land on product
+  // code. Guard against a stub whose aliasOf is already present (no extra round-trip).
+  const head = resolution.candidates[0];
+  if (
+    head?.aliasOf !== undefined &&
+    head.aliasOf !== '' &&
+    !pool.some((s) => s.id !== head.id && s.name.toLowerCase() === head.aliasOf!.toLowerCase())
+  ) {
+    const implHits = await code.searchSymbols(head.aliasOf, Math.max(limit, 20));
+    const seen = new Set(pool.map((s) => s.id));
+    for (const s of implHits) if (!seen.has(s.id)) pool.push(s);
+    resolution = resolveSymbolQuery(query, pool, { includeTests });
+  }
+  return resolution;
 }
 
 export function rankSeeds(

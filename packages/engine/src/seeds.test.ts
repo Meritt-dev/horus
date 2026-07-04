@@ -13,7 +13,11 @@ import {
   isCodegenPath,
   isTypeDeclarationSymbol,
   productTier,
+  redirectExportAlias,
+  resolveSymbolQuery,
+  resolveSeedSymbol,
 } from './seeds.js';
+import type { CodeProvider } from '@horus/connectors';
 
 function sym(name: string, filePath: string): Symbol {
   return { id: `x:${filePath}:${name}`, name, filePath };
@@ -584,5 +588,94 @@ describe('cross-command exact-symbol consistency (dogfood: investigate vs search
     expect(named[0]).toBe('runOneInvestigation');
     const ranked = rankSeeds([falseFriend, exact], ['runoneinvestigation', 'timeout'], undefined, false, null, named[0]);
     expect(ranked[0]?.symbol.name).toBe('runOneInvestigation');
+  });
+});
+
+// ── B2: anonymous/default-export synthesis — resolver consumption ───────────
+//
+// The parser (source-py, commit "synthesize names + alias edges …") now emits:
+//   • a NAMED product symbol for `module.exports = function(){}` / `= class Application{}`
+//     (flagged `synthesized_name`), named from the RHS class expression or the file stem —
+//     so the real implementation, not a same-named test/helper, carries the queried name; and
+//   • an EXPORTS_ALIAS edge public→impl plus a searchable stub for `export { Impl as Public }`,
+//     surfaced to the engine as `Symbol.aliasOf` on the stub.
+// The resolver must (1) let the synthesized PRODUCT symbol win a same-name collision with a
+// test namesake, and (2) redirect an alias-stub hit to the implementation.
+describe('B2 — synthesized product default-export beats a test homonym', () => {
+  // jsonwebtoken `module.exports = function sign(){}` synthesizes a product `sign` at
+  // lib/sign.js; a test file also defines `sign`. The product one must resolve (bare + qualified).
+  const product: Symbol = { id: 'function:lib/sign.js:sign', name: 'sign', filePath: 'lib/sign.js', startLine: 1, endLine: 120 };
+  const testHomonym: Symbol = { id: 'function:test/sign.test.js:sign', name: 'sign', filePath: 'test/sign.test.js', startLine: 1, endLine: 200 };
+
+  it('bare `sign` resolves the product impl, not the test-file namesake', () => {
+    const res = resolveSymbolQuery('sign', [testHomonym, product]);
+    expect(res.kind).toBe('exact');
+    expect(res.candidates[0]?.id).toBe('function:lib/sign.js:sign');
+  });
+
+  it('qualified `jwt.sign` resolves the product impl, not the test-file namesake', () => {
+    const res = resolveSymbolQuery('jwt.sign', [testHomonym, product]);
+    // `jwt.sign` — receiver `jwt` doesn't match a container, so this is a plain exact
+    // name match; the product tier still wins over the test namesake.
+    expect(res.candidates[0]?.id).toBe('function:lib/sign.js:sign');
+  });
+
+  it('koa: a synthesized product `Application` (class-expr name) wins over a fixture namesake', () => {
+    const impl: Symbol = { id: 'class:lib/application.js:Application', name: 'Application', filePath: 'lib/application.js', startLine: 1, endLine: 300 };
+    const fixture: Symbol = { id: 'class:test/fixtures/app.js:Application', name: 'Application', filePath: 'test/fixtures/app.js', startLine: 1, endLine: 40 };
+    expect(productTier([fixture, impl])).toEqual([impl]);
+    expect(resolveSymbolQuery('Application', [fixture, impl]).candidates[0]?.id).toBe('class:lib/application.js:Application');
+  });
+});
+
+describe('B2 — redirectExportAlias follows a public export alias to the implementation', () => {
+  const stub: Symbol = { id: 'class:src/component.js:Component', name: 'Component', filePath: 'src/component.js', aliasOf: 'BaseComponent' };
+  const impl: Symbol = { id: 'class:src/component.js:BaseComponent', name: 'BaseComponent', filePath: 'src/component.js', startLine: 20, endLine: 200 };
+
+  it('unit: promotes the impl to the head when it is present in the pool', () => {
+    expect(redirectExportAlias([stub, impl])[0]?.id).toBe('class:src/component.js:BaseComponent');
+  });
+
+  it('unit: does not double-count — the impl appears once', () => {
+    const out = redirectExportAlias([stub, impl]);
+    expect(out.filter((s) => s.id === impl.id)).toHaveLength(1);
+    expect(out).toHaveLength(2);
+  });
+
+  it('unit: keeps the stub when the impl is absent (better than nothing)', () => {
+    expect(redirectExportAlias([stub])).toEqual([stub]);
+  });
+
+  it('unit: no-op for a normal (non-alias) head', () => {
+    const plain: Symbol = { id: 'x:a.ts:foo', name: 'foo', filePath: 'a.ts' };
+    expect(redirectExportAlias([plain, impl])[0]?.id).toBe('x:a.ts:foo');
+  });
+
+  it('unit: prefers a same-file impl over a same-named symbol elsewhere', () => {
+    const elsewhere: Symbol = { id: 'class:other/x.js:BaseComponent', name: 'BaseComponent', filePath: 'other/x.js' };
+    const out = redirectExportAlias([stub, elsewhere, impl]);
+    expect(out[0]?.filePath).toBe('src/component.js');
+  });
+
+  it('resolveSymbolQuery: bare `Component` redirects to BaseComponent when both are in the pool', () => {
+    // preact: `export { BaseComponent as Component }` — a search for `Component` surfaces the
+    // alias stub AND (via a partial-name hit) the impl; the resolver lands on the impl.
+    const res = resolveSymbolQuery('Component', [stub, impl]);
+    expect(res.candidates[0]?.id).toBe('class:src/component.js:BaseComponent');
+  });
+
+  it('resolveSeedSymbol: fetches the impl by name when the pool has only the alias stub', async () => {
+    // The bare-name search for `Component` returns only the stub; the resolver must issue a
+    // follow-up search for the alias target `BaseComponent` so the redirect can land.
+    const byQuery: Record<string, Symbol[]> = { Component: [stub], BaseComponent: [impl] };
+    const searched: string[] = [];
+    const code = {
+      id: 'fake', kind: 'code',
+      async health() { return { ok: true, detail: 'fake' }; },
+      async searchSymbols(q: string) { searched.push(q); return byQuery[q] ?? []; },
+    } as unknown as CodeProvider;
+    const res = await resolveSeedSymbol(code, 'Component');
+    expect(searched).toContain('BaseComponent'); // the follow-up impl search fired
+    expect(res.candidates[0]?.id).toBe('class:src/component.js:BaseComponent');
   });
 });
