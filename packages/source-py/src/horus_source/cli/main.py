@@ -196,6 +196,12 @@ def _build_meta(result: "PipelineResult", repo_path: Path) -> dict:  # noqa: F82
         # False until the (possibly background) embedding phase persists vectors — lets the next
         # host start detect an interrupted index and re-embed instead of serving FTS-only (HOR-375).
         "embeddings_complete": result.embeddings > 0,
+        # Positive marker that the STRUCTURAL index (symbols + edges) fully built and persisted.
+        # Distinguishes a healthy "structural-ready, embeddings-pending" index (serve degraded /
+        # FTS-only) from the HOR-433 kùzu-era empty store (0 symbols/embeddings, no such marker —
+        # must re-analyze). Always True here because meta is only written after the pipeline's
+        # structural phase + bulk_load complete (B1.1).
+        "structural_complete": True,
         "last_indexed_at": datetime.now(tz=timezone.utc).isoformat(),
     }
 
@@ -1111,20 +1117,37 @@ def _run_host_indexing(
     semantic search lights up once this lands. Clears ``runtime.indexing`` on the
     way out so clients stop reporting "indexing in progress".
     """
+    def _persist_meta(result: "PipelineResult") -> None:  # noqa: F821
+        meta = _build_meta(result, repo_path)
+        (_source_dir(repo_path) / "meta.json").write_text(
+            json.dumps(meta, indent=2) + "\n", encoding="utf-8"
+        )
+        try:
+            _register_in_global_registry(meta, repo_path)
+        except Exception:
+            logger.debug("Failed to register repo in global registry", exc_info=True)
+
     try:
         if needs_index:
-            _, result = run_pipeline(repo_path, storage)
-            meta = _build_meta(result, repo_path)
-            (_source_dir(repo_path) / "meta.json").write_text(
-                json.dumps(meta, indent=2) + "\n", encoding="utf-8"
+            def _on_structural(result: "PipelineResult") -> None:  # noqa: F821
+                # Structural index is persisted; write meta + register + flip the
+                # ready flag NOW so the host serves structural queries (and clients
+                # see structural_ready) while embeddings warm in the background (B1.1).
+                _persist_meta(result)
+                runtime.structural_ready = True
+                logger.info("Structural index ready — serving search (embeddings warming)")
+
+            _, result = run_pipeline(
+                repo_path, storage, on_structural_complete=_on_structural
             )
-            try:
-                _register_in_global_registry(meta, repo_path)
-            except Exception:
-                logger.debug("Failed to register repo in global registry", exc_info=True)
+            # Re-persist with the final embedding count (embeddings_complete flips true).
+            _persist_meta(result)
             logger.info("Background initial index complete")
-        elif ensure_current_embeddings(storage, repo_path):
-            logger.info("Background re-embed complete — semantic search restored")
+        else:
+            # An existing structural index is already on disk and searchable.
+            runtime.structural_ready = True
+            if ensure_current_embeddings(storage, repo_path):
+                logger.info("Background re-embed complete — semantic search restored")
     except Exception:
         logger.warning(
             "Background host indexing failed — search may be degraded", exc_info=True,
@@ -1175,6 +1198,16 @@ def analyze(
     foreground_embeddings: bool = typer.Option(
         False, "--foreground-embeddings", help="Generate embeddings synchronously instead of in the background.",
     ),
+    defer_embeddings: bool = typer.Option(
+        False,
+        "--defer-embeddings",
+        help=(
+            "Write a structural-only index and return immediately; the host resumes "
+            "embeddings in the background. Used by `horus init` so a complete structural "
+            "index (search / explain / blast-radius) is served the moment it is built, "
+            "without blocking on the slow embedding phase."
+        ),
+    ),
 ) -> None:
     """Index a repository into a knowledge graph."""
     repo_path = path.resolve()
@@ -1196,7 +1229,14 @@ def analyze(
     storage.initialize(db_path)
 
     # Run pipeline: skip embeddings here if we'll do them in the background.
-    run_embeddings_inline = foreground_embeddings and not no_embeddings
+    # --defer-embeddings (used by `horus init`) writes a structural-only index and
+    # returns immediately — no inline compute, no background thread, no join — so the
+    # host can serve structural queries the moment the index is built while it resumes
+    # embeddings in the background (B1.1).
+    run_embeddings_inline = foreground_embeddings and not no_embeddings and not defer_embeddings
+    run_background_embeddings = (
+        not no_embeddings and not run_embeddings_inline and not defer_embeddings
+    )
 
     result: PipelineResult | None = None
     with Progress(
@@ -1229,7 +1269,7 @@ def analyze(
     storage.close()
 
     # Launch background embedding thread if needed.
-    if not no_embeddings and not run_embeddings_inline:
+    if run_background_embeddings:
         embed_thread = threading.Thread(
             target=_run_background_embeddings,
             args=(graph, db_path, meta_path, repo_path),
@@ -1252,12 +1292,14 @@ def analyze(
         console.print(f"  Coupled pairs:  {result.coupled_pairs}")
     if run_embeddings_inline and result.embeddings > 0:
         console.print(f"  Embeddings:     {result.embeddings}")
-    elif not no_embeddings and not run_embeddings_inline:
+    elif defer_embeddings:
+        console.print("  Embeddings:     [dim]deferred — the host will generate them in the background[/dim]")
+    elif run_background_embeddings:
         console.print("  Embeddings:     [dim]generating in background...[/dim]")
     console.print(f"  Duration:       {result.duration_seconds:.2f}s")
 
     # Wait for background embeddings to finish before exiting.
-    if not no_embeddings and not run_embeddings_inline:
+    if run_background_embeddings:
         embed_thread.join()
 
 @app.command()

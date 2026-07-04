@@ -354,6 +354,40 @@ describe('indexNeedsReanalyze — detect a stale/legacy/incompatible index (HOR-
     }
   });
 
+  it('does NOT flag a structural-complete/embeddings-pending index (B1.1: serve degraded)', () => {
+    // A `--defer-embeddings` init writes structural_complete:true with 0 vectors while the
+    // host warms embeddings in the background. That index is fully searchable (FTS) — it must
+    // NOT be re-analyzed, unlike the HOR-433 kùzu-era empty store below.
+    const root = makeRepo();
+    try {
+      writeMeta(root, {
+        store_backend: 'sqlite',
+        structural_complete: true,
+        embeddings_complete: false,
+        stats: { symbols: 6390, embeddings: 0 },
+      });
+      expect(indexNeedsReanalyze(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('STILL flags a 0-embedding index with no structural_complete marker (HOR-433 kùzu case)', () => {
+    // No structural_complete marker → the genuine kùzu-era empty/legacy store that never
+    // self-heals. This must re-analyze even though the deferred case above does not.
+    const root = makeRepo();
+    try {
+      writeMeta(root, {
+        store_backend: 'sqlite',
+        embeddings_complete: false,
+        stats: { symbols: 50, embeddings: 0 },
+      });
+      expect(indexNeedsReanalyze(root)).toMatch(/no semantic embeddings/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns null for a healthy, matching, embedded index (no spurious re-index)', () => {
     const root = makeRepo();
     try {

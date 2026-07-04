@@ -23,6 +23,10 @@ const seams = vi.hoisted(() => ({
   isAnalyzed: vi.fn(() => false),
   indexNeedsReanalyze: vi.fn(() => null as string | null),
   analyzeRepo: vi.fn(async () => {}),
+  findFreePort: vi.fn(async () => 8420),
+  startHost: vi.fn(() => {}),
+  waitForOwnHost: vi.fn(async (_root: string, hostUrl: string) => hostUrl),
+  reconcileSpawnedHost: vi.fn(() => {}),
   hostInfo: vi.fn(),
   loadConfig: vi.fn(async () => {
     throw new Error('no config');
@@ -41,6 +45,10 @@ vi.mock('@horus/connectors', async (importOriginal) => {
     isAnalyzed: seams.isAnalyzed,
     indexNeedsReanalyze: seams.indexNeedsReanalyze,
     analyzeRepo: seams.analyzeRepo,
+    findFreePort: seams.findFreePort,
+    startHost: seams.startHost,
+    waitForOwnHost: seams.waitForOwnHost,
+    reconcileSpawnedHost: seams.reconcileSpawnedHost,
     // hostServesRepo probes the candidate via hostInfo(); point it at our repo.
     SourceHttpClient: class {
       hostInfo = seams.hostInfo;
@@ -141,6 +149,52 @@ describe('runIndex host-reuse version gate', () => {
     expect(logs.join('\n')).toContain('Reusing source-intelligence host');
     expect(seams.killSpawnedHost).not.toHaveBeenCalled();
     expect(code).toBe(0);
+  });
+});
+
+describe('runIndex structural-only readiness gate (B1.1)', () => {
+  it('a structural-complete/embeddings-pending index passes the gate, starts a host, writes config, returns 0', async () => {
+    // The crown-jewel durability fix: `analyze --defer-embeddings` returns a COMPLETE
+    // structural index with 0 vectors. indexNeedsReanalyze() returns null for it, so init
+    // must NOT abort — it starts the host (which warms embeddings) and writes config.
+    seams.isHostHealthy.mockResolvedValue(false); // force the spawn path
+    seams.assertSourceVersionPinned.mockResolvedValue(undefined);
+    seams.isAnalyzed.mockReturnValue(true);
+    // Stale before analyze (enter the analyze branch), structural-complete after (null).
+    seams.indexNeedsReanalyze
+      .mockReturnValueOnce('legacy KùzuDB store present')
+      .mockReturnValue(null);
+    seams.analyzeRepo.mockResolvedValue(undefined);
+
+    const code = await runIndex({ path: repo });
+
+    expect(code).toBe(0);
+    // Did NOT trip the old "did not finish / no embeddings" fatal gate.
+    expect(errs.join('\n')).not.toContain('did not finish');
+    // Proceeded to start a host on the structural index.
+    expect(seams.startHost).toHaveBeenCalledTimes(1);
+    expect(seams.analyzeRepo).toHaveBeenCalledTimes(1);
+    // And wrote a local config so later commands can load one.
+    expect(logs.join('\n')).toContain('Indexed');
+  });
+
+  it('REGRESSION: a 0-embedding index with NO structural marker (HOR-433 kùzu) still aborts', async () => {
+    // The genuine kùzu-era empty store: indexNeedsReanalyze() keeps returning a reason even
+    // after analyze, so init must still fail loudly and never register a host on it.
+    seams.isHostHealthy.mockResolvedValue(false); // force the spawn path
+    seams.assertSourceVersionPinned.mockResolvedValue(undefined);
+    seams.isAnalyzed.mockReturnValue(true);
+    seams.indexNeedsReanalyze.mockReturnValue(
+      'index has no semantic embeddings (symbols present but 0 vectors)',
+    );
+    seams.analyzeRepo.mockResolvedValue(undefined);
+
+    const code = await runIndex({ path: repo });
+
+    expect(code).toBe(1);
+    expect(errs.join('\n')).toContain('source analysis did not finish');
+    // Never started a host on the broken index.
+    expect(seams.startHost).not.toHaveBeenCalled();
   });
 });
 

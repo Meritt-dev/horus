@@ -423,16 +423,18 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
           console.error(pc.red(`  source analysis failed: ${(err as Error).message}`));
           return 1;
         }
-        // A first analyze can return "successfully" having timed out mid-embedding, leaving
-        // symbols but 0 vectors (dogfood 0.21, drizzle-orm): every later command then fails
-        // with "no source-intelligence connector configured" and `search` reports
-        // reachable:false. Refuse to register a host on that half-built index — fail loudly so
-        // the exit code tells the truth. A re-run resumes from the warm embedding cache.
+        // Analyze now runs with --defer-embeddings: it returns once the STRUCTURAL index is
+        // built (symbols + edges), and the host resumes embeddings in the background. A
+        // structural-complete/embeddings-pending index is healthy — indexNeedsReanalyze()
+        // returns null for it (B1.1) — so we proceed to start the host and write config, and
+        // search serves degraded (FTS-only) until embeddings warm. Only a genuinely broken
+        // result (no index produced, or the HOR-433 kùzu-era empty store with no structural
+        // marker) is fatal here.
         const incomplete = isAnalyzed(root) ? indexNeedsReanalyze(root) : 'no index was produced';
         if (incomplete) {
           console.error(
             pc.red(
-              `  source analysis did not finish (${incomplete}) — the index has symbols but no embeddings. Re-run \`horus init\` to resume (the embedding cache is warm).`,
+              `  source analysis did not finish (${incomplete}) — the structural index is missing or broken. Re-run \`horus init\` to rebuild it.`,
             ),
           );
           return 1;

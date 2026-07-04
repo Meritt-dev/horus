@@ -119,6 +119,44 @@ class TestRunPipelineProgressCallback:
         assert "Loading to storage" in phase_names
 
 
+class TestRunPipelineStructuralCallback:
+    def test_on_structural_complete_fires_after_bulk_load(
+        self, tmp_repo: Path, storage: KuzuBackend
+    ) -> None:
+        # B1.1: the hook must fire once, AFTER the structural graph is persisted
+        # (bulk_load) but BEFORE the embedding phase — so a caller can serve
+        # structural queries while embeddings warm. ``result.embeddings`` is still 0.
+        captured: dict[str, object] = {}
+        calls = {"n": 0}
+
+        def hook(result: PipelineResult) -> None:
+            calls["n"] += 1
+            captured["symbols"] = result.symbols
+            captured["embeddings"] = result.embeddings
+            # The structural graph is already queryable in storage at hook time.
+            captured["node"] = storage.get_node("file:src/main.py:")
+
+        _, result = run_pipeline(
+            tmp_repo, storage, embeddings=False, on_structural_complete=hook
+        )
+
+        assert calls["n"] == 1
+        assert captured["symbols"] == result.symbols
+        assert captured["symbols"] >= 3  # structural symbols present at hook time
+        assert captured["embeddings"] == 0  # embeddings not yet counted
+        assert captured["node"] is not None  # structural nodes already persisted
+
+    def test_no_callback_when_storage_absent(self, tmp_repo: Path) -> None:
+        # No storage → no bulk_load → the structural-complete hook never fires.
+        calls = {"n": 0}
+
+        def hook(_result: PipelineResult) -> None:
+            calls["n"] += 1
+
+        run_pipeline(tmp_repo, storage=None, on_structural_complete=hook)
+        assert calls["n"] == 0
+
+
 class TestRunPipelineLoadsToStorage:
     def test_run_pipeline_loads_to_storage(
         self, tmp_repo: Path, storage: KuzuBackend

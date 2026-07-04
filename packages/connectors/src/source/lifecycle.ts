@@ -108,6 +108,7 @@ const CURRENT_STORE_BACKEND = (process.env['HORUS_SOURCE_STORAGE_BACKEND'] ?? 's
 interface SourceMeta {
   storeBackend?: string;
   embeddingsComplete?: boolean;
+  structuralComplete?: boolean;
   stats?: { symbols?: number; embeddings?: number };
 }
 
@@ -125,6 +126,10 @@ function readSourceMeta(root: string): SourceMeta | null {
       embeddingsComplete:
         typeof j['embeddings_complete'] === 'boolean'
           ? (j['embeddings_complete'] as boolean)
+          : undefined,
+      structuralComplete:
+        typeof j['structural_complete'] === 'boolean'
+          ? (j['structural_complete'] as boolean)
           : undefined,
       stats: stats ? { symbols: stats['symbols'], embeddings: stats['embeddings'] } : undefined,
     };
@@ -176,8 +181,15 @@ export function indexNeedsReanalyze(root: string): string | null {
     return `store backend changed (${meta.storeBackend} -> ${CURRENT_STORE_BACKEND})`;
   }
 
-  // (c) The index serves no semantic vectors — unsearchable until rebuilt.
+  // (c) The index serves no semantic vectors.
   if (!metaHasEmbeddings(meta)) {
+    // Carve-out (B1.1): a STRUCTURAL-COMPLETE index with embeddings still pending is
+    // NOT stale — its symbols + edges are fully built and searchable, and the host
+    // resumes embeddings in the background (search degrades to FTS-only meanwhile).
+    // Serve it degraded instead of throwing away a complete structural index.
+    if (meta.structuralComplete === true) return null;
+    // No structural marker: the genuine HOR-433 kùzu-era empty store (symbols present
+    // but 0 vectors, never self-heals) — must re-analyze.
     return 'index has no semantic embeddings (symbols present but 0 vectors)';
   }
 
@@ -189,7 +201,11 @@ export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();
   if (!bin) throw new Error('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash');
   try {
-    await exec(bin, ['analyze', '.'], {
+    // --defer-embeddings: return the moment the STRUCTURAL index is built (search /
+    // explain / blast-radius work now); the host resumes embeddings in the background.
+    // Without this, analyze blocks on the slow embedding phase and a complete structural
+    // index is treated as a failure (B1.1).
+    await exec(bin, ['analyze', '.', '--defer-embeddings'], {
       cwd: root,
       timeout: 900_000,
       maxBuffer: 64 * 1024 * 1024,

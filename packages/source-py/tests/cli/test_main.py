@@ -644,6 +644,164 @@ class TestWritableStorageInitialization:
             _run_startup_reembed(mock_storage, tmp_path)  # must not raise
 
 
+class TestBuildMeta:
+    def test_marks_structural_complete_and_embeddings_pending(self, tmp_path: Path) -> None:
+        # B1.1: structural_complete is a POSITIVE marker written the moment the
+        # structural index is built; embeddings_complete stays False until vectors land.
+        from horus_source.cli.main import _build_meta
+        from horus_source.core.ingestion.pipeline import PipelineResult
+
+        res = PipelineResult()
+        res.symbols = 10
+        res.embeddings = 0
+        meta = _build_meta(res, tmp_path)
+        assert meta["structural_complete"] is True
+        assert meta["embeddings_complete"] is False
+
+    def test_embeddings_complete_flips_when_vectors_present(self, tmp_path: Path) -> None:
+        from horus_source.cli.main import _build_meta
+        from horus_source.core.ingestion.pipeline import PipelineResult
+
+        res = PipelineResult()
+        res.symbols = 10
+        res.embeddings = 10
+        meta = _build_meta(res, tmp_path)
+        assert meta["structural_complete"] is True
+        assert meta["embeddings_complete"] is True
+
+
+class TestAnalyzeDeferEmbeddings:
+    def test_writes_structural_only_meta_and_does_not_block(self, tmp_path: Path) -> None:
+        # B1.1: `analyze --defer-embeddings` (used by `horus init`) runs the structural
+        # pipeline only, writes a structural-complete/embeddings-pending meta, and returns
+        # WITHOUT starting or joining a background embedding thread — the host resumes
+        # embeddings later. This is the fix that unblocks large-monorepo init.
+        from horus_source.core.ingestion.pipeline import PipelineResult
+
+        res = PipelineResult()
+        res.files = 3
+        res.symbols = 5
+        res.embeddings = 0
+
+        with patch("horus_source.cli.main.create_backend", return_value=MagicMock()):
+            with patch(
+                "horus_source.cli.main.run_pipeline",
+                return_value=(MagicMock(), res),
+            ) as mock_pipeline:
+                with patch("horus_source.cli.main._register_in_global_registry"):
+                    with patch(
+                        "horus_source.cli.main._run_background_embeddings"
+                    ) as mock_bg:
+                        result = runner.invoke(
+                            app, ["analyze", str(tmp_path), "--defer-embeddings"]
+                        )
+
+        assert result.exit_code == 0, result.output
+        # Structural pipeline only — embeddings deferred.
+        _, kwargs = mock_pipeline.call_args
+        assert kwargs["embeddings"] is False
+        # No background embedding thread was started (so no join to block on).
+        mock_bg.assert_not_called()
+
+        meta = json.loads(
+            (tmp_path / ".horus" / "source" / "meta.json").read_text()
+        )
+        assert meta["structural_complete"] is True
+        assert meta["embeddings_complete"] is False
+
+    def test_default_analyze_still_backgrounds_embeddings(self, tmp_path: Path) -> None:
+        # Standalone `horus-source analyze .` (no flag) keeps computing embeddings
+        # (in the background) — a complete index. Only init uses --defer-embeddings (D1).
+        from horus_source.core.ingestion.pipeline import PipelineResult
+
+        res = PipelineResult()
+        res.files = 3
+        res.symbols = 5
+        res.embeddings = 0
+
+        with patch("horus_source.cli.main.create_backend", return_value=MagicMock()):
+            with patch(
+                "horus_source.cli.main.run_pipeline",
+                return_value=(MagicMock(), res),
+            ):
+                with patch("horus_source.cli.main._register_in_global_registry"):
+                    with patch(
+                        "horus_source.cli.main._run_background_embeddings"
+                    ) as mock_bg:
+                        result = runner.invoke(app, ["analyze", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        mock_bg.assert_called_once()  # background embeddings launched
+
+
+class TestHostIndexingStructuralReadiness:
+    def test_marks_structural_ready_before_embeddings(self, tmp_path: Path) -> None:
+        # B1.1: the host writes structural meta + flips structural_ready as soon as the
+        # structural index is persisted (via the run_pipeline hook), BEFORE embeddings run,
+        # then re-persists meta with the final embedding count.
+        from horus_source.core.ingestion.pipeline import PipelineResult
+        from horus_source.runtime import HorusRuntime
+
+        source_dir = tmp_path / ".horus" / "source"
+        source_dir.mkdir(parents=True)
+        runtime = HorusRuntime(storage=MagicMock(), indexing=True)
+        observed: dict[str, object] = {}
+
+        def fake_run_pipeline(
+            repo_path, storage, on_structural_complete=None, **_kwargs
+        ):
+            res = PipelineResult()
+            res.symbols = 5
+            res.embeddings = 0
+            # Structural persisted → hook fires with 0 embeddings.
+            assert on_structural_complete is not None
+            on_structural_complete(res)
+            observed["ready_at_hook"] = runtime.structural_ready
+            observed["meta_at_hook"] = json.loads(
+                (source_dir / "meta.json").read_text()
+            )
+            # Embeddings then complete.
+            res.embeddings = 5
+            return (MagicMock(), res)
+
+        with patch(
+            "horus_source.cli.main.run_pipeline", side_effect=fake_run_pipeline
+        ):
+            with patch("horus_source.cli.main._register_in_global_registry"):
+                _run_host_indexing(
+                    MagicMock(), tmp_path, needs_index=True, runtime=runtime
+                )
+
+        # structural_ready flipped DURING the hook (before embeddings ran).
+        assert observed["ready_at_hook"] is True
+        meta_at_hook = observed["meta_at_hook"]
+        assert meta_at_hook["structural_complete"] is True
+        assert meta_at_hook["embeddings_complete"] is False  # pending at hook time
+        # Final state: embeddings done, indexing cleared.
+        assert runtime.structural_ready is True
+        assert runtime.indexing is False
+        final_meta = json.loads((source_dir / "meta.json").read_text())
+        assert final_meta["structural_complete"] is True
+        assert final_meta["embeddings_complete"] is True
+
+    def test_existing_index_is_structural_ready_immediately(self, tmp_path: Path) -> None:
+        # An existing structural index (needs_index=False) is already searchable, so the
+        # host marks it structural_ready and only resumes missing embeddings.
+        from horus_source.runtime import HorusRuntime
+
+        runtime = HorusRuntime(storage=MagicMock(), indexing=True)
+        with patch(
+            "horus_source.cli.main.ensure_current_embeddings", return_value=True
+        ) as mock_reembed:
+            _run_host_indexing(
+                MagicMock(), tmp_path, needs_index=False, runtime=runtime
+            )
+
+        mock_reembed.assert_called_once()
+        assert runtime.structural_ready is True
+        assert runtime.indexing is False
+
+
 class TestWatch:
     def test_watch_command_exists(self) -> None:
         result = runner.invoke(app, ["watch", "--help"])

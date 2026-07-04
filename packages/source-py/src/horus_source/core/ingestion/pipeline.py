@@ -113,6 +113,7 @@ def run_pipeline(
     storage: StorageBackend | None = None,
     progress_callback: Callable[[str, float], None] | None = None,
     embeddings: bool = True,
+    on_structural_complete: Callable[[PipelineResult], None] | None = None,
 ) -> tuple[KnowledgeGraph, PipelineResult]:
     """Run phases 1-11 of the ingestion pipeline.
 
@@ -133,6 +134,12 @@ def run_pipeline(
     embeddings:
         When ``True`` (default), generate and store vector embeddings after
         bulk-loading.  Set to ``False`` to skip embedding generation.
+    on_structural_complete:
+        Optional callback fired with the (partially-filled) ``PipelineResult``
+        immediately after ``bulk_load`` persists the structural graph but BEFORE
+        the embedding phase runs. Lets a caller mark the index structural-ready
+        and serve degraded (FTS-only) search while embeddings warm in the
+        background (HOR-425 / B1.1). ``result.embeddings`` is still ``0`` here.
 
     Returns
     -------
@@ -247,6 +254,12 @@ def run_pipeline(
     if storage is not None:
         with _timed("Loading to storage"):
             storage.bulk_load(graph)
+
+        # Structural index is now fully persisted; embeddings (if any) run next.
+        # Fire the hook so the caller can mark the index ready and serve degraded
+        # search before the (slow) embedding phase (B1.1).
+        if on_structural_complete is not None:
+            on_structural_complete(result)
 
         if embeddings:
             report("Generating embeddings", 0.0)

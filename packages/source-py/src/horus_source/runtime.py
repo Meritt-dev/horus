@@ -26,6 +26,11 @@ class HorusRuntime:
     # background. The host binds its port and serves /api/host immediately; clients
     # surface "indexing in progress" until this clears (HOR-425).
     indexing: bool = False
+    # True once the structural index (symbols + edges) is persisted and searchable,
+    # even while ``indexing`` is still True because embeddings are warming in the
+    # background. Lets clients tell "usable now, semantic search warming" from
+    # "nothing yet" (B1.1). Search degrades to FTS-only until embeddings land.
+    structural_ready: bool = False
     event_listeners: list[asyncio.Queue[Any]] | None = field(default=None)
     # The dedicated memory claim vector index. Only the RW host sets this (it is
     # the sole owner of ``.horus/source/memory``); every other surface leaves it
