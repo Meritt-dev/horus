@@ -6,7 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.21.3] — 2026-07-04
+## [0.21.4] — 2026-07-04
+
+Resolver: a library's real API is found even when its export has no name. (Batch B2.)
+
+- **Anonymous & default exports now resolve to the implementation, not a test file.** When a package's public API is written without a named symbol — `module.exports = function` (jsonwebtoken's `sign`, winston's `createLogger`), `module.exports = class Application` (koa), `module.exports = X.extend({})` (joi), a cast/`satisfies`-wrapped const arrow (`export const createApp = (…) => …` in Vue, `export const createStore = (…) as T` in zustand), or a prototype method (`BaseComponent.prototype.render` in preact) — Horus now synthesizes a resolvable named symbol at index time. `explain`/`search`/`blast-radius` land on the real code (e.g. `sign.js`) instead of a same-named test helper that used to win by default, and cross-command answers agree (joi's `explain object` and `blast-radius object` now resolve to the same symbol). Re-exports under a different name (`export { X as Y }`) record an alias edge so a lookup on the public name redirects to the implementation. *These light up after your next `horus init` (or `--reindex`).*
 
 Init durability — large monorepos onboard. (Batch B1 of the dogfood campaign.)
 
