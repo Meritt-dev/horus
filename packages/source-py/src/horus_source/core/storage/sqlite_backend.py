@@ -36,9 +36,9 @@ else:
     _SQLITE_VEC_IMPORT_ERROR = None
 
 from horus_source.core.classify import is_product
-from horus_source.core.marker_match import content_has_marker
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
+from horus_source.core.marker_match import content_has_marker
 from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, NodeEmbedding, SearchResult
 
 logger = logging.getLogger(__name__)

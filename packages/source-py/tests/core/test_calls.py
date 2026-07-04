@@ -974,9 +974,7 @@ class TestCommonNameFuzzyHardening:
         # A distinctive TS symbol is NOT the target of a bare Python call.
         g = KnowledgeGraph()
         _add_file_node(g, "web/src/telemetry.ts")
-        ts_id = _add_symbol_node(
-            g, NodeLabel.FUNCTION, "web/src/telemetry.ts", "flush_spans", 1, 10
-        )
+        _add_symbol_node(g, NodeLabel.FUNCTION, "web/src/telemetry.ts", "flush_spans", 1, 10)
         _add_file_node(g, "worker/tasks.py")
         _add_symbol_node(g, NodeLabel.FUNCTION, "worker/tasks.py", "drain", 1, 20)
 

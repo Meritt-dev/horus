@@ -9,10 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from horus_source.core.graph.graph import KnowledgeGraph
-from horus_source.core.graph.model import NodeLabel, RelType
+from horus_source.core.graph.model import RelType
 from horus_source.core.ingestion.imports import build_file_index, process_imports
 from horus_source.core.ingestion.parser_phase import process_parsing
 from horus_source.core.ingestion.pipeline import reindex_files
