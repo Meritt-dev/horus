@@ -184,6 +184,10 @@ def process_parsing(
             if kind == "extends":
                 class_bases.setdefault(cls_name, []).append(parent_name)
 
+        # name -> (label, node_id, symbol) for this file's real symbols; used to
+        # resolve EXPORTS_ALIAS edges (public name -> implementation) below.
+        symbols_by_name: dict[str, tuple[NodeLabel, str, Any]] = {}
+
         for symbol in parse_data.parse_result.symbols:
             label = _KIND_TO_LABEL.get(symbol.kind)
             if label is None:
@@ -212,6 +216,8 @@ def process_parsing(
                 props["di_fields"] = symbol.di_fields
             if symbol.kind == "class" and symbol.name in class_bases:
                 props["bases"] = class_bases[symbol.name]
+            if symbol.synthesized_name:
+                props["synthesized_name"] = True
 
             is_exported = symbol.name in exported_names
 
@@ -242,4 +248,76 @@ def process_parsing(
                 )
             )
 
+            # First writer wins; prefer a non-method top-level symbol as the
+            # canonical target for a public name (bare `name`, not `Class.method`).
+            if symbol.name not in symbols_by_name or label != NodeLabel.METHOD:
+                symbols_by_name[symbol.name] = (label, symbol_id, symbol)
+
+        _emit_export_aliases(parse_data, file_entry, file_id, symbols_by_name, graph)
+
     return all_parse_data
+
+
+def _emit_export_aliases(
+    parse_data: FileParseData,
+    file_entry: FileEntry,
+    file_id: str,
+    symbols_by_name: dict[str, tuple[NodeLabel, str, Any]],
+    graph: KnowledgeGraph,
+) -> None:
+    """Create ``EXPORTS_ALIAS`` edges (public name -> implementation).
+
+    ``export { BaseComponent as Component }`` and
+    ``module.exports = { sign: signImpl }`` bind a PUBLIC export name to a
+    differently-named implementation symbol. For each such pair we point an
+    ``EXPORTS_ALIAS`` edge at the implementation node; when no node already
+    carries the public name we synthesize a lightweight, searchable stub node
+    (flagged ``synthesized_name``) so a search on the public alias lands and the
+    resolver can follow the edge to product code. Aliases whose implementation
+    is not defined in this file (cross-file re-exports) are skipped.
+    """
+    for public_name, impl_name in parse_data.parse_result.export_aliases:
+        impl = symbols_by_name.get(impl_name)
+        if impl is None:
+            continue
+        impl_label, impl_id, impl_symbol = impl
+
+        existing = symbols_by_name.get(public_name)
+        if existing is not None:
+            public_id = existing[1]
+        else:
+            public_id = generate_id(impl_label, file_entry.path, public_name)
+            graph.add_node(
+                GraphNode(
+                    id=public_id,
+                    label=impl_label,
+                    name=public_name,
+                    file_path=file_entry.path,
+                    start_line=impl_symbol.start_line,
+                    end_line=impl_symbol.end_line,
+                    content=impl_symbol.content,
+                    signature=impl_symbol.signature,
+                    language=file_entry.language,
+                    is_exported=True,
+                    properties={"synthesized_name": True, "alias_of": impl_name},
+                )
+            )
+            graph.add_relationship(
+                GraphRelationship(
+                    id=f"defines:{file_id}->{public_id}",
+                    type=RelType.DEFINES,
+                    source=file_id,
+                    target=public_id,
+                )
+            )
+
+        if public_id == impl_id:
+            continue
+        graph.add_relationship(
+            GraphRelationship(
+                id=f"exports_alias:{public_id}->{impl_id}",
+                type=RelType.EXPORTS_ALIAS,
+                source=public_id,
+                target=impl_id,
+            )
+        )

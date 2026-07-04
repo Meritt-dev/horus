@@ -390,3 +390,80 @@ class TestProcessParsingTypeScript:
         method_nodes = graph.get_nodes_by_label(NodeLabel.METHOD)
         method_names = {n.name for n in method_nodes}
         assert "start" in method_names
+
+
+def _js_file_graph(path: str) -> KnowledgeGraph:
+    g = KnowledgeGraph()
+    g.add_node(
+        GraphNode(
+            id=generate_id(NodeLabel.FILE, path),
+            label=NodeLabel.FILE,
+            name=path.rsplit("/", 1)[-1],
+            file_path=path,
+            language="javascript",
+        )
+    )
+    return g
+
+
+class TestSynthesizedExportSerialization:
+    """B2: the synthesized_name flag and EXPORTS_ALIAS edges reach the graph."""
+
+    def test_synthesized_name_flag_on_node_properties(self) -> None:
+        path = "lib/sign.js"
+        g = _js_file_graph(path)
+        files = [_make_file_entry(path, "module.exports = function (p, k) {};\n", "javascript")]
+        process_parsing(files, g)
+
+        node = g.get_node(generate_id(NodeLabel.FUNCTION, path, "sign"))
+        assert node is not None
+        assert node.properties.get("synthesized_name") is True
+        assert node.is_exported is True
+
+    def test_export_alias_edge_and_stub_node(self) -> None:
+        path = "src/index.js"
+        g = _js_file_graph(path)
+        code = "class BaseComponent {}\nexport { BaseComponent as Component };\n"
+        files = [_make_file_entry(path, code, "javascript")]
+        process_parsing(files, g)
+
+        impl_id = generate_id(NodeLabel.CLASS, path, "BaseComponent")
+        public_id = generate_id(NodeLabel.CLASS, path, "Component")
+
+        # A searchable stub node exists for the public alias name.
+        stub = g.get_node(public_id)
+        assert stub is not None
+        assert stub.name == "Component"
+        assert stub.properties.get("synthesized_name") is True
+        assert stub.properties.get("alias_of") == "BaseComponent"
+
+        # EXPORTS_ALIAS edge points public -> impl.
+        aliases = graph_edges_of_type(g, RelType.EXPORTS_ALIAS)
+        assert (public_id, impl_id) in aliases
+
+    def test_object_rename_alias_edge_reuses_existing_impl(self) -> None:
+        path = "lib/index.js"
+        g = _js_file_graph(path)
+        code = "function signImpl() {}\nmodule.exports = { sign: signImpl };\n"
+        files = [_make_file_entry(path, code, "javascript")]
+        process_parsing(files, g)
+
+        impl_id = generate_id(NodeLabel.FUNCTION, path, "signImpl")
+        public_id = generate_id(NodeLabel.FUNCTION, path, "sign")
+        aliases = graph_edges_of_type(g, RelType.EXPORTS_ALIAS)
+        assert (public_id, impl_id) in aliases
+
+    def test_no_alias_edge_when_impl_missing(self) -> None:
+        # export { Missing as Public } where Missing is not defined in-file.
+        path = "src/index.js"
+        g = _js_file_graph(path)
+        files = [_make_file_entry(path, "export { Missing as Public };\n", "javascript")]
+        process_parsing(files, g)
+        assert graph_edges_of_type(g, RelType.EXPORTS_ALIAS) == set()
+
+
+def graph_edges_of_type(g: KnowledgeGraph, rel_type: RelType) -> set[tuple[str, str]]:
+    return {
+        (r.source, r.target)
+        for r in g.get_relationships_by_type(rel_type)
+    }

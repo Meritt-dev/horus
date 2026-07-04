@@ -51,6 +51,7 @@ class TestRelType:
         "STEP_IN_PROCESS",
         "USES_TYPE",
         "EXPORTS",
+        "EXPORTS_ALIAS",
         "COUPLED_WITH",
     ]
 

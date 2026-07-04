@@ -39,6 +39,12 @@ class RelType(Enum):
     STEP_IN_PROCESS = "step_in_process"
     USES_TYPE = "uses_type"
     EXPORTS = "exports"
+    # A public export NAME that aliases a differently-named implementation symbol.
+    # Directed public-name -> implementation (``export { Impl as Public }`` emits
+    # Public -> Impl). The engine resolver follows it to redirect a hit on the
+    # public alias to the real implementation. rel_type is free-text TEXT in the
+    # store, so this is additive — no schema migration.
+    EXPORTS_ALIAS = "exports_alias"
     COUPLED_WITH = "coupled_with"
 
 def generate_id(label: NodeLabel, file_path: str, symbol_name: str = "") -> str:

@@ -8,6 +8,8 @@ source files.
 
 from __future__ import annotations
 
+import re
+
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Node, Parser
@@ -68,11 +70,16 @@ class TypeScriptParser(LanguageParser):
         tree = self._parser.parse(content.encode("utf-8"))
 
         result = ParseResult()
-        self._walk(tree.root_node, content, result)
+        self._walk(tree.root_node, content, result, file_path)
         return result
 
     def _walk(
-        self, node: Node, source: str, result: ParseResult, visited: set[int] | None = None
+        self,
+        node: Node,
+        source: str,
+        result: ParseResult,
+        file_path: str = "",
+        visited: set[int] | None = None,
     ) -> None:
         """Walk the tree recursively, dispatching on node type.
 
@@ -109,7 +116,7 @@ class TypeScriptParser(LanguageParser):
         elif ntype == "new_expression":
             self._extract_new_expression(node, source, result)
         elif ntype == "expression_statement":
-            self._maybe_extract_module_exports(node, source, result)
+            self._maybe_extract_module_exports(node, source, result, file_path)
         elif ntype == "method_definition":
             self._extract_method(node, source, result)
         elif ntype in ("jsx_opening_element", "jsx_self_closing_element"):
@@ -120,7 +127,7 @@ class TypeScriptParser(LanguageParser):
             self._extract_object_value_references(node, result)
 
         for child in node.children:
-            self._walk(child, source, result, visited)
+            self._walk(child, source, result, file_path, visited)
 
     def _extract_value_references(self, node: Node, result: ParseResult) -> None:
         """Function-by-VALUE references in initializers (dogfood cycle-4, lodash):
@@ -211,18 +218,30 @@ class TypeScriptParser(LanguageParser):
                         if name_node is not None:
                             result.exports.append(name_node.text.decode())
             elif child.type == "export_clause":
-                # export { name1, name2 }
+                # export { name1, name2 } and export { Impl as Public }
                 for spec in child.children:
                     if spec.type == "export_specifier":
                         name_node = spec.child_by_field_name("name")
-                        if name_node is not None:
+                        alias_node = spec.child_by_field_name("alias")
+                        if alias_node is not None and name_node is not None:
+                            # `export { BaseComponent as Component }` — the PUBLIC
+                            # name is the alias; record it as the export and link it
+                            # to the implementation so a search on the public name
+                            # resolves to product code.
+                            public_name = alias_node.text.decode()
+                            impl_name = name_node.text.decode()
+                            result.exports.append(public_name)
+                            if public_name != impl_name:
+                                result.export_aliases.append((public_name, impl_name))
+                        elif name_node is not None:
                             result.exports.append(name_node.text.decode())
 
     def _maybe_extract_module_exports(
-        self, node: Node, source: str, result: ParseResult
+        self, node: Node, source: str, result: ParseResult, file_path: str = ""
     ) -> None:
         """Handle ``module.exports = X``, ``module.exports = { A, B }``,
-        and ``exports.name = fn`` / ``module.exports.name = fn``."""
+        anonymous ``module.exports = <fn|arrow|class|call>``, and
+        ``exports.name = fn`` / ``module.exports.name = fn``."""
         for child in node.children:
             if child.type != "assignment_expression":
                 continue
@@ -237,14 +256,36 @@ class TypeScriptParser(LanguageParser):
                 if right.type == "identifier":
                     result.exports.append(right.text.decode())
                 elif right.type == "object":
-                    # module.exports = { Foo, Bar, baz: something }
+                    # module.exports = { Foo, Bar, baz: someImpl }
                     for prop in right.children:
                         if prop.type == "shorthand_property_identifier":
                             result.exports.append(prop.text.decode())
                         elif prop.type == "pair":
                             key_node = prop.child_by_field_name("key")
+                            value_node = prop.child_by_field_name("value")
                             if key_node is not None:
-                                result.exports.append(key_node.text.decode())
+                                key_name = key_node.text.decode()
+                                result.exports.append(key_name)
+                                # Renamed re-export `module.exports = { sign: signImpl }`:
+                                # link the public key to its differently-named impl.
+                                if (
+                                    value_node is not None
+                                    and value_node.type == "identifier"
+                                    and value_node.text.decode() != key_name
+                                ):
+                                    result.export_aliases.append(
+                                        (key_name, value_node.text.decode())
+                                    )
+                elif right.type in (
+                    "function_expression",
+                    "arrow_function",
+                    "class",
+                    "class_expression",
+                    "call_expression",
+                ):
+                    # Anonymous / class-expression / factory-call default export:
+                    # synthesize a NAMED, resolvable product symbol (D2).
+                    self._synthesize_default_export(child, right, file_path, result)
                 continue
 
             # exports.X = fn / module.exports.X = fn
@@ -289,11 +330,32 @@ class TypeScriptParser(LanguageParser):
             # module-exported, so the name joins the export surface (it IS the API).
             func_node = self._unwrap_to_function(right)
             if func_node is None:
-                # `lodash.debounce = debounce` — aliasing a function BY NAME onto an
-                # export/prototype object is USAGE of that function (dogfood cycle-4:
-                # lodash's entire API is attached this way; 215 aliased functions read
-                # as dead). Same semantics as passing a callback by identifier.
                 if right.type == "identifier":
+                    # `BaseComponent.prototype.render = Fragment` (preact): a prototype
+                    # method aliased to another symbol. Emit a real METHOD owned by the
+                    # class so `Class.method` resolves, instead of a bare CALL. Only the
+                    # `X.prototype.<m> = <identifier>` shape qualifies.
+                    if obj_text.endswith(".prototype"):
+                        owner = obj_text[: -len(".prototype")]
+                        if "." not in owner and owner != "this":
+                            method_name = prop_node.text.decode()
+                            result.symbols.append(
+                                SymbolInfo(
+                                    name=method_name,
+                                    kind="method",
+                                    class_name=owner,
+                                    start_line=child.start_point[0] + 1,
+                                    end_line=child.end_point[0] + 1,
+                                    content=child.text.decode(),
+                                    signature=method_name,
+                                )
+                            )
+                            result.exports.append(method_name)
+                            continue
+                    # `lodash.debounce = debounce` — aliasing a function BY NAME onto an
+                    # export/prototype object is USAGE of that function (dogfood cycle-4:
+                    # lodash's entire API is attached this way; 215 aliased functions read
+                    # as dead). Same semantics as passing a callback by identifier.
                     result.calls.append(
                         CallInfo(name=right.text.decode(), line=child.start_point[0] + 1)
                     )
@@ -398,6 +460,18 @@ class TypeScriptParser(LanguageParser):
                 self._extract_assigned_function(child, var_name, value_node, result)
             elif value_node.type == "call_expression":
                 self._maybe_extract_require(child, var_name, value_node, result)
+            else:
+                # `export const createApp = ((...) => {}) as CreateApp` (vue),
+                # `export const createStore = ((s) => ...) as CreateStore` (zustand),
+                # `export const x = ((a) => a) satisfies T` — the arrow/function is
+                # buried under `as` / `satisfies` / parentheses. Unwrap so the const
+                # NAME resolves to the implementation.
+                inner = self._unwrap_expression(value_node)
+                if inner is not None and inner.type in (
+                    "arrow_function",
+                    "function_expression",
+                ):
+                    self._extract_assigned_function(child, var_name, inner, result)
 
             self._extract_variable_type_annotation(child, result)
 
@@ -975,6 +1049,90 @@ class TypeScriptParser(LanguageParser):
         if return_type:
             sig += return_type
         return sig
+
+    def _synthesize_default_export(
+        self, assign_node: Node, right: Node, file_path: str, result: ParseResult
+    ) -> None:
+        """Synthesize a named product symbol for an anonymous default export.
+
+        ``module.exports = function () {}`` / ``= (…) => {}`` (jsonwebtoken,
+        winston), ``module.exports = class Application {}`` (koa),
+        ``module.exports = X.extend({})`` (joi). The synthesized NAME follows D2:
+        the RHS expression's own identifier when present (a named class
+        expression), otherwise the file stem camel-cased (``create-logger.js`` ->
+        ``createLogger``, ``sign.js`` -> ``sign``, index-like -> directory stem).
+        The symbol is flagged ``synthesized_name`` so the resolver can prefer it
+        over a same-named test/helper.
+        """
+        name = ""
+        kind = "function"
+        if right.type in ("class", "class_expression"):
+            kind = "class"
+            name_node = right.child_by_field_name("name")
+            if name_node is not None:
+                name = name_node.text.decode()
+        if not name:
+            name = self._camel_case_stem(file_path)
+        if not name:
+            return
+
+        func_node = self._unwrap_to_function(right)
+        signature = self._build_function_signature(func_node or right, name)
+
+        result.symbols.append(
+            SymbolInfo(
+                name=name,
+                kind=kind,
+                start_line=assign_node.start_point[0] + 1,
+                end_line=assign_node.end_point[0] + 1,
+                content=assign_node.text.decode(),
+                signature=signature,
+                synthesized_name=True,
+            )
+        )
+        result.exports.append(name)
+        if func_node is not None:
+            self._extract_function_types(func_node, name, result)
+
+    @staticmethod
+    def _camel_case_stem(file_path: str) -> str:
+        """Camel-case a module's file stem for use as a synthesized export name.
+
+        ``create-logger.js`` -> ``createLogger``; ``sign.js`` -> ``sign``. For
+        index-like modules (``index`` / ``mod``) the enclosing directory name is
+        used instead (``lib/index.js`` -> ``lib``), matching how the package is
+        actually imported.
+        """
+        if not file_path:
+            return ""
+        normalized = file_path.replace("\\", "/")
+        base = normalized.rsplit("/", 1)[-1]
+        stem = base.rsplit(".", 1)[0] if "." in base else base
+        if stem in ("index", "mod", ""):
+            parent = normalized.rsplit("/", 2)
+            if len(parent) >= 2 and parent[-2]:
+                stem = parent[-2]
+        parts = [p for p in re.split(r"[-_.\s]+", stem) if p]
+        if not parts:
+            return ""
+        return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+    @staticmethod
+    def _unwrap_expression(node: Node | None) -> Node | None:
+        """Strip ``as`` / ``satisfies`` casts and parentheses to reach the value.
+
+        ``((r) => 1) as CreateApp`` and ``((s) => …) satisfies T`` wrap the real
+        arrow/function in ``as_expression`` / ``satisfies_expression`` /
+        ``parenthesized_expression`` nodes. Returns the innermost wrapped node.
+        """
+        steps = 0
+        while node is not None and steps < 16:
+            if node.type in ("as_expression", "satisfies_expression", "parenthesized_expression"):
+                node = node.named_child(0)
+            else:
+                break
+            steps += 1
+        return node
 
     @staticmethod
     def _unwrap_to_function(node: Node) -> Node | None:

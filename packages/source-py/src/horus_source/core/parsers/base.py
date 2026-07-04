@@ -34,6 +34,14 @@ class SymbolInfo:
     # ``constructor(private prismaService: PrismaService)``. Lets call resolution
     # rewrite ``this.prismaService.findOne()`` to the concrete injected service.
     di_fields: dict[str, str] = field(default_factory=dict)
+    # True when the symbol NAME was synthesized by the parser rather than read
+    # verbatim from a declaration — anonymous/default product exports such as
+    # ``module.exports = function () {}`` (named from the file stem) or
+    # ``module.exports = class Application {}`` (named from the class expression).
+    # Carried onto the graph node's ``properties_json`` as ``synthesized_name``
+    # so the engine resolver can prefer a real product default-export over a
+    # same-named test/helper. See ``parser_phase`` serialization.
+    synthesized_name: bool = False
 
 @dataclass
 class ImportInfo:
@@ -85,6 +93,13 @@ class ParseResult:
         default_factory=list
     )  # (class_name, kind, parent_name) where kind is "extends" or "implements"
     exports: list[str] = field(default_factory=list)  # names from __all__ or export statements
+    # Export-alias pairs ``(public_name, impl_name)`` — a public export name that
+    # is an alias for a differently-named implementation symbol in the SAME file.
+    # ``export { BaseComponent as Component }`` -> ``("Component", "BaseComponent")``;
+    # ``module.exports = { sign: signImpl }`` -> ``("sign", "signImpl")``.
+    # ``parser_phase`` turns each pair into an ``EXPORTS_ALIAS`` edge (public -> impl)
+    # so a search on the public name resolves to the real implementation.
+    export_aliases: list[tuple[str, str]] = field(default_factory=list)
 
 class LanguageParser(ABC):
     """Base interface for language-specific parsers."""

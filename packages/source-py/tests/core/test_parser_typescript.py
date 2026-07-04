@@ -543,3 +543,146 @@ def test_object_literal_value_references(js_parser: TypeScriptParser) -> None:
     names = {c.name for c in result.calls}
     assert "after" in names
     assert "onError" in names
+
+
+class TestAnonymousDefaultExportSynthesis:
+    """B2: synthesize a NAMED, resolvable product symbol for anonymous / cast /
+    class-expression default exports so the real impl exists as a searchable
+    symbol (today only a same-named test/helper carries the name and wins)."""
+
+    def test_module_exports_anonymous_function_named_from_stem(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # jsonwebtoken sign.js / verify.js / decode.js
+        code = "module.exports = function (payload, key) { return 1 };\n"
+        result = js_parser.parse(code, "lib/sign.js")
+        syms = [s for s in result.symbols if s.synthesized_name]
+        assert len(syms) == 1
+        assert syms[0].name == "sign"
+        assert syms[0].kind == "function"
+        assert "sign" in result.exports
+
+    def test_module_exports_arrow_named_from_hyphenated_stem(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # winston create-logger.js -> createLogger
+        code = "module.exports = (opts) => ({ log() {} });\n"
+        result = js_parser.parse(code, "lib/create-logger.js")
+        syms = [s for s in result.symbols if s.synthesized_name]
+        assert len(syms) == 1
+        assert syms[0].name == "createLogger"
+        assert syms[0].kind == "function"
+
+    def test_module_exports_named_class_expression(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # koa: module.exports = class Application {}
+        code = "module.exports = class Application { listen() {} };\n"
+        result = js_parser.parse(code, "lib/application.js")
+        cls = [s for s in result.symbols if s.kind == "class" and s.synthesized_name]
+        assert len(cls) == 1
+        assert cls[0].name == "Application"
+        assert "Application" in result.exports
+
+    def test_module_exports_factory_call_named_from_stem(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # joi: module.exports = Any.extend({})
+        code = "module.exports = Any.extend({ foo: 1 });\n"
+        result = js_parser.parse(code, "lib/joi.js")
+        syms = [s for s in result.symbols if s.synthesized_name]
+        assert len(syms) == 1
+        assert syms[0].name == "joi"
+        assert syms[0].kind == "function"
+
+    def test_module_exports_index_like_uses_directory_stem(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        code = "module.exports = function () {};\n"
+        result = js_parser.parse(code, "src/logger/index.js")
+        syms = [s for s in result.symbols if s.synthesized_name]
+        assert len(syms) == 1
+        assert syms[0].name == "logger"
+
+    def test_declared_names_are_not_flagged_synthesized(
+        self, ts_parser: TypeScriptParser
+    ) -> None:
+        # A normal named function must NOT carry the synthesized flag.
+        result = ts_parser.parse("export function real() {}\n", "src/real.ts")
+        assert all(not s.synthesized_name for s in result.symbols)
+
+
+class TestCastWrappedConstExports:
+    """B2: `export const x = (arrow) as T | satisfies T` — unwrap the cast so the
+    const NAME resolves to the arrow/function implementation (vue, zustand)."""
+
+    def test_as_expression_arrow(self, ts_parser: TypeScriptParser) -> None:
+        # vue createApp
+        code = "export const createApp = ((rootComponent) => { return 1 }) as CreateAppFunction;\n"
+        result = ts_parser.parse(code, "src/apiCreateApp.ts")
+        fns = {s.name: s for s in result.symbols if s.kind == "function"}
+        assert "createApp" in fns
+
+    def test_as_expression_arrow_returning_object(
+        self, ts_parser: TypeScriptParser
+    ) -> None:
+        # zustand createStore
+        code = "export const createStore = ((set) => ({ get: 1 })) as CreateStore;\n"
+        result = ts_parser.parse(code, "src/vanilla.ts")
+        fns = {s.name: s for s in result.symbols if s.kind == "function"}
+        assert "createStore" in fns
+
+    def test_satisfies_expression_arrow(self, ts_parser: TypeScriptParser) -> None:
+        code = "export const build = ((a) => a) satisfies Builder;\n"
+        result = ts_parser.parse(code, "src/build.ts")
+        fns = {s.name: s for s in result.symbols if s.kind == "function"}
+        assert "build" in fns
+
+
+class TestExportAliasEdges:
+    """B2: record a public export name that aliases a differently-named impl as an
+    (public, impl) pair for later EXPORTS_ALIAS edge emission."""
+
+    def test_export_clause_rename(self, js_parser: TypeScriptParser) -> None:
+        # preact: export { BaseComponent as Component }
+        code = "class BaseComponent {}\nexport { BaseComponent as Component };\n"
+        result = js_parser.parse(code, "src/index.js")
+        assert ("Component", "BaseComponent") in result.export_aliases
+        assert "Component" in result.exports
+
+    def test_module_exports_object_rename(self, js_parser: TypeScriptParser) -> None:
+        code = "function signImpl() {}\nmodule.exports = { sign: signImpl, verify };\n"
+        result = js_parser.parse(code, "lib/index.js")
+        assert ("sign", "signImpl") in result.export_aliases
+        # A shorthand entry (verify) is NOT an alias — public name == impl name.
+        assert all(pub != "verify" for pub, _ in result.export_aliases)
+        assert "verify" in result.exports
+
+    def test_shorthand_export_has_no_alias(self, js_parser: TypeScriptParser) -> None:
+        code = "class Foo {}\nexport { Foo };\n"
+        result = js_parser.parse(code, "src/index.js")
+        assert result.export_aliases == []
+
+
+class TestPrototypeMethodAlias:
+    """B2: `X.prototype.<m> = <identifier>` is a prototype METHOD on X, not a bare
+    call to the identifier (preact BaseComponent.prototype.render = Fragment)."""
+
+    def test_prototype_identifier_assignment_is_method(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        code = "function BaseComponent() {}\nBaseComponent.prototype.render = Fragment;\n"
+        result = js_parser.parse(code, "src/component.js")
+        methods = {s.name: s for s in result.symbols if s.kind == "method"}
+        assert "render" in methods
+        assert methods["render"].class_name == "BaseComponent"
+        assert "render" in result.exports
+
+    def test_non_prototype_identifier_assignment_stays_a_call(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # lodash.debounce = debounce remains USAGE (a call), not a method.
+        code = "function debounce() {}\nlodash.debounce = debounce;\n"
+        result = js_parser.parse(code, "lodash.js")
+        assert all(s.kind != "method" for s in result.symbols)
+        assert any(c.name == "debounce" for c in result.calls)
