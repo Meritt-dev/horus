@@ -46,6 +46,7 @@ import {
   checkSourceCompatibility,
   isAnalyzed,
   indexNeedsReanalyze,
+  indexEmbeddingsPending,
   analyzeRepo,
   isHostHealthy,
   readSourceHostUrl,
@@ -528,16 +529,12 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     }
 
     // Surface the symbol-only degraded-mode contract (B1.4). With `analyze --defer-embeddings`
-    // the structural index (search / explain / blast-radius) is searchable the moment the host
-    // reports `structuralReady`, while embeddings warm in the background — tell the user search
-    // works now and semantic ranking is still catching up. Best-effort: never block on it.
-    try {
-      const hostInfo = await new SourceHttpClient({ baseUrl: hostUrl }).hostInfo();
-      if (hostInfo.structuralReady === true && hostInfo.embeddingsPending === true) {
-        console.log(pc.dim('  index ready (semantic search warming up)'));
-      }
-    } catch {
-      // An older backend (no B1.4 fields) or a transient error — skip the notice silently.
+    // the structural index (search / explain / blast-radius) is searchable now, while embeddings
+    // warm in the background — tell the user search works and semantic ranking is still catching
+    // up. Read from the DURABLE meta (deterministic) rather than the host's transient `indexing`
+    // flag, which raced and left this notice unprinted on large repos (dogfood 0.21.3).
+    if (indexEmbeddingsPending(root)) {
+      console.log(pc.dim('  index ready (semantic search warming up)'));
     }
 
     // Build the queue map. Best-effort (HOR-392): a stitch/DB failure degrades to a

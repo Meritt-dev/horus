@@ -138,6 +138,20 @@ function readSourceMeta(root: string): SourceMeta | null {
   }
 }
 
+/**
+ * Whether the on-disk index is structurally complete but its embeddings are still warming
+ * (B1.4 degraded mode). Read from the DURABLE meta — `structural_complete: true` with
+ * `embeddings_complete: false` — not the host's transient `indexing` runtime flag, which
+ * briefly reads false in the gap between the structural phase finishing and the background
+ * embedding phase starting (that race made the CLI's "warming up" notice flaky on large repos,
+ * dogfood 0.21.3). Deterministic: true right after a `--defer-embeddings` init, false once
+ * embeddings finish (so a re-init of a fully-embedded repo prints nothing).
+ */
+export function indexEmbeddingsPending(root: string): boolean {
+  const meta = readSourceMeta(root);
+  return meta?.structuralComplete === true && meta?.embeddingsComplete === false;
+}
+
 /** Whether the index has usable semantic vectors (mirror of freshness.semanticSearchReady). */
 function metaHasEmbeddings(meta: SourceMeta): boolean {
   if (meta.embeddingsComplete === false) return false;

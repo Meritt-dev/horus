@@ -32,6 +32,7 @@ import {
   waitForOwnHost,
   analyzeRepo,
   indexNeedsReanalyze,
+  indexEmbeddingsPending,
   resolveAnalyzeTimeoutMs,
   countRepoFiles,
 } from './lifecycle.js';
@@ -419,6 +420,29 @@ describe('indexNeedsReanalyze — detect a stale/legacy/incompatible index (HOR-
         stats: { symbols: 6390, embeddings: 0 },
       });
       expect(indexNeedsReanalyze(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // B1.4 (dogfood 0.21.3): the CLI's "semantic search warming up" notice reads this DURABLE
+  // signal, not the host's transient `indexing` flag (which raced on large repos).
+  it('indexEmbeddingsPending: true for structural-complete/embeddings-pending, false otherwise', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'sqlite', structural_complete: true, embeddings_complete: false, stats: { symbols: 6390, embeddings: 0 } });
+      expect(indexEmbeddingsPending(root)).toBe(true); // right after a --defer-embeddings init
+      writeMeta(root, { store_backend: 'sqlite', structural_complete: true, embeddings_complete: true, stats: { symbols: 6390, embeddings: 6390 } });
+      expect(indexEmbeddingsPending(root)).toBe(false); // embeddings landed → no warming notice
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('indexEmbeddingsPending: false when there is no index at all', () => {
+    const root = makeRepo();
+    try {
+      expect(indexEmbeddingsPending(root)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -22,6 +22,7 @@ const seams = vi.hoisted(() => ({
   }),
   isAnalyzed: vi.fn(() => false),
   indexNeedsReanalyze: vi.fn(() => null as string | null),
+  indexEmbeddingsPending: vi.fn(() => false),
   analyzeRepo: vi.fn(async () => {}),
   findFreePort: vi.fn(async () => 8420),
   startHost: vi.fn(() => {}),
@@ -44,6 +45,7 @@ vi.mock('@horus/connectors', async (importOriginal) => {
     assertSourceVersionPinned: seams.assertSourceVersionPinned,
     isAnalyzed: seams.isAnalyzed,
     indexNeedsReanalyze: seams.indexNeedsReanalyze,
+    indexEmbeddingsPending: seams.indexEmbeddingsPending,
     analyzeRepo: seams.analyzeRepo,
     findFreePort: seams.findFreePort,
     startHost: seams.startHost,
@@ -189,13 +191,9 @@ describe('runIndex structural-only readiness gate (B1.1)', () => {
       .mockReturnValueOnce('legacy KùzuDB store present')
       .mockReturnValue(null);
     seams.analyzeRepo.mockResolvedValue(undefined);
-    // Both the identity probe (hostServesRepo) and the B1.4 probe read hostInfo — advertise
-    // the warming-up window on the same mock.
-    seams.hostInfo.mockResolvedValue({
-      repoPath: repo,
-      structuralReady: true,
-      embeddingsPending: true,
-    });
+    // B1.4 reads the DURABLE meta (deterministic), not the host's transient flags: a
+    // structural-complete/embeddings-pending index prints the warming notice.
+    seams.indexEmbeddingsPending.mockReturnValue(true);
 
     const code = await runIndex({ path: repo });
 
@@ -211,11 +209,8 @@ describe('runIndex structural-only readiness gate (B1.1)', () => {
       .mockReturnValueOnce('legacy KùzuDB store present')
       .mockReturnValue(null);
     seams.analyzeRepo.mockResolvedValue(undefined);
-    seams.hostInfo.mockResolvedValue({
-      repoPath: repo,
-      structuralReady: true,
-      embeddingsPending: false,
-    });
+    // Embeddings already landed → meta reports not-pending → no warming notice.
+    seams.indexEmbeddingsPending.mockReturnValue(false);
 
     const code = await runIndex({ path: repo });
 
