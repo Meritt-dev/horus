@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.6] — 2026-07-04
+
+Blast radius understands inheritance, embeddings resume where they left off, and re-exports resolve across files.
+
+- **Blast radius now follows inheritance.** Changing a base class or interface surfaces everything that extends/implements it, not just its direct callers. The relationships were already indexed — the impact walk simply never traversed them, so a base type reported a near-empty radius. typebox `blast-radius TSchema` now reports **36 affected symbols** (TString, TInteger, TAny, … and their callers) where it used to show ~0. Takes effect after your next `horus init` (or `--reindex`); an older index tells you so with a one-line hint, and `horus update` refreshes it in the background.
+- **Interrupted embeddings resume instead of restarting.** The semantic-index pass used to be all-or-nothing: kill it partway (or lose the host) and it had persisted nothing, so the next run recomputed every vector. Vectors now persist incrementally and a resume computes **only the missing ones**. Measured on typebox: killed after 768 of 4,763 vectors, the resume computed exactly the remaining 3,995. (Switching embedding models still recomputes everything — those vectors live in a different space.)
+- **Re-exports under a new name resolve to the implementation, across files.** `export { BaseComponent as Component } from './component'` — a rename re-exported from another module — now redirects to the real code. preact `explain Component` lands on `BaseComponent` in `src/component.js` (with its actual callers and impact) instead of the `src/index.d.ts` type declaration. Completes the `.d.ts`-demotion work from 0.21.5 for the cross-module case. *Lights up after your next `horus init`.*
+
 ## [0.21.5] — 2026-07-04
 
 - **Implementations win over their `.d.ts` type declarations.** When a symbol exists both as real code and as a `.d.ts` re-declaration, `explain`/`search`/`blast-radius` now land on the implementation instead of the declaration stub — dayjs `Dayjs` resolves to the `class` in `src/index.js` (not a plugin `.d.ts`), commander `Option` to `lib/option.js` (not `typings/index.d.ts`). A `.d.ts` only wins when it is the sole match (a genuinely type-only export). Takes effect immediately — no re-index needed.
