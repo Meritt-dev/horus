@@ -32,6 +32,8 @@ import {
   waitForOwnHost,
   analyzeRepo,
   indexNeedsReanalyze,
+  resolveAnalyzeTimeoutMs,
+  countRepoFiles,
 } from './lifecycle.js';
 
 describe('analyzeRepo — surfaces the real failure (HOR-381)', () => {
@@ -67,6 +69,56 @@ describe('analyzeRepo — surfaces the real failure (HOR-381)', () => {
       return e;
     });
     await expect(analyzeRepo('/repo')).rejects.toThrow(/ModuleNotFoundError: no module named tree_sitter/);
+  });
+});
+
+describe('analyze timeout — adaptive + env override (B1.3)', () => {
+  const ENV_KEY = 'HORUS_ANALYZE_TIMEOUT_MS';
+  const savedEnv = process.env[ENV_KEY];
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'horus-analyze-timeout-'));
+    delete process.env[ENV_KEY];
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    if (savedEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = savedEnv;
+  });
+
+  it('honors a positive HORUS_ANALYZE_TIMEOUT_MS override', () => {
+    process.env[ENV_KEY] = '123456';
+    expect(resolveAnalyzeTimeoutMs(tmp)).toBe(123456);
+  });
+
+  it('ignores a non-numeric / non-positive override and falls back to the base cap', () => {
+    process.env[ENV_KEY] = 'not-a-number';
+    expect(resolveAnalyzeTimeoutMs(tmp)).toBe(900_000);
+    process.env[ENV_KEY] = '0';
+    expect(resolveAnalyzeTimeoutMs(tmp)).toBe(900_000);
+    process.env[ENV_KEY] = '-5';
+    expect(resolveAnalyzeTimeoutMs(tmp)).toBe(900_000);
+  });
+
+  it('uses the base cap for a small repo (<= baseline files)', () => {
+    writeFileSync(join(tmp, 'a.ts'), 'export const a = 1;');
+    writeFileSync(join(tmp, 'b.ts'), 'export const b = 2;');
+    expect(resolveAnalyzeTimeoutMs(tmp)).toBe(900_000);
+  });
+
+  it('skips vendored/VCS dirs when counting files', () => {
+    writeFileSync(join(tmp, 'src.ts'), 'x');
+    mkdirSync(join(tmp, 'node_modules', 'pkg'), { recursive: true });
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(tmp, 'node_modules', 'pkg', `f${i}.js`), 'x');
+    }
+    expect(countRepoFiles(tmp)).toBe(1);
+  });
+
+  it('bails at the limit to stay cheap on huge trees', () => {
+    for (let i = 0; i < 20; i++) writeFileSync(join(tmp, `f${i}.ts`), 'x');
+    expect(countRepoFiles(tmp, 5)).toBe(5);
   });
 });
 

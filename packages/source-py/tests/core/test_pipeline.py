@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import io
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from horus_source.core.ingestion.pipeline import PipelineResult, run_pipeline
+from horus_source.core.ingestion.pipeline import (
+    PipelineResult,
+    format_liveness_line,
+    run_pipeline,
+)
 from horus_source.core.storage.kuzu_backend import KuzuBackend
 
 
@@ -155,6 +161,73 @@ class TestRunPipelineStructuralCallback:
 
         run_pipeline(tmp_repo, storage=None, on_structural_complete=hook)
         assert calls["n"] == 0
+
+
+class TestLivenessLines:
+    def test_format_liveness_line_shape(self) -> None:
+        # Plain, non-Rich, single line carrying phase / files / elapsed (B1.3).
+        line = format_liveness_line("Walking files", 0.5, 42, 3.14)
+        assert line == "[horus-source] phase='Walking files' pct=50% files=42 elapsed=3.1s"
+        # No ANSI / Rich markup — safe to surface verbatim from a non-tty stream.
+        assert "\x1b" not in line
+        assert "[/" not in line
+
+    def test_liveness_stream_emits_plain_lines(
+        self, tmp_repo: Path, storage: KuzuBackend
+    ) -> None:
+        # B1.3: analyze runs under execFile (non-tty) where the Rich transient bar
+        # renders nothing. With a liveness_stream, run_pipeline must emit plain,
+        # structured progress lines a TS caller can tail to see it is not hung.
+        stream = io.StringIO()
+        run_pipeline(
+            tmp_repo, storage, embeddings=False, liveness_stream=stream
+        )
+
+        out = stream.getvalue()
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines, "expected at least one liveness line"
+
+        # Every line matches the structured, plain shape (no Rich markup / ANSI).
+        pattern = re.compile(
+            r"^\[horus-source\] phase='.+' pct=\d+% files=\d+ elapsed=[\d.]+s$"
+        )
+        for ln in lines:
+            assert pattern.match(ln), f"unexpected liveness line: {ln!r}"
+
+        # Phase coverage — the structural phases are announced.
+        joined = "\n".join(lines)
+        assert "Walking files" in joined
+        assert "Loading to storage" in joined
+
+        # files-processed is surfaced once the walk completes (3 files in tmp_repo).
+        assert "files=3" in joined
+
+    def test_no_liveness_stream_emits_nothing_extra(
+        self, tmp_repo: Path, storage: KuzuBackend
+    ) -> None:
+        # Back-compat: without a stream, the progress_callback path is unchanged.
+        calls: list[tuple[str, float]] = []
+
+        def callback(phase: str, pct: float) -> None:
+            calls.append((phase, pct))
+
+        run_pipeline(
+            tmp_repo, storage, embeddings=False, progress_callback=callback
+        )
+        assert calls  # callback still fires as before
+
+    def test_liveness_write_failure_never_aborts(
+        self, tmp_repo: Path, storage: KuzuBackend
+    ) -> None:
+        # A closed pipe (TS caller stopped tailing) must not crash the pipeline.
+        class _Broken(io.StringIO):
+            def write(self, _s: str) -> int:  # type: ignore[override]
+                raise BrokenPipeError("downstream gone")
+
+        _, result = run_pipeline(
+            tmp_repo, storage, embeddings=False, liveness_stream=_Broken()
+        )
+        assert result.symbols >= 3  # pipeline completed despite the broken stream
 
 
 class TestRunPipelineLoadsToStorage:

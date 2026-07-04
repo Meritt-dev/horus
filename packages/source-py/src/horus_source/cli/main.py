@@ -1250,11 +1250,18 @@ def analyze(
         def on_progress(phase: str, pct: float) -> None:
             progress.update(task, description=f"{phase} ({pct:.0%})")
 
+        # When stdout is not a TTY (e.g. `analyze` run under execFile by the TS
+        # `analyzeRepo`), the Rich transient progress bar renders nothing, so a long
+        # structural phase on a big monorepo looks hung for minutes. Emit plain,
+        # structured liveness lines to stderr the TS side can stream/tail (B1.3).
+        liveness_stream = None if console.is_terminal else sys.stderr
+
         graph, result = run_pipeline(
             repo_path=repo_path,
             storage=storage,
             progress_callback=on_progress,
             embeddings=run_embeddings_inline,
+            liveness_stream=liveness_stream,
         )
 
     meta = _build_meta(result, repo_path)

@@ -10,7 +10,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, openSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED, redactSecrets } from '@horus/core';
@@ -196,10 +196,82 @@ export function indexNeedsReanalyze(root: string): string | null {
   return null;
 }
 
+/** Base analyze timeout: 15 min covers the structural phase of most repos (B1.3). */
+const BASE_ANALYZE_TIMEOUT_MS = 900_000;
+/** Hard ceiling so a runaway analyze can never hang `horus init` indefinitely. */
+const MAX_ANALYZE_TIMEOUT_MS = 3_600_000;
+/** Repos up to this file count use the base cap; larger ones scale linearly. */
+const ANALYZE_BASELINE_FILES = 5_000;
+/** Linear headroom per file above the baseline, for very large monorepos. */
+const ANALYZE_TIMEOUT_PER_FILE_MS = 15;
+
+/** Directories excluded from the pre-walk file count (vendored / generated / VCS). */
+const ANALYZE_COUNT_SKIP_DIRS = new Set([
+  'node_modules', '.git', '.horus', 'dist', 'build', 'out', 'target',
+  'vendor', '.venv', 'venv', '__pycache__', '.next', '.turbo', 'coverage', '.cache',
+]);
+
+/**
+ * Cheap, bounded pre-walk that counts source files under `root` to size the analyze
+ * timeout. Skips vendored/generated/VCS dirs and dot-dirs, and bails at `limit` so it
+ * stays O(cheap) even on huge trees. Best-effort — unreadable dirs are skipped.
+ */
+export function countRepoFiles(root: string, limit = 200_000): number {
+  let count = 0;
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (ANALYZE_COUNT_SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
+        stack.push(join(dir, e.name));
+      } else if (e.isFile()) {
+        count++;
+        if (count >= limit) return count;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * Resolve the wall-clock timeout (ms) for `horus-source analyze` on `root`.
+ *
+ * Priority: an explicit `HORUS_ANALYZE_TIMEOUT_MS` env override (positive integer) wins;
+ * otherwise the {@link BASE_ANALYZE_TIMEOUT_MS} cap is scaled up by a cheap file-count
+ * pre-walk for large monorepos and clamped to {@link MAX_ANALYZE_TIMEOUT_MS}. With
+ * `--defer-embeddings` (B1.1) analyze returns after the structural phase, so the base cap
+ * already fits most repos — the scaling only adds headroom for the largest trees.
+ */
+export function resolveAnalyzeTimeoutMs(root: string): number {
+  const override = process.env['HORUS_ANALYZE_TIMEOUT_MS'];
+  if (override !== undefined && override.trim() !== '') {
+    const n = Number(override);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  let files = 0;
+  try {
+    files = countRepoFiles(root);
+  } catch {
+    return BASE_ANALYZE_TIMEOUT_MS;
+  }
+  if (files <= ANALYZE_BASELINE_FILES) return BASE_ANALYZE_TIMEOUT_MS;
+  const scaled =
+    BASE_ANALYZE_TIMEOUT_MS + (files - ANALYZE_BASELINE_FILES) * ANALYZE_TIMEOUT_PER_FILE_MS;
+  return Math.min(scaled, MAX_ANALYZE_TIMEOUT_MS);
+}
+
 /** Run `horus-source analyze .` in the repo. Throws on failure with the REAL cause (HOR-381). */
 export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();
   if (!bin) throw new Error('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash');
+  const timeoutMs = resolveAnalyzeTimeoutMs(root);
   try {
     // --defer-embeddings: return the moment the STRUCTURAL index is built (search /
     // explain / blast-radius work now); the host resumes embeddings in the background.
@@ -207,21 +279,26 @@ export async function analyzeRepo(root: string): Promise<void> {
     // index is treated as a failure (B1.1).
     await exec(bin, ['analyze', '.', '--defer-embeddings'], {
       cwd: root,
-      timeout: 900_000,
+      timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    // The generic "Command failed: horus-source analyze ." hides both the 900s timeout (hit on
-    // large repos in the slow embeddings phase) and horus-source's own stderr. Surface them so
-    // `horus init` reports WHY it failed instead of a bare command-failed string (HOR-381).
+    // The generic "Command failed: horus-source analyze ." hides both the timeout (hit on
+    // very large repos whose STRUCTURAL phase is slow) and horus-source's own stderr.
+    // Surface them so `horus init` reports WHY it failed instead of a bare command-failed
+    // string (HOR-381). With --defer-embeddings the timeout no longer spans the embedding
+    // phase, so a timeout means the structural index itself is still building.
     const e = err as { killed?: boolean; signal?: string; code?: unknown; stderr?: string; message?: string };
     // stderr can print env-derived URLs (credential-bearing connection strings) —
     // redact BEFORE capping so a conn string straddling the cut can't lose its
-    // scheme prefix and escape the pattern.
+    // scheme prefix and escape the pattern. It also carries the B1.3 liveness lines
+    // (phase / files / elapsed), so the tail shows exactly where analyze was.
     const tail = redactSecrets((e.stderr ?? '').trim()).slice(-800);
     if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
+      const secs = Math.round(timeoutMs / 1000);
       throw new Error(
-        `horus-source analyze timed out after 900s (large repo / slow embeddings phase)` +
+        `horus-source analyze timed out after ${secs}s while building the structural index ` +
+          `(large repo). Raise the cap with HORUS_ANALYZE_TIMEOUT_MS.` +
           (tail ? ` — last output: ${tail}` : ''),
       );
     }

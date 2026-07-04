@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 from horus_source.config.ignore import load_gitignore
 from horus_source.core.embeddings.embedder import embed_graph
@@ -88,6 +89,21 @@ def _write_collected_edges(
         )
 
 
+def format_liveness_line(phase: str, pct: float, files: int, elapsed: float) -> str:
+    """Format a single machine/human-readable liveness line for a pipeline phase.
+
+    `analyzeRepo` shells `horus-source analyze` with ``execFile`` (non-tty), so the
+    Rich transient progress bar renders nothing and a long structural phase looks hung
+    for minutes (B1.3). These plain lines are emitted to the liveness stream so the TS
+    caller (and anyone tailing ``.horus/source-host.log``) can see forward progress:
+    which phase is running, how many files it has walked, and wall-clock elapsed.
+    """
+    return (
+        f"[horus-source] phase={phase!r} pct={pct * 100:.0f}% "
+        f"files={files} elapsed={elapsed:.1f}s"
+    )
+
+
 def _run_embedding_phase(
     graph: KnowledgeGraph,
     storage: StorageBackend,
@@ -114,6 +130,7 @@ def run_pipeline(
     progress_callback: Callable[[str, float], None] | None = None,
     embeddings: bool = True,
     on_structural_complete: Callable[[PipelineResult], None] | None = None,
+    liveness_stream: TextIO | None = None,
 ) -> tuple[KnowledgeGraph, PipelineResult]:
     """Run phases 1-11 of the ingestion pipeline.
 
@@ -140,6 +157,12 @@ def run_pipeline(
         the embedding phase runs. Lets a caller mark the index structural-ready
         and serve degraded (FTS-only) search while embeddings warm in the
         background (HOR-425 / B1.1). ``result.embeddings`` is still ``0`` here.
+    liveness_stream:
+        Optional text stream to which a plain, structured liveness line is written on
+        every phase transition (phase / files-processed / elapsed). Used when the caller
+        runs non-interactively (``analyze`` under ``execFile``), where the Rich transient
+        progress bar renders nothing and a long structural phase would otherwise look
+        hung (B1.3). Lines are best-effort — a write failure never aborts the pipeline.
 
     Returns
     -------
@@ -155,6 +178,19 @@ def run_pipeline(
     def report(phase: str, pct: float) -> None:
         if progress_callback is not None:
             progress_callback(phase, pct)
+        if liveness_stream is not None:
+            # Best-effort: liveness must never break the pipeline (e.g. a closed pipe
+            # when the TS caller stops tailing). Emit one plain line per transition.
+            try:
+                liveness_stream.write(
+                    format_liveness_line(
+                        phase, pct, result.files, time.monotonic() - start
+                    )
+                    + "\n"
+                )
+                liveness_stream.flush()
+            except Exception:
+                pass
 
     @contextmanager
     def _timed(phase_name: str):
