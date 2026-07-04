@@ -533,6 +533,27 @@ describe('productTier — A5 lexicographic product-over-deprioritized tier', () 
     expect(ranked[0]).toBe(product); // product wins despite the fixture's larger body
     expect(ranked).toHaveLength(2); // the fixture is still surfaced, just demoted
   });
+
+  // HOR-465: a declaration-only `.d.ts` namesake is demoted below any non-declaration impl.
+  it('demotes a .d.ts declaration below the implementation (dayjs/commander)', () => {
+    const decl = s('Dayjs', 'types/index.d.ts');
+    const impl = s('Dayjs', 'src/index.ts');
+    expect(productTier([decl, impl])).toEqual([impl]); // impl leads; .d.ts drops out of the tier
+  });
+
+  it('keeps the .d.ts when it is the ONLY match (a genuinely type-only export)', () => {
+    const a = s('SomeType', 'types/a.d.ts');
+    const b = s('SomeType', 'lib/b.d.mts'); // non-vendored, so only the .d.ts sub-tier applies
+    expect(productTier([a, b])).toEqual([a, b]); // nothing non-declaration → .d.ts survives
+  });
+
+  it('the export-alias stub (non-.d.ts) beats a .d.ts interface so the redirect can fire (preact)', () => {
+    const dts = s('Component', 'src/index.d.ts');
+    const aliasStub: Symbol = { id: 'class:src/component.js:Component', name: 'Component', filePath: 'src/component.js', aliasOf: 'BaseComponent' };
+    const tier = productTier([dts, aliasStub]);
+    expect(tier).toEqual([aliasStub]); // .d.ts demoted → alias stub leads → redirectExportAlias can act
+    expect(redirectExportAlias(tier)[0]?.aliasOf).toBe('BaseComponent');
+  });
 });
 
 describe('rankExactCandidates (dogfood P1 — explain disambiguation)', () => {

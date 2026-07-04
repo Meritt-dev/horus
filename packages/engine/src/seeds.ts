@@ -437,10 +437,25 @@ export function isDeprioritizedSeed(s: Symbol): boolean {
  * collapses the tiers (the caller asked for tests). Codegen/type-declaration demotion stays a
  * soft score in {@link scoreExactCandidate}.
  */
+/** A TypeScript DECLARATION file (`.d.ts`/`.d.mts`/`.d.cts`) — it describes an API surface;
+ *  the implementation (or a B2 export-alias to it) IS the symbol the user means. */
+export function isDeclarationFile(filePath: string): boolean {
+  return /\.d\.[cm]?ts$/i.test(filePath);
+}
+
 export function productTier(candidates: Symbol[], includeTests = false): Symbol[] {
   if (includeTests) return candidates;
   const product = candidates.filter((s) => !isDeprioritizedSeedPath(s.filePath));
-  return product.length > 0 ? product : candidates;
+  const pool = product.length > 0 ? product : candidates;
+  // HOR-465: within the surviving product tier, a declaration-only `.d.ts` namesake is demoted
+  // below any NON-declaration match — the implementation, or a B2 export-alias stub carrying
+  // `aliasOf`. preact `explain Component` (an `export { BaseComponent as Component }` alias) lost
+  // to `src/index.d.ts`'s interface stub, so the alias redirect never fired; dayjs/commander buried
+  // the real class/impl under `.d.ts` re-declarations. A `.d.ts` still wins when it is the ONLY
+  // match (a genuinely type-only export). This is a hard sub-tier, not a soft score, so a large
+  // `.d.ts` can't out-weigh the impl on body size.
+  const impl = pool.filter((s) => !isDeclarationFile(s.filePath));
+  return impl.length > 0 ? impl : pool;
 }
 
 /**
@@ -525,8 +540,10 @@ function scoreExactCandidate(query: string, symbol: Symbol, includeTests: boolea
   }
   // Type-declaration shims: axios `explain "Axios"` picked index.d.ts:623 over the
   // lib/core/Axios.js implementation (both class-kind, LOC capped → tie broken by
-  // search order). A .d.ts describes the API; the implementation IS the symbol.
-  if (/\.d\.[cm]?ts$/i.test(symbol.filePath)) score -= 3;
+  // search order). A .d.ts describes the API; the implementation IS the symbol. `productTier`
+  // now hard-demotes a .d.ts below any impl namesake (HOR-465); this soft penalty still orders
+  // .d.ts candidates within the `rest` list and when a .d.ts is the only kind of match.
+  if (isDeclarationFile(symbol.filePath)) score -= 3;
   // Body size as a centrality proxy, log-dampened: a 545-line class beats a
   // 10-line re-export subclass, but 5000 lines doesn't beat everything forever.
   const loc = (symbol.endLine ?? 0) - (symbol.startLine ?? 0);
