@@ -5,12 +5,12 @@
 # (HOR-10) and MongoDB state evidence (HOR-33)).
 #
 # Replays the "Zoho sync delays" incident against the live leadcall-api/production
-# environment (source-intelligence host :8420 + Elasticsearch leadcall-api-prod-* + Postgres :5433)
-# and asserts the investigation surfaces the expected structure. Exits non-zero
-# if any expectation regresses.
+# environment (source-intelligence host :8420 + Elasticsearch leadcall-api-prod-*;
+# local persistence is embedded pglite) and asserts the investigation surfaces the
+# expected structure. Exits non-zero if any expectation regresses.
 #
-# Prereqs: `horus init` inside leadcall-api, `docker compose up -d`,
-# `pnpm build`, and runtime creds in ~/.horus.env (ES_URL/ES_USERNAME/ES_PASSWORD).
+# Prereqs: `horus init` inside leadcall-api, `pnpm build`, and runtime creds in
+# ~/.horus.env (ES_URL/ES_USERNAME/ES_PASSWORD).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

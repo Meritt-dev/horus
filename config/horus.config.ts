@@ -96,10 +96,8 @@ export default defineConfig({
     },
   ],
 
-  // Plain Postgres (docker-compose maps it to localhost:5433). No pgvector in v0.
-  database: {
-    url: process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus',
-  },
+  // Local persistence is embedded (bundled pglite at ~/.horus/horus.db) — no `database`
+  // block needed. Teams that need shared state use Horus Cloud, not a self-run Postgres.
 
   models: {
     reasoning: 'claude-opus-4-8',

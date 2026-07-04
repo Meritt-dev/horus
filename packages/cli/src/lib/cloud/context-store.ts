@@ -6,9 +6,9 @@
  *
  * CACHE, NOT A CONNECTION OR AN AUTH BOUNDARY (HOR-298): the stored cloud
  * org/workspace/project IDs+slugs are a convenience cache of *which* Cloud project
- * this repo syncs to. They do NOT change the CLI's local database connection:
+ * this repo syncs to. They do NOT change the CLI's local persistence:
  * `context: "cloud"` selects the `/v1` API sync target only — the CLI engine still
- * uses its local Postgres (`DATABASE_URL`, default port 5433/db `horus`) for all
+ * uses its embedded local database (bundled pglite at `~/.horus/horus.db`) for all
  * local execution state. The CLI never connects to the Cloud database, and the
  * Cloud API re-checks the caller's authorization server-side on every sync/write,
  * so a stale or hand-edited `cloud.json` can never grant access or repoint the DB.

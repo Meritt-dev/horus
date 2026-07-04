@@ -222,11 +222,10 @@ export default defineConfig({
       ],
     },
   ],
-  database: {
-    url: process.env.DATABASE_URL ?? 'postgresql://horus:horus@localhost:5433/horus',
-  },
 });
 ```
+
+Local persistence is **embedded** (a bundled pglite database at `~/.horus/horus.db`) — no database to run or configure. Teams that need shared state use **Horus Cloud** (an API mirror), not a self-run Postgres.
 
 **No connector runs without an explicit project/env scope** — there are no global connector defaults.
 
@@ -258,8 +257,9 @@ The curl installer downloads the Horus CLI from GitHub Releases and installs the
 | Requirement | Role |
 | --- | --- |
 | Node.js 22+ | Horus CLI runtime (the installed binary needs Node.js) |
-| Postgres 16 | Investigation audit store — run locally via `docker compose up -d` or use a managed instance |
 | Python 3.11+ + uv/pip | Required only for the Horus source intelligence backend |
+
+The investigation audit store is **embedded** (bundled pglite, zero setup) — there is no Postgres to install. Teams that need shared state use **Horus Cloud**.
 
 The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or any production system. Runtime connectors are added per-project after install via `horus connect`.
 
@@ -281,7 +281,6 @@ If something goes wrong after install, run `horus doctor` and see **[horus.sh/do
 
 ```bash
 pnpm install
-docker compose up -d                  # Postgres 16 on localhost:5433
 pnpm build                            # builds apps/horus/dist/index.cjs
 
 # Per repository: start the source intelligence host and stitch queue boundaries
@@ -298,7 +297,7 @@ node apps/horus/dist/index.cjs status
 # No-services startup check (version, help, doctor):
 ./scripts/smoke-test.sh apps/horus/dist/index.cjs
 
-# Full end-to-end flow (requires Postgres from docker compose up -d):
+# Full end-to-end flow (uses the embedded pglite store — no services to start):
 ./scripts/e2e-smoke.sh apps/horus/dist/index.cjs
 ```
 

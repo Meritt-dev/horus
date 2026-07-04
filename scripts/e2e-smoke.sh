@@ -3,10 +3,10 @@
 #
 # Exercises the full v0.1 user path from init through postmortem.
 # Does NOT require Elasticsearch, MongoDB, Grafana, or any production system.
-# Postgres is required for the investigate → replay → postmortem chain.
+# Local persistence is embedded (bundled pglite) — no database to run.
 #
 # Phases:
-#   1. Startup   — version, help, doctor (no Postgres needed)
+#   1. Startup   — version, help, doctor (no services needed)
 #   2. User path — init, investigate (git-only), investigations, replay, postmortem
 #
 # Usage:
@@ -68,7 +68,7 @@ check_exit0() {
   fi
 }
 
-# ── Phase 1: startup (no Postgres required) ───────────────────────────────────
+# ── Phase 1: startup (no services required) ───────────────────────────────────
 
 printf '\n  %s\n' "$(bold 'Horus v0.1 end-to-end smoke flow')"
 printf '  %s\n' "$(dim "binary: ${HORUS[*]}")"
@@ -88,28 +88,25 @@ step "doctor (no live services required)"
 check_output "doctor prints readiness header" "Horus readiness check" doctor
 check_output "doctor shows CLI version"       "CLI version"           doctor
 
-# ── Phase 2: full user path (requires Postgres) ───────────────────────────────
+# ── Phase 2: full user path (embedded pglite store — no external services) ────
 
-step "Postgres connectivity"
-DB_URL="${DATABASE_URL:-postgresql://horus:horus@localhost:5433/horus}"
-DB_AVAIL=0
-
-# Probe: run `horus investigations` — it connects to Postgres and returns quickly
+step "Local store (embedded pglite)"
+# Local persistence is embedded (bundled pglite) — always available; DATABASE_URL is
+# ignored at runtime. `horus investigations` exercises the store; only a build shipped
+# without pglite's assets degrades to display-only.
+DB_AVAIL=1
 PROBE_OUT="$("${HORUS[@]}" investigations 2>&1 || true)"
-if ! printf '%s' "$PROBE_OUT" | grep -qiE 'ECONNREFUSED|connection refused|ETIMEDOUT'; then
-  DB_AVAIL=1
-  ok "Postgres reachable ($DB_URL)"
-elif printf '%s' "$PROBE_OUT" | grep -qF 'No investigations yet'; then
-  DB_AVAIL=1
-  ok "Postgres reachable ($DB_URL) — no investigations yet"
-else
-  fail "Postgres not reachable — run: docker compose up -d"
+if printf '%s' "$PROBE_OUT" | grep -qF 'HORUS_DB_UNAVAILABLE'; then
+  DB_AVAIL=0
+  fail "Embedded database unavailable — this build ships no local persistence"
   printf '    %s\n' "$(dim "$(printf '%s' "$PROBE_OUT" | head -2)")"
+else
+  ok "Embedded database ready (~/.horus/horus.db)"
 fi
 
 if [ "$DB_AVAIL" -eq 0 ]; then
-  note "Skipping init/investigate/replay/postmortem: Postgres unavailable."
-  note "Start Postgres with: docker compose up -d"
+  note "Skipping init/investigate/replay/postmortem: embedded store unavailable."
+  note "Install via npm or Homebrew for local persistence."
   note "Then re-run: $0 ${1:-}"
 else
   # Decide whether to create a temp config or reuse one that already exists.
@@ -140,7 +137,7 @@ else
   fi
 
   # -- investigate --
-  # The command may produce a full report (with source connector + Postgres) or a
+  # The command may produce a full report (with a source connector) or a
   # degraded response (no connector configured). Both are acceptable here — we verify
   # the command runs and does not crash, and then use `horus investigations` to find
   # any saved investigation for the replay/postmortem chain.
