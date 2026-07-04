@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.5] — 2026-07-04
+
+- **Implementations win over their `.d.ts` type declarations.** When a symbol exists both as real code and as a `.d.ts` re-declaration, `explain`/`search`/`blast-radius` now land on the implementation instead of the declaration stub — dayjs `Dayjs` resolves to the `class` in `src/index.js` (not a plugin `.d.ts`), commander `Option` to `lib/option.js` (not `typings/index.d.ts`). A `.d.ts` only wins when it is the sole match (a genuinely type-only export). Takes effect immediately — no re-index needed.
+
 ## [0.21.4] — 2026-07-04
 
 Resolver: a library's real API is found even when its export has no name. (Batch B2.)
