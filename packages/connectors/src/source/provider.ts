@@ -32,7 +32,7 @@ export class SourceCodeProvider implements CodeProvider {
   // --- helpers -------------------------------------------------------------
 
   private nodeToSymbol(n: SourceNode): Symbol {
-    return {
+    const sym: Symbol = {
       id: n.id,
       name: n.name,
       filePath: n.filePath,
@@ -42,6 +42,8 @@ export class SourceCodeProvider implements CodeProvider {
       language: n.language,
       className: n.className,
     };
+    if (n.aliasOf) sym.aliasOf = n.aliasOf; // B2: export-alias redirect target
+    return sym;
   }
 
   /** Map a serialized graph node to a `Symbol`, coercing the host's `0` line sentinel to undefined. */
@@ -56,6 +58,7 @@ export class SourceCodeProvider implements CodeProvider {
     if (n.className) sym.className = n.className;
     if (n.signature) sym.signature = n.signature;
     if (n.language) sym.language = n.language;
+    if (n.aliasOf) sym.aliasOf = n.aliasOf; // B2: export-alias redirect target
     return sym;
   }
 

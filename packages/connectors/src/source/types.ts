@@ -11,6 +11,8 @@ export interface SourceNode {
   isDead: boolean;
   isEntryPoint: boolean;
   isExported: boolean;
+  /** B2: for a public export-alias stub, the impl symbol name it redirects to (else absent). */
+  aliasOf?: string | null;
 }
 
 export interface SourceSearchResult {

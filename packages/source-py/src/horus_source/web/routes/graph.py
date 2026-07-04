@@ -29,6 +29,9 @@ def _serialize_node(node: GraphNode) -> dict:
         "isDead": node.is_dead,
         "isEntryPoint": node.is_entry_point,
         "isExported": node.is_exported,
+        # B2: the impl a public export-alias stub redirects to (e.g. preact `Component` →
+        # `BaseComponent`). Emitted so the engine's resolver can follow it (Symbol.aliasOf).
+        "aliasOf": node.properties.get("alias_of"),
     }
 
 

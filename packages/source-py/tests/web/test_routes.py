@@ -196,6 +196,7 @@ class TestGraphEndpoint:
         assert "isDead" in n
         assert "isEntryPoint" in n
         assert "isExported" in n
+        assert "aliasOf" in n  # B2: export-alias redirect target (None unless it's an alias stub)
 
         # Verify edge serialization shape
         e = data["edges"][0]
