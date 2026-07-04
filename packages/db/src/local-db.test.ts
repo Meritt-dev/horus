@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createLocalDb, shouldUseEmbeddedDb } from './client.js';
+import { createLocalDb, shouldUseEmbeddedDb, isDbUnavailable, DB_UNAVAILABLE_PREFIX } from './client.js';
 import { listInvestigations, listInvestigationsWithReports, getLastInvestigationId } from './investigations.js';
 import { investigations, incidentMemory, memoryItem, memoryLink, memoryAudit } from './schema.js';
 import { eq } from 'drizzle-orm';
@@ -36,6 +36,29 @@ describe('shouldUseEmbeddedDb (driver selection)', () => {
 
   it('uses postgres-js for a non-default configured url', () => {
     expect(shouldUseEmbeddedDb('postgresql://u:p@db.example.com:5432/app')).toBe(false);
+  });
+});
+
+describe('isDbUnavailable (display-only fallback detection)', () => {
+  it('matches errors thrown by the unavailable-db fallback', () => {
+    // The exact message the Proxy in unavailableDbHandle throws on any property access.
+    const err = new Error(
+      `${DB_UNAVAILABLE_PREFIX}: the embedded local database is not available in this build.`,
+    );
+    expect(isDbUnavailable(err)).toBe(true);
+  });
+
+  it('matches the asset-missing pre-check error too', () => {
+    const err = new Error(`${DB_UNAVAILABLE_PREFIX}: embedded database asset missing (pglite.wasm).`);
+    expect(isDbUnavailable(err)).toBe(true);
+  });
+
+  it('does not match unrelated errors or non-Error values', () => {
+    expect(isDbUnavailable(new Error('connection refused'))).toBe(false);
+    expect(isDbUnavailable(new Error('the db was HORUS_DB_UNAVAILABLE'))).toBe(false); // prefix only
+    expect(isDbUnavailable('HORUS_DB_UNAVAILABLE: string, not Error')).toBe(false);
+    expect(isDbUnavailable(undefined)).toBe(false);
+    expect(isDbUnavailable(null)).toBe(false);
   });
 });
 

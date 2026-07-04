@@ -78,6 +78,26 @@ export function shouldUseEmbeddedDb(url: string | undefined): boolean {
 }
 
 /**
+ * Stable prefix on every error thrown by the display-only fallback db (the Proxy in
+ * `unavailableDbHandle`) and by the bundle asset pre-check (`assertEmbeddedAssetsPresent`).
+ * Commands match on this — via `isDbUnavailable` — to degrade gracefully instead of
+ * crashing when a build ships without pglite's assets. Keep it in sync with both throw
+ * sites below.
+ */
+export const DB_UNAVAILABLE_PREFIX = 'HORUS_DB_UNAVAILABLE';
+
+/**
+ * True when an error originated from the display-only fallback db — i.e. this build ships
+ * without pglite's embedded assets (the single-file GitHub download). A command that only
+ * uses the db for optional enrichment (queue topology, incident memory) catches THIS to
+ * skip the db-backed part and complete, rather than surfacing a hard failure. Any other
+ * error is a genuine fault and must still propagate.
+ */
+export function isDbUnavailable(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(DB_UNAVAILABLE_PREFIX);
+}
+
+/**
  * A `DbHandle` that does no persistence. Returned when the embedded pglite database
  * cannot be opened — e.g. a packaging variant that ships the bundle WITHOUT pglite's
  * WASM/FS assets next to it (the GitHub single-file download), so `new PGlite()` fails.

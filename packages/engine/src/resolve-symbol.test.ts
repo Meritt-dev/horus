@@ -226,6 +226,38 @@ describe('one resolver, four commands', () => {
     }
   });
 
+  it('degrades to a db-less report when the local db is unavailable (single-file build)', async () => {
+    // A build without pglite's assets hands the engine a display-only db that throws
+    // HORUS_DB_UNAVAILABLE on any access. blast-radius must still complete — no async
+    // queue boundaries — and flag the degradation, not crash the whole report.
+    const unavailableDb = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('HORUS_DB_UNAVAILABLE: embedded database asset missing (pglite.wasm).');
+        },
+      },
+    ) as unknown as HorusDb;
+    const code = providerFor({ hijack: pool, 'Reply.hijack': [] }, pool);
+    const report = await analyzeBlastRadius('hijack', { code, db: unavailableDb });
+    expect(report!.seed.id).toBe(method.id);
+    expect(report!.dbUnavailable).toBe(true);
+    expect(report!.asyncDownstream).toEqual([]);
+    expect(report!.asyncUpstream).toEqual([]);
+  });
+
+  it('surfaces a non-db error rather than swallowing it', async () => {
+    // Only HORUS_DB_UNAVAILABLE degrades; a real query failure must still propagate.
+    const brokenDb = new Proxy(
+      {},
+      { get() { throw new Error('relation "queue_edges" does not exist'); } },
+    ) as unknown as HorusDb;
+    const code = providerFor({ hijack: pool, 'Reply.hijack': [] }, pool);
+    await expect(analyzeBlastRadius('hijack', { code, db: brokenDb })).rejects.toThrow(
+      'relation "queue_edges" does not exist',
+    );
+  });
+
   it('investigate-layer ranking (rankSeeds + shared qualifier) picks the same seed', () => {
     const qualifier = parseSymbolQuery('Reply.hijack');
     const top = rankSeeds(pool, ['reply', 'hijack'], undefined, false, qualifier)[0]!.symbol;

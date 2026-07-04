@@ -64,6 +64,47 @@ async function ensureBackendPinned(
   });
 }
 
+/** pglite's runtime assets — must match EMBEDDED_PGLITE_ASSETS in @horus/db's client.ts. */
+const PGLITE_ASSETS = ['pglite.wasm', 'pglite.data', 'initdb.wasm'] as const;
+
+/**
+ * Download pglite's runtime assets from the release into the binary's directory so the
+ * single-file install gains local persistence. Best-effort per asset (write-then-rename
+ * so a torn download can't leave a corrupt asset); a missing asset or failed fetch only
+ * warns — the binary already updated, and the db layer degrades to display-only.
+ */
+async function refreshPgliteAssets(
+  write: (line: string) => void,
+  release: GitHubRelease,
+  binDir: string,
+  _fetch: typeof fetch,
+): Promise<void> {
+  let placed = 0;
+  for (const name of PGLITE_ASSETS) {
+    const asset = release.assets.find((a) => a.name === name);
+    if (!asset) continue; // older releases won't carry these — skip quietly
+    try {
+      const res = await _fetch(asset.browser_download_url, {
+        headers: { 'User-Agent': `horus/${HORUS_VERSION}` },
+        redirect: 'follow',
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const dest = join(binDir, name);
+      const tmp = `${dest}.tmp-${process.pid}`;
+      writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
+      renameSync(tmp, dest);
+      placed++;
+    } catch {
+      // Leave whatever's there; the db layer degrades gracefully if incomplete.
+    }
+  }
+  if (placed === PGLITE_ASSETS.length) {
+    write(`  ${pc.green('✓')} Local persistence assets refreshed.`);
+  } else if (placed > 0) {
+    write(`  ${pc.yellow('!')} Some local persistence assets could not be refreshed (${placed}/${PGLITE_ASSETS.length}).`);
+  }
+}
+
 const RELEASES_API = 'https://api.github.com/repos/meritt-dev/horus/releases/latest';
 
 interface GitHubRelease {
@@ -289,6 +330,13 @@ export async function runUpdate(opts: {
       }
     }
   }
+
+  // Refresh pglite's runtime assets alongside the binary so local persistence
+  // (incident memory, `horus ask`, queue topology) works on the single-file install.
+  // The binary loads them as siblings via import.meta.url; place each next to it.
+  // Best-effort: a failure only means this build stays display-only — never abort the
+  // update (the binary itself already swapped successfully).
+  await refreshPgliteAssets(write, release, dirname(binaryPath), _fetch);
 
   // Bring the source backend to the version of the release we just installed —
   // NOT the stale compiled-in pin of this still-running old process (HOR-350).

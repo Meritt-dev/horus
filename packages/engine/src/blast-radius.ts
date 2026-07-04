@@ -1,6 +1,6 @@
 import type { CodeProvider } from '@horus/connectors';
 import type { Symbol } from '@horus/core';
-import { listQueueEdges, type HorusDb } from '@horus/db';
+import { listQueueEdges, isDbUnavailable, type HorusDb } from '@horus/db';
 import { rankSeeds, parseNamedSymbols, resolveSeedSymbol, type ResolutionKind } from './seeds.js';
 
 export interface AsyncDependency {
@@ -25,6 +25,12 @@ export interface BlastRadiusReport {
   criticality: 'low' | 'medium' | 'high';
   summary: string;
   note: string;
+  /**
+   * True when the local database was unavailable (a build shipped without pglite's
+   * assets), so the async queue-boundary enrichment was skipped. The command surfaces a
+   * dim note; the source-graph blast radius itself is unaffected.
+   */
+  dbUnavailable: boolean;
 }
 
 export async function analyzeBlastRadius(
@@ -67,7 +73,18 @@ export async function analyzeBlastRadius(
   // downstream = callers by depth = affected if the seed fails
   const downstream: { depth: number; symbols: Symbol[] }[] = impact.byDepth;
 
-  const edges = await listQueueEdges(deps.db, { project: deps.project });
+  // Queue edges are the only db-backed enrichment here. A build that ships without
+  // pglite's assets (the single-file download) hands us a display-only db that throws
+  // HORUS_DB_UNAVAILABLE on access — degrade to no async boundaries rather than crash
+  // the whole blast-radius report; the source-graph radius is unaffected.
+  let edges: Awaited<ReturnType<typeof listQueueEdges>> = [];
+  let dbUnavailable = false;
+  try {
+    edges = await listQueueEdges(deps.db, { project: deps.project });
+  } catch (err) {
+    if (!isDbUnavailable(err)) throw err;
+    dbUnavailable = true;
+  }
 
   // asyncDownstream: seed is the producer -> workers are downstream
   const asyncDownstreamMap = new Map<string, AsyncDependency>();
@@ -141,5 +158,6 @@ export async function analyzeBlastRadius(
     criticality,
     summary,
     note,
+    dbUnavailable,
   };
 }

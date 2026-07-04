@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment, filterQueueEdges } from '@horus/core';
 import { openDb } from '@horus/db';
-import { listQueueEdges } from '@horus/db';
+import { listQueueEdges, isDbUnavailable } from '@horus/db';
 import type { QueueEdge } from '@horus/db';
 import { queueForEnv, queueDatabaseForEnv } from '@horus/connectors';
 import type { QueueCounts } from '@horus/connectors';
@@ -31,6 +31,10 @@ What is not proven
 
 Next checks
 - Exact Horus commands or Redis/BullMQ checks to inspect next`;
+
+/** Dim note shown when this build ships without local persistence (single-file download). */
+const DB_UNAVAILABLE_NOTE =
+  'local persistence unavailable in this build — static queue topology skipped (install via npm or Homebrew for it; --live still reads Redis)';
 
 export async function runQueues(
   name: string | undefined,
@@ -62,7 +66,18 @@ export async function runQueues(
       } catch {
         // Unresolvable — leave undefined (unscoped) to preserve prior behavior.
       }
-      const rawRows = await listQueueEdges(db, { project, queueName: name });
+      // The static topology lives in the local database. A build that ships without
+      // pglite's assets (the single-file download) hands us a display-only db that throws
+      // HORUS_DB_UNAVAILABLE on access — degrade to no static topology (and a dim note)
+      // rather than crash; --live still works, since it reads Redis via connectors.
+      let rawRows: QueueEdge[] = [];
+      let dbUnavailable = false;
+      try {
+        rawRows = await listQueueEdges(db, { project, queueName: name });
+      } catch (err) {
+        if (!isDbUnavailable(err)) throw err;
+        dbUnavailable = true;
+      }
       // Queue-edge hygiene (the canonical rules live in @horus/core's queue-hygiene
       // module, shared with the engine's architecture view and the stitcher's write
       // path): drop fixture-only edges, implausible names, and generic residue so
@@ -83,7 +98,9 @@ export async function runQueues(
       if (opts.json) {
         const topology = topologyToJson(buildQueueMap(rows));
         const out: Record<string, unknown> = { project: project ?? null, topology };
-        if (allFiltered) {
+        if (dbUnavailable) {
+          out['note'] = DB_UNAVAILABLE_NOTE;
+        } else if (allFiltered) {
           out['note'] =
             'No production queues detected — the indexed queue edges look like test fixtures or implausible names.';
         } else if (rawRows.length === 0 && hasFreshIndex) {
@@ -103,7 +120,9 @@ export async function runQueues(
 
       if (rows.length === 0) {
         console.log(
-          name !== undefined
+          dbUnavailable
+            ? pc.dim(`  ${DB_UNAVAILABLE_NOTE}`)
+            : name !== undefined
             ? pc.dim(`  No static topology for "${name}" — it may be dynamically registered; showing live state below.`)
             : allFiltered
               ? pc.dim(

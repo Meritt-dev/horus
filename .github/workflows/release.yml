@@ -104,6 +104,17 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: test -f apps/horus/dist/horus_source.whl
 
+      - name: Assert pglite assets are in dist
+        if: steps.check.outputs.exists == 'false'
+        # The single-file binary loads these three assets as siblings at runtime for local
+        # persistence (incident memory, `horus ask`, queue topology). tsup copies them into
+        # dist during the CLI build; publish them as release assets so install.sh / `horus
+        # update` can place them next to the downloaded binary.
+        run: |
+          test -f apps/horus/dist/pglite.wasm
+          test -f apps/horus/dist/pglite.data
+          test -f apps/horus/dist/initdb.wasm
+
       - name: Smoke test
         if: steps.check.outputs.exists == 'false'
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
@@ -171,6 +182,9 @@ jobs:
             "apps/horus/dist/horus-${RELEASE_TAG}" \
             "apps/horus/dist/horus-${RELEASE_TAG}.sha256" \
             "apps/horus/dist/horus_source.whl" \
+            "apps/horus/dist/pglite.wasm" \
+            "apps/horus/dist/pglite.data" \
+            "apps/horus/dist/initdb.wasm" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz.sha256" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-x86_64.tar.gz" \

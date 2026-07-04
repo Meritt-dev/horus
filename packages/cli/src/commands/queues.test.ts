@@ -17,6 +17,8 @@ vi.mock('../lib/freshness.js', () => ({
 vi.mock('@horus/db', () => ({
   openDb: vi.fn(),
   listQueueEdges: vi.fn(),
+  // Real predicate: the command must recognise the display-only fallback's error prefix.
+  isDbUnavailable: (err: unknown) => err instanceof Error && err.message.startsWith('HORUS_DB_UNAVAILABLE'),
 }));
 
 vi.mock('@horus/core', async (importOriginal) => {
@@ -301,6 +303,42 @@ describe('runQueues — read-path hygiene and gated --live guidance', () => {
     expect(code).toBe(0);
     expect(out).toContain('queues-role Redis connector in the config');
     expect(out).not.toContain('horus connect redis');
+  });
+
+  it('degrades to display-only when the local db is unavailable (single-file build)', async () => {
+    mockEnv();
+    vi.mocked(listQueueEdges).mockRejectedValue(
+      new Error('HORUS_DB_UNAVAILABLE: embedded database asset missing (pglite.wasm).'),
+    );
+
+    const code = await runQueues(undefined, {});
+    const out = stripAnsi(logs.join('\n'));
+
+    expect(code).toBe(0); // completes rather than crashing
+    expect(out).toContain('local persistence unavailable in this build');
+  });
+
+  it('--json carries the db-unavailable note and stays valid JSON', async () => {
+    mockEnv();
+    vi.mocked(listQueueEdges).mockRejectedValue(
+      new Error('HORUS_DB_UNAVAILABLE: embedded database asset missing (pglite.wasm).'),
+    );
+
+    const code = await runQueues(undefined, { json: true });
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(logs.join('\n')) as { topology: unknown[]; note?: string };
+    expect(parsed.topology).toEqual([]);
+    expect(parsed.note).toContain('local persistence unavailable in this build');
+  });
+
+  it('a non-db error still fails the command (only HORUS_DB_UNAVAILABLE degrades)', async () => {
+    mockEnv();
+    vi.mocked(listQueueEdges).mockRejectedValue(new Error('relation "queue_edges" does not exist'));
+
+    const code = await runQueues(undefined, {});
+
+    expect(code).toBe(1);
   });
 
   it('--live --json without a queue connector keeps stdout valid JSON with the statement', async () => {

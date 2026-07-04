@@ -8,6 +8,10 @@ import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
 import { failCommand } from '../lib/command-failure.js';
 
+/** Dim note shown when this build ships without local persistence (single-file download). */
+const DB_UNAVAILABLE_NOTE =
+  'local persistence unavailable in this build — async queue-boundary enrichment skipped (install via npm or Homebrew for it)';
+
 export const BLAST_RADIUS_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
 
 Evidence used
@@ -107,10 +111,14 @@ export async function runBlastRadius(
         const obj = JSON.parse(blastRadiusToJSON(r)) as Record<string, unknown>;
         if (fuzzyNotice !== null) obj.notice = fuzzyNotice;
         if (ambiguityNotice !== null) obj.ambiguityNotice = ambiguityNotice;
+        if (r.dbUnavailable) obj.dbUnavailableNote = DB_UNAVAILABLE_NOTE;
         obj.nextSteps = route({ command: 'blast-radius', seedName: r.seed.name, query });
         console.log(JSON.stringify(obj, null, 2));
       } else {
         console.log(renderBlastRadius(r));
+        // Single-file build without pglite assets: async queue boundaries couldn't be
+        // read. Note it once, dim — the source-graph radius above still stands.
+        if (r.dbUnavailable) console.log(pc.dim(`  ${DB_UNAVAILABLE_NOTE}`));
         if (opts.ai) {
           const result = await renderAiInterpretation({
             command: 'blast-radius',

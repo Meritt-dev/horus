@@ -44,6 +44,8 @@ export {
   openDb,
   shouldUseEmbeddedDb,
   localDbPath,
+  isDbUnavailable,
+  DB_UNAVAILABLE_PREFIX,
   type HorusDb,
   type DbHandle,
 } from './client.js';
