@@ -24,6 +24,7 @@ from horus_source.core.graph.model import (
     RelType,
     generate_id,
 )
+from horus_source.core.ingestion.alias_stub import synthesize_alias_stub
 from horus_source.core.ingestion.walker import FileEntry
 from horus_source.core.parsers.base import LanguageParser, ParseResult
 from horus_source.core.parsers.go_lang import GoParser
@@ -284,40 +285,31 @@ def _emit_export_aliases(
 
         existing = symbols_by_name.get(public_name)
         if existing is not None:
+            # A real symbol already carries the public name (regardless of label);
+            # reuse it rather than synthesizing a stub, and just link it to the impl.
             public_id = existing[1]
-        else:
-            public_id = generate_id(impl_label, file_entry.path, public_name)
-            graph.add_node(
-                GraphNode(
-                    id=public_id,
-                    label=impl_label,
-                    name=public_name,
-                    file_path=file_entry.path,
-                    start_line=impl_symbol.start_line,
-                    end_line=impl_symbol.end_line,
-                    content=impl_symbol.content,
-                    signature=impl_symbol.signature,
-                    language=file_entry.language,
-                    is_exported=True,
-                    properties={"synthesized_name": True, "alias_of": impl_name},
-                )
-            )
+            if public_id == impl_id:
+                continue
             graph.add_relationship(
                 GraphRelationship(
-                    id=f"defines:{file_id}->{public_id}",
-                    type=RelType.DEFINES,
-                    source=file_id,
-                    target=public_id,
+                    id=f"exports_alias:{public_id}->{impl_id}",
+                    type=RelType.EXPORTS_ALIAS,
+                    source=public_id,
+                    target=impl_id,
                 )
             )
-
-        if public_id == impl_id:
-            continue
-        graph.add_relationship(
-            GraphRelationship(
-                id=f"exports_alias:{public_id}->{impl_id}",
-                type=RelType.EXPORTS_ALIAS,
-                source=public_id,
-                target=impl_id,
+        else:
+            synthesize_alias_stub(
+                graph,
+                label=impl_label,
+                public_name=public_name,
+                file_path=file_entry.path,
+                file_id=file_id,
+                start_line=impl_symbol.start_line,
+                end_line=impl_symbol.end_line,
+                content=impl_symbol.content,
+                signature=impl_symbol.signature,
+                language=file_entry.language,
+                impl_id=impl_id,
+                impl_name=impl_name,
             )
-        )

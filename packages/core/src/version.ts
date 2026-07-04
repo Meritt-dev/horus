@@ -20,3 +20,16 @@ export const PINNED_SOURCE_VERSION: string = HORUS_VERSION;
  * and reuse. Compatibility checks treat an unenforced pin as matching.
  */
 export const SOURCE_PIN_ENFORCED: boolean = HORUS_VERSION !== 'dev';
+
+/**
+ * The analysis-capability version this CLI expects an on-disk source index to carry
+ * (D6). Compared against the `capability_version` stamp horus-source writes into
+ * `.horus/source/meta.json`. A stamp below this means the index predates a newer
+ * traversal capability (currently: inheritance-aware blast radius, B3.4) and
+ * inheritance-dependent commands may be incomplete until a reindex.
+ *
+ * MUST be kept in lockstep with `INDEX_CAPABILITY_VERSION` in
+ * `packages/source-py/src/horus_source/capabilities.py` — bump both together (part of
+ * the release checklist, same class as the pinned-source version).
+ */
+export const EXPECTED_INDEX_CAPABILITY = 2;

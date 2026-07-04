@@ -469,6 +469,37 @@ class TestCliReadPathEndpoints:
         assert results[0]["nodeId"] == "function:src/app.py:main"
         assert results[0]["startLine"] == 4
         assert results[0]["endLine"] == 12
+        assert results[0]["aliasOf"] is None  # a plain symbol carries no alias
+
+    def test_symbols_exact_carries_alias_of(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        # HOR-465: the resolver's exact-name lookup runs through THIS endpoint, so a
+        # synthesized re-export stub (`export { BaseComponent as Component }`) must expose
+        # aliasOf here — not only on /graph — or the redirect to the impl never fires.
+        from horus_source.core.storage.base import SearchResult
+
+        stub_hit = SearchResult(
+            node_id="function:src/index.js:Component",
+            score=1.0,
+            node_name="Component",
+            file_path="src/index.js",
+            label="function",
+        )
+        mock_storage.exact_name_search.return_value = [stub_hit]
+        mock_storage.get_node.return_value = _sample_node(
+            node_id="function:src/index.js:Component",
+            name="Component",
+            file_path="src/index.js",
+            start_line=9,
+            end_line=9,
+            properties={"synthesized_name": True, "alias_of": "BaseComponent"},
+        )
+
+        response = client.get("/symbols/exact", params={"name": "Component", "limit": 10})
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert results[0]["aliasOf"] == "BaseComponent"
 
     def test_symbols_by_label(self, mock_storage: MagicMock, client: TestClient) -> None:
         mock_storage.symbols_by_label.return_value = [
@@ -1229,7 +1260,11 @@ class TestImpactEndpoint:
         response = client.get("/impact/function:src/app.py:main")
         assert response.status_code == 200
         mock_storage.traverse_with_depth.assert_called_once_with(
-            "function:src/app.py:main", 3, direction="callers", product_only=True
+            "function:src/app.py:main",
+            3,
+            direction="callers",
+            product_only=True,
+            rel_types=("calls", "extends", "implements"),
         )
 
     def test_impact_include_tests_opt_in(
@@ -1241,8 +1276,34 @@ class TestImpactEndpoint:
         response = client.get("/impact/function:src/app.py:main?include_tests=true")
         assert response.status_code == 200
         mock_storage.traverse_with_depth.assert_called_once_with(
-            "function:src/app.py:main", 3, direction="callers", product_only=False
+            "function:src/app.py:main",
+            3,
+            direction="callers",
+            product_only=False,
+            rel_types=("calls", "extends", "implements"),
         )
+
+    def test_impact_follows_inheritance_edges(
+        self, mock_storage: MagicMock, client: TestClient
+    ) -> None:
+        # Blast radius always requests CALLS + EXTENDS + IMPLEMENTS so a base type's
+        # subclasses/implementors land in the affected set (B3.4).
+        target = _sample_node(
+            node_id="class:src/base.py:TSchema", name="TSchema", file_path="src/base.py"
+        )
+        subtype = _sample_node(
+            node_id="class:src/str.py:TString", name="TString", file_path="src/str.py"
+        )
+        mock_storage.get_node.return_value = target
+        mock_storage.traverse_with_depth.return_value = [(subtype, 1)]
+
+        response = client.get("/impact/class:src/base.py:TSchema")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["affected"] == 1
+        assert data["depths"]["1"][0]["name"] == "TString"
+        _, kwargs = mock_storage.traverse_with_depth.call_args
+        assert kwargs["rel_types"] == ("calls", "extends", "implements")
 
 
 class TestEventsEndpoint:

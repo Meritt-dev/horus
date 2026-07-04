@@ -7,6 +7,7 @@ import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
 import { failCommand } from '../lib/command-failure.js';
+import { printCapabilityHint } from '../lib/capability-hint.js';
 
 /** Dim note shown when this build ships without local persistence (single-file download). */
 const DB_UNAVAILABLE_NOTE =
@@ -119,6 +120,9 @@ export async function runBlastRadius(
         // Single-file build without pglite assets: async queue boundaries couldn't be
         // read. Note it once, dim — the source-graph radius above still stands.
         if (r.dbUnavailable) console.log(pc.dim(`  ${DB_UNAVAILABLE_NOTE}`));
+        // D6: a class/interface seed against a pre-inheritance-traversal index may be
+        // missing its subclasses/implementors — nudge a reindex (one dim line, never blocks).
+        printCapabilityHint(r.seed.id, { json: opts.json });
         if (opts.ai) {
           const result = await renderAiInterpretation({
             command: 'blast-radius',

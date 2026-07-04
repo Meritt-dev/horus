@@ -32,6 +32,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from horus_source import __version__
+from horus_source.capabilities import INDEX_CAPABILITY_VERSION
 from horus_source.core.diff import diff_branches, format_diff
 from horus_source.core.embeddings.embedder import _DEFAULT_MODEL, EMBEDDING_SCHEME_VERSION
 from horus_source.core.ingestion.pipeline import PipelineResult, run_pipeline
@@ -180,6 +181,11 @@ def _build_meta(result: "PipelineResult", repo_path: Path) -> dict:  # noqa: F82
         # serving an empty/unsearchable store that never self-heals.
         "store_backend": backend_name(),
         "store_format_version": STORE_FORMAT_VERSION,
+        # Analysis-capability stamp (D6): which traversal capabilities the host had when
+        # it wrote this index. A lower value than the CLI's EXPECTED_INDEX_CAPABILITY means
+        # inheritance-dependent commands (blast-radius/explain) may be incomplete until a
+        # reindex — the CLI hints/triggers one. Independent of store_format_version.
+        "capability_version": INDEX_CAPABILITY_VERSION,
         "embedding_model": _DEFAULT_MODEL,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "embedding_scheme_version": EMBEDDING_SCHEME_VERSION,
@@ -192,10 +198,20 @@ def _build_meta(result: "PipelineResult", repo_path: Path) -> dict:  # noqa: F82
             "dead_code": result.dead_code,
             "coupled_pairs": result.coupled_pairs,
             "embeddings": result.embeddings,
+            "embeddings_expected": result.embeddings_expected,
         },
-        # False until the (possibly background) embedding phase persists vectors — lets the next
-        # host start detect an interrupted index and re-embed instead of serving FTS-only (HOR-375).
-        "embeddings_complete": result.embeddings > 0,
+        # State-derived completeness (B1.2): TRUE only when every embeddable-with-text node
+        # has a persisted vector (embeddings >= embeddings_expected). A partially-embedded
+        # index no longer reads "complete" just because one vector landed — the next host
+        # start resumes the missing remainder instead of serving FTS-only (HOR-375). The
+        # ``expected==0 and symbols==0`` arm covers a genuinely empty repo (nothing to
+        # embed = trivially complete); a DEFERRED/background phase (skipped, so expected==0)
+        # on a repo WITH symbols stays False so the host knows to finish embeddings.
+        "embeddings_complete": (
+            result.embeddings_expected > 0
+            and result.embeddings >= result.embeddings_expected
+        )
+        or (result.embeddings_expected == 0 and result.symbols == 0),
         # Positive marker that the STRUCTURAL index (symbols + edges) fully built and persisted.
         # Distinguishes a healthy "structural-ready, embeddings-pending" index (serve degraded /
         # FTS-only) from the HOR-433 kùzu-era empty store (0 symbols/embeddings, no such marker —
@@ -1176,7 +1192,13 @@ def _run_background_embeddings(
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["stats"]["embeddings"] = bg_result.embeddings
-            meta["embeddings_complete"] = True
+            meta["stats"]["embeddings_expected"] = bg_result.embeddings_expected
+            # State-derived (B1.2): complete only when every expected vector persisted, so an
+            # interrupted background pass leaves the index resumable rather than falsely complete.
+            meta["embeddings_complete"] = (
+                bg_result.embeddings_expected > 0
+                and bg_result.embeddings >= bg_result.embeddings_expected
+            ) or bg_result.embeddings_expected == 0
             meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         except Exception:
             logger.debug("Failed to update meta.json with embedding count", exc_info=True)

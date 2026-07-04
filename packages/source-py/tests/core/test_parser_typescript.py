@@ -663,6 +663,41 @@ class TestExportAliasEdges:
         result = js_parser.parse(code, "src/index.js")
         assert result.export_aliases == []
 
+    def test_reexport_with_rename_captures_module(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # preact: export { BaseComponent as Component } from './component'
+        code = "export { BaseComponent as Component } from './component';\n"
+        result = js_parser.parse(code, "src/index.js")
+        assert len(result.reexport_aliases) == 1
+        ra = result.reexport_aliases[0]
+        assert ra.public_name == "Component"
+        assert ra.impl_name == "BaseComponent"
+        assert ra.module == "./component"
+        assert ra.line == 1
+        # A cross-module rename must NOT land in same-file export_aliases.
+        assert ("Component", "BaseComponent") not in result.export_aliases
+        assert "Component" in result.exports
+
+    def test_same_file_rename_stays_in_export_aliases(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # No `from` clause — the impl is in this file, so it stays a same-file alias.
+        code = "class BaseComponent {}\nexport { BaseComponent as Component };\n"
+        result = js_parser.parse(code, "src/index.js")
+        assert ("Component", "BaseComponent") in result.export_aliases
+        assert result.reexport_aliases == []
+
+    def test_reexport_without_rename_no_alias(
+        self, js_parser: TypeScriptParser
+    ) -> None:
+        # `export { X } from './m'` — a real X already exists in ./m; no stub needed.
+        code = "export { Component } from './component';\n"
+        result = js_parser.parse(code, "src/index.js")
+        assert result.reexport_aliases == []
+        assert result.export_aliases == []
+        assert "Component" in result.exports
+
 
 class TestPrototypeMethodAlias:
     """B2: `X.prototype.<m> = <identifier>` is a prototype METHOD on X, not a bare

@@ -80,6 +80,40 @@ describe('SourceCodeProvider.searchSymbols — exact-name wins (HOR-208)', () =>
   });
 });
 
+describe('SourceCodeProvider.searchSymbols — carries aliasOf for redirect (HOR-465)', () => {
+  it('propagates aliasOf from an exact-name stub so the resolver can redirect to the impl', async () => {
+    const client = {
+      // A cross-module re-export stub: `export { BaseComponent as Component } from './component'`.
+      async exactSymbols(name: string) {
+        if (name.toLowerCase() === 'component') {
+          return [
+            {
+              nodeId: 'function:src/index.js:Component',
+              name: 'Component',
+              filePath: 'src/index.js',
+              label: 'function',
+              startLine: 9,
+              endLine: 9,
+              aliasOf: 'BaseComponent',
+            },
+          ];
+        }
+        return [];
+      },
+      async search() {
+        return [];
+      },
+      async nodesLines() {
+        return {};
+      },
+    } as unknown as SourceHttpClient;
+    const provider = new SourceCodeProvider(client);
+    const results = await provider.searchSymbols('Component', 5);
+    expect(results[0]?.name).toBe('Component');
+    expect(results[0]?.aliasOf).toBe('BaseComponent');
+  });
+});
+
 describe('SourceCodeProvider.searchSymbols — public API outranks private internals (dogfood N9)', () => {
   function n9Client(): SourceHttpClient {
     return {

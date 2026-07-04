@@ -7,6 +7,7 @@ supporting data classes for search results and embeddings.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -129,6 +130,7 @@ class StorageBackend(Protocol):
         direction: str = "callers",
         *,
         product_only: bool = False,
+        rel_types: Sequence[str] | None = None,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs.
 
@@ -137,6 +139,13 @@ class StorageBackend(Protocol):
         ``product_only=True``, non-product nodes (per
         :mod:`horus_source.core.classify`) are neither reported nor traversed
         through — a test node cuts the walk.
+
+        ``rel_types`` selects which edge kinds the walk follows: ``None``
+        (the default) means CALLS-only, preserving every existing caller. For
+        blast radius the route passes ``(CALLS, EXTENDS, IMPLEMENTS)`` so a
+        base type's ``"callers"`` walk also yields its subclasses/implementors
+        (incoming EXTENDS/IMPLEMENTS edges), which then expand transitively
+        through CALLS in the same BFS (B3.4).
         """
         ...
 
@@ -267,6 +276,16 @@ class StorageBackend(Protocol):
         Used by the host-start self-heal to detect a store that serves 0 embeddings while
         meta records symbols — a stale/legacy/interrupted index that must be rebuilt
         rather than served unsearchable (HOR-433).
+        """
+        ...
+
+    def get_embedded_node_ids(self) -> set[str]:
+        """Return the node_ids that already have a persisted vector.
+
+        The diff key for resumable embedding (B1.2): an interrupted/retried
+        run computes ONLY the target ids not already in this set instead of
+        re-embedding the whole graph. Best-effort — returns an empty set on
+        failure, degrading to a full re-embed rather than raising.
         """
         ...
 

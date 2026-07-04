@@ -106,6 +106,7 @@ export class SourceCodeProvider implements CodeProvider {
       };
       if (h.startLine > 0) sym.startLine = h.startLine;
       if (h.endLine > 0) sym.endLine = h.endLine;
+      if (h.aliasOf) sym.aliasOf = h.aliasOf; // B2/HOR-465: carry alias so the resolver can redirect to the impl
       return sym;
     });
 

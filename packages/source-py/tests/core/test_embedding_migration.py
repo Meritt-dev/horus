@@ -23,8 +23,10 @@ def test_no_reembed_when_matching() -> None:
 
 
 def test_ensure_current_embeddings_reembeds_when_incomplete(tmp_path) -> None:
-    # HOR-375: model + scheme are CURRENT, but the index was left with embeddings:0 (an
-    # interrupted background embed). Must re-embed to restore semantic search + mark complete.
+    # HOR-375 + B1.2: model + scheme CURRENT but the index was left incomplete (an
+    # interrupted background embed). The resumable branch embeds only the missing vectors
+    # (embed_missing + upsert), NOT the whole graph, and marks complete once every expected
+    # vector is persisted.
     source_dir = tmp_path / ".horus" / "source"
     source_dir.mkdir(parents=True)
     meta_path = source_dir / "meta.json"
@@ -33,20 +35,59 @@ def test_ensure_current_embeddings_reembeds_when_incomplete(tmp_path) -> None:
             "embedding_model": _DEFAULT_MODEL,
             "embedding_scheme_version": EMBEDDING_SCHEME_VERSION,
             "embeddings_complete": False,
-            "stats": {"symbols": 100, "embeddings": 0},
+            "stats": {"symbols": 100, "embeddings": 40},
         }) + "\n",
         encoding="utf-8",
     )
     storage = MagicMock()
     storage.load_graph.return_value = object()
-    with patch("horus_source.core.ingestion.watcher.embed_graph", return_value={"n1": [0.1]}):
+    storage.get_embedded_node_ids.return_value = {f"n{i}" for i in range(40)}
+    storage.count_embeddings.return_value = 100
+    with patch(
+        "horus_source.core.ingestion.watcher.embed_missing", return_value=(100, 60)
+    ) as em, patch("horus_source.core.ingestion.watcher.embed_graph") as eg:
         migrated = ensure_current_embeddings(storage, tmp_path)
 
     assert migrated is True
-    storage.store_embeddings.assert_called_once()
+    em.assert_called_once()
+    eg.assert_not_called()  # resumable branch does NOT recompute the whole graph
+    assert em.call_args.kwargs["persist"] == storage.upsert_embeddings
+    storage.store_embeddings.assert_not_called()
     updated = json.loads(meta_path.read_text(encoding="utf-8"))
     assert updated["embeddings_complete"] is True
-    assert updated["stats"]["embeddings"] == 1
+    assert updated["stats"]["embeddings"] == 100
+    assert updated["stats"]["embeddings_expected"] == 100
+
+
+def test_ensure_current_embeddings_stays_incomplete_when_still_short(tmp_path) -> None:
+    # B1.2: a resume that persists SOME but not all target vectors must remain incomplete
+    # so the next host start resumes the remainder rather than reading "complete".
+    source_dir = tmp_path / ".horus" / "source"
+    source_dir.mkdir(parents=True)
+    meta_path = source_dir / "meta.json"
+    meta_path.write_text(
+        json.dumps({
+            "embedding_model": _DEFAULT_MODEL,
+            "embedding_scheme_version": EMBEDDING_SCHEME_VERSION,
+            "embeddings_complete": False,
+            "stats": {"symbols": 100, "embeddings": 40},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    storage = MagicMock()
+    storage.load_graph.return_value = object()
+    storage.get_embedded_node_ids.return_value = {f"n{i}" for i in range(40)}
+    storage.count_embeddings.return_value = 70  # still short of 100 (e.g. interrupted again)
+    with patch(
+        "horus_source.core.ingestion.watcher.embed_missing", return_value=(100, 30)
+    ):
+        migrated = ensure_current_embeddings(storage, tmp_path)
+
+    assert migrated is True
+    updated = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert updated["embeddings_complete"] is False
+    assert updated["stats"]["embeddings"] == 70
+    assert updated["stats"]["embeddings_expected"] == 100
 
 
 def test_ensure_current_embeddings_zero_with_symbols_does_not_mark_complete(tmp_path) -> None:
@@ -68,7 +109,11 @@ def test_ensure_current_embeddings_zero_with_symbols_does_not_mark_complete(tmp_
     )
     storage = MagicMock()
     storage.load_graph.return_value = object()
-    with patch("horus_source.core.ingestion.watcher.embed_graph", return_value={}):
+    storage.get_embedded_node_ids.return_value = set()
+    storage.count_embeddings.return_value = 0  # store still serves zero vectors after the run
+    with patch(
+        "horus_source.core.ingestion.watcher.embed_missing", return_value=(100, 100)
+    ):
         result = ensure_current_embeddings(storage, tmp_path)
 
     assert result is False
@@ -96,7 +141,11 @@ def test_ensure_current_embeddings_empty_repo_marks_complete(tmp_path) -> None:
     )
     storage = MagicMock()
     storage.load_graph.return_value = object()
-    with patch("horus_source.core.ingestion.watcher.embed_graph", return_value={}):
+    storage.get_embedded_node_ids.return_value = set()
+    storage.count_embeddings.return_value = 0
+    with patch(
+        "horus_source.core.ingestion.watcher.embed_missing", return_value=(0, 0)
+    ):
         result = ensure_current_embeddings(storage, tmp_path)
 
     assert result is True
@@ -198,3 +247,31 @@ def test_ensure_current_embeddings_noop_when_model_and_scheme_match(tmp_path) ->
     assert migrated is False
     storage.load_graph.assert_not_called()
     storage.store_embeddings.assert_not_called()
+
+
+def test_ensure_current_embeddings_scheme_change_recomputes_all(tmp_path) -> None:
+    # B1.2 correctness guard: on a model/scheme CHANGE the old code_vec vectors live in a
+    # different space and MUST all be overwritten. Branch A recomputes the WHOLE graph
+    # (embed_graph + store_embeddings) — it must NOT take the resumable missing-only diff,
+    # which would treat old-space vectors as "already embedded" and never overwrite them.
+    source_dir = tmp_path / ".horus" / "source"
+    source_dir.mkdir(parents=True)
+    (source_dir / "meta.json").write_text(
+        json.dumps({"embedding_model": "BAAI/bge-small-en-v1.5"}) + "\n",
+        encoding="utf-8",
+    )
+    storage = MagicMock()
+    storage.load_graph.return_value = object()
+    with patch(
+        "horus_source.core.ingestion.watcher.embed_graph",
+        return_value={"node-1": [0.1, 0.2]},
+    ) as eg, patch(
+        "horus_source.core.ingestion.watcher.embed_missing"
+    ) as em:
+        migrated = ensure_current_embeddings(storage, tmp_path)
+
+    assert migrated is True
+    eg.assert_called_once()  # full recompute
+    em.assert_not_called()  # NOT the resumable diff
+    storage.store_embeddings.assert_called_once()
+    storage.get_embedded_node_ids.assert_not_called()

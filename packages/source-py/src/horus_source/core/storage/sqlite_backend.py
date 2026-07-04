@@ -23,6 +23,7 @@ import logging
 import re
 import sqlite3
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -719,6 +720,7 @@ class SqliteBackend:
         direction: str = "callers",
         *,
         product_only: bool = False,
+        rel_types: Sequence[str] | None = None,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs (1-based depth).
 
@@ -732,14 +734,22 @@ class SqliteBackend:
         are neither reported nor expanded — the traversal cannot tunnel through a
         test node. Classification lives in Python, so this path uses a per-level
         frontier BFS instead of the CTE.
+
+        ``rel_types`` selects the edge kinds to follow (``None`` → CALLS-only,
+        back-compat). For blast radius the route passes CALLS+EXTENDS+IMPLEMENTS:
+        a ``"callers"`` walk then follows incoming EXTENDS/IMPLEMENTS at a base
+        node to reach its subclasses/implementors, which expand via CALLS in the
+        same BFS (B3.4).
         """
         conn = self._require_conn()
         depth = min(int(depth), self._MAX_BFS_DEPTH)
         if depth <= 0:
             return []
 
+        types = tuple(rel_types) if rel_types else (RelType.CALLS.value,)
+
         if product_only:
-            return self._traverse_product_only(start_id, depth, direction)
+            return self._traverse_product_only(start_id, depth, direction, types)
 
         if direction == "callers":
             # follow incoming CALLS: neighbour = source of an edge pointing at current
@@ -749,19 +759,20 @@ class SqliteBackend:
             step = "e.target"
             join_on = "e.source = tr.id"
 
+        type_placeholders = ",".join("?" for _ in types)
         cte = (
             f"WITH RECURSIVE tr(id, depth) AS ( "
             f"  SELECT ?, 0 "
             f"  UNION "
             f"  SELECT {step}, tr.depth + 1 "
             f"  FROM tr JOIN edges e ON {join_on} "
-            f"  WHERE e.rel_type = ? AND tr.depth < ? "
+            f"  WHERE e.rel_type IN ({type_placeholders}) AND tr.depth < ? "
             f") "
             f"SELECT id, MIN(depth) AS d FROM tr WHERE id <> ? GROUP BY id"
         )
         with self._lock:
             rows = conn.execute(
-                cte, (start_id, RelType.CALLS.value, depth, start_id)
+                cte, (start_id, *types, depth, start_id)
             ).fetchall()
         if not rows:
             return []
@@ -775,18 +786,22 @@ class SqliteBackend:
         return result
 
     def _traverse_product_only(
-        self, start_id: str, depth: int, direction: str
+        self, start_id: str, depth: int, direction: str, types: tuple[str, ...]
     ) -> list[tuple[GraphNode, int]]:
         """Frontier BFS that reports and expands ONLY product nodes.
 
         The recursive CTE cannot call the Python path classifier, so product mode
         walks one hop per query (depth <= 10, so at most 10 queries). A non-product
         node is dropped from the frontier: depth cannot cross through a test file.
+
+        ``types`` selects the edge kinds each hop follows (CALLS-only by default;
+        CALLS+EXTENDS+IMPLEMENTS for inheritance-aware blast radius — B3.4).
         """
         conn = self._require_conn()
         step_col, match_col = (
             ("source", "target") if direction == "callers" else ("target", "source")
         )
+        type_placeholders = ",".join("?" for _ in types)
 
         visited: set[str] = {start_id}
         frontier: list[str] = [start_id]
@@ -796,10 +811,11 @@ class SqliteBackend:
             placeholders = ",".join("?" for _ in frontier)
             query = (
                 f"SELECT DISTINCT e.{step_col} FROM edges e "
-                f"WHERE e.rel_type = ? AND e.{match_col} IN ({placeholders})"
+                f"WHERE e.rel_type IN ({type_placeholders}) "
+                f"AND e.{match_col} IN ({placeholders})"
             )
             with self._lock:
-                rows = conn.execute(query, (RelType.CALLS.value, *frontier)).fetchall()
+                rows = conn.execute(query, (*types, *frontier)).fetchall()
             next_ids = sorted(r[0] for r in rows if r[0] not in visited)
             if not next_ids:
                 break
@@ -1088,6 +1104,22 @@ class SqliteBackend:
         except Exception:
             logger.debug("count_embeddings failed", exc_info=True)
             return 0
+
+    def get_embedded_node_ids(self) -> set[str]:
+        """Return the node_ids that already have a persisted vector in ``code_vec``.
+
+        The diff key for resumable embedding (B1.2). Defensive like
+        :meth:`count_embeddings`: any failure returns an empty set so the caller
+        degrades to a full re-embed rather than raising.
+        """
+        conn = self._require_conn()
+        try:
+            with self._lock:
+                rows = conn.execute("SELECT node_id FROM code_vec").fetchall()
+            return {row[0] for row in rows}
+        except Exception:
+            logger.debug("get_embedded_node_ids failed", exc_info=True)
+            return set()
 
     def count_callables_in_processes(self) -> tuple[int, int]:
         conn = self._require_conn()

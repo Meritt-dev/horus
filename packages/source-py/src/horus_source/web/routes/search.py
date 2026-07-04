@@ -135,6 +135,11 @@ def symbols_exact(
                 "label": hit.label,
                 "startLine": node.start_line if node else 0,
                 "endLine": node.end_line if node else 0,
+                # Export-alias redirect target (B2/HOR-465). The resolver's exact-name
+                # lookup runs through THIS endpoint, so aliasOf must ride along here —
+                # not only on /graph — or a cross-module `export { Impl as Public }`
+                # stub can never redirect to its implementation.
+                "aliasOf": node.properties.get("alias_of") if node else None,
             }
         )
     return {"results": results}

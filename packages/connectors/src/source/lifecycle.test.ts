@@ -33,6 +33,7 @@ import {
   analyzeRepo,
   indexNeedsReanalyze,
   indexEmbeddingsPending,
+  indexCapabilityStale,
   resolveAnalyzeTimeoutMs,
   countRepoFiles,
 } from './lifecycle.js';
@@ -484,6 +485,58 @@ describe('indexNeedsReanalyze — detect a stale/legacy/incompatible index (HOR-
     try {
       writeMeta(root, { embeddings_complete: true, stats: { symbols: 50, embeddings: 50 } });
       expect(indexNeedsReanalyze(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('indexCapabilityStale — D6 capability-versioned reindex policy', () => {
+  function makeRepo(): string {
+    return mkdtempSync(join(tmpdir(), 'horus-cap-'));
+  }
+  function writeMeta(root: string, meta: Record<string, unknown>): void {
+    const dir = join(root, '.horus', 'source');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta), 'utf8');
+  }
+
+  it('parses capability_version and reports a below-expected stamp as stale', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'sqlite', capability_version: 1 });
+      expect(indexCapabilityStale(root, 2)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a MISSING stamp (pre-D6 host) as capability 0 → stale', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'sqlite' });
+      expect(indexCapabilityStale(root, 2)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is NOT stale when the stamp meets or exceeds the expectation', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'sqlite', capability_version: 2 });
+      expect(indexCapabilityStale(root, 2)).toBe(false);
+      writeMeta(root, { store_backend: 'sqlite', capability_version: 3 });
+      expect(indexCapabilityStale(root, 2)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when there is no index/meta at all (nothing to complete)', () => {
+    const root = makeRepo();
+    try {
+      expect(indexCapabilityStale(root, 2)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

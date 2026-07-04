@@ -109,6 +109,8 @@ interface SourceMeta {
   storeBackend?: string;
   embeddingsComplete?: boolean;
   structuralComplete?: boolean;
+  /** Analysis-capability stamp (D6) — the traversal capabilities the host had when it wrote this index. */
+  capabilityVersion?: number;
   stats?: { symbols?: number; embeddings?: number };
 }
 
@@ -131,6 +133,10 @@ function readSourceMeta(root: string): SourceMeta | null {
         typeof j['structural_complete'] === 'boolean'
           ? (j['structural_complete'] as boolean)
           : undefined,
+      capabilityVersion:
+        typeof j['capability_version'] === 'number'
+          ? (j['capability_version'] as number)
+          : undefined,
       stats: stats ? { symbols: stats['symbols'], embeddings: stats['embeddings'] } : undefined,
     };
   } catch {
@@ -150,6 +156,21 @@ function readSourceMeta(root: string): SourceMeta | null {
 export function indexEmbeddingsPending(root: string): boolean {
   const meta = readSourceMeta(root);
   return meta?.structuralComplete === true && meta?.embeddingsComplete === false;
+}
+
+/**
+ * Whether the on-disk index was built by a host below the current analysis capability
+ * (D6). Read from the DURABLE meta — a `capability_version` stamp lower than `expected`
+ * means inheritance-dependent commands (blast-radius/explain) may answer incompletely
+ * (e.g. a base type's subclasses/implementors missing from its blast radius) until a
+ * reindex rebuilds the graph edges. An index with no stamp at all (written by a pre-D6
+ * host) is treated as capability 0 → stale. Returns false when there is no index/meta
+ * (nothing to complete) so callers only nudge when there is a real, out-of-date index.
+ */
+export function indexCapabilityStale(root: string, expected: number): boolean {
+  const meta = readSourceMeta(root);
+  if (meta === null) return false;
+  return (meta.capabilityVersion ?? 0) < expected;
 }
 
 /** Whether the index has usable semantic vectors (mirror of freshness.semanticSearchReady). */

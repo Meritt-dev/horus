@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -451,6 +452,25 @@ class KuzuBackend:
         )
         return self._query_nodes(query, parameters={"nid": node_id})
 
+    def get_heritage_dependents(self, node_id: str) -> list[GraphNode]:
+        """Return the subclasses/implementors of *node_id* (incoming EXTENDS/IMPLEMENTS).
+
+        Mirrors :meth:`get_callers` for inheritance edges: a base type's
+        dependents are the nodes pointing at it via ``extends``/``implements``.
+        Backs inheritance-aware blast radius (B3.4) on the kùzu backend.
+        """
+        self._require_conn()
+        table = _table_for_id(node_id)
+        if table is None:
+            return []
+
+        query = (
+            f"MATCH (child)-[r:CodeRelation]->(base:{table}) "
+            f"WHERE base.id = $nid AND r.rel_type IN ['extends', 'implements'] "
+            f"RETURN child.*"
+        )
+        return self._query_nodes(query, parameters={"nid": node_id})
+
     def get_callees(self, node_id: str) -> list[GraphNode]:
         """Return nodes called by the node identified by *node_id*."""
         self._require_conn()
@@ -518,6 +538,7 @@ class KuzuBackend:
         direction: str = "callers",
         *,
         product_only: bool = False,
+        rel_types: Sequence[str] | None = None,
     ) -> list[tuple[GraphNode, int]]:
         """BFS traversal returning ``(node, hop_depth)`` pairs.
 
@@ -529,11 +550,22 @@ class KuzuBackend:
             product_only: When True, non-product nodes (tests/docs/examples per
                 the shared classifier) are neither reported nor expanded — the
                 traversal is CUT at a test node, it cannot tunnel through one.
+            rel_types: Edge kinds to follow (``None`` → CALLS-only, back-compat).
+                When it requests EXTENDS/IMPLEMENTS, a ``"callers"`` walk also
+                enqueues incoming heritage dependents (subclasses/implementors)
+                alongside callers, mirroring the SQLite backend (B3.4).
         """
         self._require_conn()
         depth = min(depth, self._MAX_BFS_DEPTH)
         if _table_for_id(start_id) is None:
             return []
+
+        types = set(rel_types) if rel_types else {RelType.CALLS.value}
+        follow_calls = RelType.CALLS.value in types
+        follow_heritage = (
+            direction == "callers"
+            and (RelType.EXTENDS.value in types or RelType.IMPLEMENTS.value in types)
+        )
 
         visited: set[str] = set()
         result_list: list[tuple[GraphNode, int]] = []
@@ -553,11 +585,15 @@ class KuzuBackend:
                     result_list.append((node, current_depth))
 
             if current_depth < depth:
-                neighbors = (
-                    self.get_callers(current_id)
-                    if direction == "callers"
-                    else self.get_callees(current_id)
-                )
+                neighbors: list[GraphNode] = []
+                if follow_calls:
+                    neighbors.extend(
+                        self.get_callers(current_id)
+                        if direction == "callers"
+                        else self.get_callees(current_id)
+                    )
+                if follow_heritage:
+                    neighbors.extend(self.get_heritage_dependents(current_id))
                 for neighbor in neighbors:
                     if neighbor.id not in visited:
                         queue.append((neighbor.id, current_depth + 1))
@@ -713,6 +749,19 @@ class KuzuBackend:
             logger.debug("count_embeddings failed", exc_info=True)
             return 0
         return int(rows[0][0] or 0) if rows else 0
+
+    def get_embedded_node_ids(self) -> set[str]:
+        """Return the node_ids present in the Embedding table (resumable diff, B1.2).
+
+        Best-effort: any failure returns an empty set, degrading the deprecated
+        kùzu backend to a full re-embed rather than raising in the resume driver.
+        """
+        try:
+            rows = self._exec_rows("MATCH (e:Embedding) RETURN e.node_id")
+        except Exception:
+            logger.debug("get_embedded_node_ids failed", exc_info=True)
+            return set()
+        return {row[0] for row in rows if row and row[0] is not None}
 
     def count_callables_in_processes(self) -> tuple[int, int]:
         total = 0

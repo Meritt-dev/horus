@@ -81,6 +81,23 @@ class TypeRef:
     line: int
     param_name: str = ""  # for param types: the parameter name
 
+@dataclass(frozen=True)
+class ReexportAlias:
+    """A cross-module re-export-with-rename — ``export { X as Y } from './mod'``.
+
+    ``public_name`` is the exposed export name (``Y``); ``impl_name`` is the
+    differently-named implementation symbol (``X``) defined in ``module``; and
+    ``line`` is the 1-based line of the re-export statement in the RE-EXPORTING
+    file. Unlike :attr:`ParseResult.export_aliases` (same-file renames), the impl
+    lives in another module, so cross-file resolution — and thus the module
+    specifier plus an honest re-export line — is required to synthesize the stub.
+    """
+
+    public_name: str
+    impl_name: str
+    module: str
+    line: int
+
 @dataclass
 class ParseResult:
     """Complete parse result for a single file."""
@@ -100,6 +117,12 @@ class ParseResult:
     # ``parser_phase`` turns each pair into an ``EXPORTS_ALIAS`` edge (public -> impl)
     # so a search on the public name resolves to the real implementation.
     export_aliases: list[tuple[str, str]] = field(default_factory=list)
+    # Cross-module re-export-with-rename aliases — ``export { X as Y } from './mod'``.
+    # These carry the module specifier and an honest re-export line so a POST-import
+    # ingestion phase can resolve the impl (``X``) in another file and synthesize a
+    # searchable stub named ``Y`` in THIS file. Same-file renames stay in
+    # ``export_aliases``; only the ``from``-clause rename case lands here.
+    reexport_aliases: list[ReexportAlias] = field(default_factory=list)
 
 class LanguageParser(ABC):
     """Base interface for language-specific parsers."""

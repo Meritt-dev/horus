@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from horus_source.core.graph.model import RelType
 from horus_source.core.ingestion.pipeline import run_pipeline
 from horus_source.mcp.resources import get_dead_code_symbols
 from horus_source.web.routes.graph import _serialize_node
@@ -40,8 +41,19 @@ def get_impact(
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
 
+    # Blast radius always follows inheritance edges too: a base type's change
+    # affects its subclasses/implementors (incoming EXTENDS/IMPLEMENTS), which
+    # then expand transitively through CALLS in the same walk (B3.4).
     affected_with_depth = storage.traverse_with_depth(
-        node_id, depth, direction="callers", product_only=not include_tests
+        node_id,
+        depth,
+        direction="callers",
+        product_only=not include_tests,
+        rel_types=(
+            RelType.CALLS.value,
+            RelType.EXTENDS.value,
+            RelType.IMPLEMENTS.value,
+        ),
     )
 
     depths: dict[str, list[dict]] = defaultdict(list)
@@ -213,9 +225,15 @@ def get_health(request: Request) -> dict:
 
 @router.post("/reindex")
 async def trigger_reindex(request: Request) -> dict:
-    """Trigger a full reindex in a background thread.
+    """Trigger a reindex in a background thread.
 
     Only available when the app is started in watch mode (storage is read-write).
+
+    Accepts an optional JSON body with a ``structural_only`` (alias
+    ``defer_embeddings``) boolean. When set, the reindex rebuilds the structural
+    graph — including inheritance edges — WITHOUT re-embedding (D6). This lets the
+    `horus update`-triggered background reindex complete inheritance edges cheaply
+    without paying the embedding cost.
     """
     repo_path = request.app.state.repo_path
     if repo_path is None:
@@ -223,6 +241,15 @@ async def trigger_reindex(request: Request) -> dict:
 
     if not request.app.state.watch:
         raise HTTPException(status_code=400, detail="Reindex only available in watch mode")
+
+    # Body is optional — a bare POST keeps the full (re-embedding) reindex.
+    structural_only = False
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        structural_only = bool(body.get("structural_only") or body.get("defer_embeddings"))
 
     event_listeners = request.app.state.event_listeners
     loop = asyncio.get_running_loop()
@@ -245,8 +272,12 @@ async def trigger_reindex(request: Request) -> dict:
         try:
             _broadcast({"type": "reindex_start", "data": {}})
             storage = request.app.state.storage
-            run_pipeline(repo_path, storage=storage)
-            logger.info("Reindex completed for %s", repo_path)
+            run_pipeline(repo_path, storage=storage, embeddings=not structural_only)
+            logger.info(
+                "Reindex completed for %s (structural_only=%s)",
+                repo_path,
+                structural_only,
+            )
             success = True
         except Exception:
             logger.error("Reindex failed", exc_info=True)

@@ -397,7 +397,7 @@ class TestRunPipelineEmbeddings:
         self, rich_repo: Path, rich_storage: KuzuBackend
     ) -> None:
         with patch(
-            "horus_source.core.ingestion.pipeline.embed_graph",
+            "horus_source.core.ingestion.pipeline.embed_missing",
             side_effect=RuntimeError("model not found"),
         ):
             _, result = run_pipeline(rich_repo, rich_storage)

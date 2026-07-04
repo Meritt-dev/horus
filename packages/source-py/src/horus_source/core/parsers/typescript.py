@@ -19,6 +19,7 @@ from horus_source.core.parsers.base import (
     ImportInfo,
     LanguageParser,
     ParseResult,
+    ReexportAlias,
     SymbolInfo,
     TypeRef,
 )
@@ -199,8 +200,15 @@ class TypeScriptParser(LanguageParser):
         """Handle ``export`` statements — mark exported symbol names.
 
         Handles ``export function foo()``, ``export class Bar``,
-        ``export const baz = ...``, and ``export { name1, name2 }``.
+        ``export const baz = ...``, ``export { name1, name2 }``, and
+        cross-module re-exports ``export { X as Y } from './mod'``.
         """
+        # A `from` clause makes this a re-export; the module specifier is needed
+        # to resolve the impl in another file. Read the same `source` field the
+        # import extractor uses (typescript.py `_extract_import`).
+        source_node = node.child_by_field_name("source")
+        module = self._string_value(source_node) if source_node is not None else None
+
         for child in node.children:
             if child.type in (
                 "function_declaration",
@@ -232,7 +240,20 @@ class TypeScriptParser(LanguageParser):
                             impl_name = name_node.text.decode()
                             result.exports.append(public_name)
                             if public_name != impl_name:
-                                result.export_aliases.append((public_name, impl_name))
+                                if module is not None:
+                                    # `export { X as Y } from './mod'` — the impl
+                                    # lives in another module; defer to the
+                                    # post-import re-export phase for resolution.
+                                    result.reexport_aliases.append(
+                                        ReexportAlias(
+                                            public_name=public_name,
+                                            impl_name=impl_name,
+                                            module=module,
+                                            line=node.start_point[0] + 1,
+                                        )
+                                    )
+                                else:
+                                    result.export_aliases.append((public_name, impl_name))
                         elif name_node is not None:
                             result.exports.append(name_node.text.decode())
 

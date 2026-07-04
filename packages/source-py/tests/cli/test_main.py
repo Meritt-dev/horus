@@ -665,9 +665,30 @@ class TestBuildMeta:
         res = PipelineResult()
         res.symbols = 10
         res.embeddings = 10
+        res.embeddings_expected = 10
         meta = _build_meta(res, tmp_path)
         assert meta["structural_complete"] is True
         assert meta["embeddings_complete"] is True
+
+    def test_completeness_is_state_derived_from_expected(self, tmp_path: Path) -> None:
+        # B1.2: complete means every expected vector persisted (>=), not "at least one".
+        from horus_source.cli.main import _build_meta
+        from horus_source.core.ingestion.pipeline import PipelineResult
+
+        def _complete(embeddings: int, expected: int, symbols: int = 10) -> bool:
+            res = PipelineResult()
+            res.symbols = symbols
+            res.embeddings = embeddings
+            res.embeddings_expected = expected
+            meta = _build_meta(res, tmp_path)
+            assert meta["stats"]["embeddings_expected"] == expected
+            return meta["embeddings_complete"]
+
+        assert _complete(10, 10) is True  # all expected present
+        assert _complete(4, 10) is False  # partial → incomplete, resume later
+        assert _complete(0, 0, symbols=0) is True  # empty repo: nothing to embed
+        # Deferred/background phase skipped (expected==0) on a repo WITH symbols stays False.
+        assert _complete(0, 0, symbols=10) is False
 
 
 class TestAnalyzeDeferEmbeddings:
@@ -760,8 +781,9 @@ class TestHostIndexingStructuralReadiness:
             observed["meta_at_hook"] = json.loads(
                 (source_dir / "meta.json").read_text()
             )
-            # Embeddings then complete.
+            # Embeddings then complete (real _run_embedding_phase sets both counts).
             res.embeddings = 5
+            res.embeddings_expected = 5
             return (MagicMock(), res)
 
         with patch(

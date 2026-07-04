@@ -181,6 +181,9 @@ class TestStorageBackend:
             def count_embeddings(self):
                 return 0
 
+            def get_embedded_node_ids(self):
+                return set()
+
             def count_callables_in_processes(self):
                 return (0, 0)
 

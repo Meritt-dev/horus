@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TextIO
 
 from horus_source.config.ignore import load_gitignore
-from horus_source.core.embeddings.embedder import embed_graph
+from horus_source.core.embeddings.embedder import embed_missing
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphRelationship, NodeLabel
 from horus_source.core.ingestion.calls import process_calls
@@ -41,6 +41,7 @@ from horus_source.core.ingestion.heritage import process_heritage
 from horus_source.core.ingestion.imports import build_file_index, process_imports
 from horus_source.core.ingestion.parser_phase import process_parsing
 from horus_source.core.ingestion.processes import process_processes
+from horus_source.core.ingestion.reexports import process_reexport_aliases
 from horus_source.core.ingestion.resolved import ResolvedEdge
 from horus_source.core.ingestion.structure import process_structure
 from horus_source.core.ingestion.symbol_lookup import build_name_index
@@ -61,6 +62,7 @@ class PipelineResult:
     dead_code: int = 0
     coupled_pairs: int = 0
     embeddings: int = 0
+    embeddings_expected: int = 0
     duration_seconds: float = 0.0
     incremental: bool = False
     changed_files: int = 0
@@ -110,11 +112,21 @@ def _run_embedding_phase(
     result: PipelineResult,
     report: Callable[[str, float], None],
 ) -> None:
-    """Generate and store embeddings synchronously."""
+    """Generate and store embeddings synchronously.
+
+    Uses the resumable driver (B1.2): vectors are persisted per chunk via
+    ``upsert_embeddings`` as they are produced, so a kill mid-phase leaves the
+    completed vectors durable and the next ``ensure_current_embeddings`` resumes
+    only the remainder. ``embeddings_expected`` records the full target count so
+    meta can derive a state-based completeness flag.
+    """
     try:
-        node_embeddings = embed_graph(graph)
-        storage.store_embeddings(node_embeddings)
-        result.embeddings = len(node_embeddings)
+        already = storage.get_embedded_node_ids()
+        n_target, _ = embed_missing(
+            graph, already, persist=storage.upsert_embeddings
+        )
+        result.embeddings_expected = n_target
+        result.embeddings = storage.count_embeddings()
         report("Generating embeddings", 1.0)
     except Exception:
         logging.getLogger(__name__).warning(
@@ -220,6 +232,9 @@ def run_pipeline(
 
     with _timed("Resolving imports"):
         process_imports(parse_data, graph, parallel=True)
+
+    with _timed("Resolving re-exports"):
+        process_reexport_aliases(parse_data, graph, build_file_index(graph))
 
     with _timed("Building indexes"):
         shared_labels = (
@@ -380,6 +395,10 @@ def reindex_files(
             heritage_name_index[name] = filtered
 
     process_imports(parse_data, graph, file_index=file_index)
+    # Resolve cross-module re-export renames against the full loaded graph so an
+    # impl in an unchanged target file still resolves; the synthesized stub belongs
+    # to the changed re-exporting file and is captured by the incremental filter.
+    process_reexport_aliases(parse_data, graph, file_index)
     process_calls(parse_data, graph, name_index=shared_name_index)
     process_heritage(parse_data, graph, name_index=heritage_name_index)
     process_types(parse_data, graph, name_index=shared_name_index)

@@ -73,6 +73,8 @@ export interface SourceExactSymbol {
   label: string;
   startLine: number;
   endLine: number;
+  /** Export-alias redirect target (B2/HOR-465): the impl name a synthesized stub points at. */
+  aliasOf?: string | null;
 }
 
 /** GET /api/symbols result row — symbol node for the requested label(s). */

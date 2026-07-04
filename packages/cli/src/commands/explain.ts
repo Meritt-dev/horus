@@ -5,6 +5,7 @@ import { codeForRepo } from '@horus/connectors';
 import { symbolDisplayName, route, formatRouteStep, resolveSeedSymbol, type RouteStep } from '@horus/engine';
 import { openDb, listQueueEdges } from '@horus/db';
 import { failCommand } from '../lib/command-failure.js';
+import { printCapabilityHint } from '../lib/capability-hint.js';
 
 /** Print the router's suggestions as human "Suggested next:" lines (HOR-386). */
 function printSuggested(steps: RouteStep[]): void {
@@ -198,6 +199,9 @@ async function explain(
   }
 
   renderReport(top, ctx, impact, flows, siblings);
+  // D6: explain also shows an Impact line from code.impact(). For a class/interface seed
+  // against a pre-inheritance-traversal index, nudge a reindex so subtypes aren't missing.
+  printCapabilityHint(top.id, { json: opts.json });
   return 0;
 }
 

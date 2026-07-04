@@ -244,7 +244,9 @@ describe('runUpdate — self-update backend wheel refresh', () => {
   it('REGRESSION: a failed wheel download never reuses the stale sibling wheel as the new version', async () => {
     const { installBundledBackend } = await import('../lib/bundled-backend.js');
     const { lines, code } = await capture((w) =>
-      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), false), _currentVersion: CURRENT }),
+      // _reindexCwd → the .horus-free temp dir so the D6 post-update reindex check is a
+      // hermetic no-op (never touches the dev's real index/host).
+      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), false), _currentVersion: CURRENT, _reindexCwd: dir }),
     );
     expect(code).toBe(0); // binary update itself succeeded
     const out = lines.join('\n');
@@ -267,7 +269,7 @@ describe('runUpdate — self-update backend wheel refresh', () => {
     const { readFileSync: rfs, realpathSync } = await import('node:fs');
     const { join: j, dirname: dn } = await import('node:path');
     const { lines, code } = await capture((w) =>
-      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), true), _currentVersion: CURRENT }),
+      runUpdate({ write: w, _fetch: stubFetchWithWheel(releaseWithWheel(), true), _currentVersion: CURRENT, _reindexCwd: dir }),
     );
     expect(code).toBe(0);
     expect(lines.join('\n')).toContain('Bundled backend wheel refreshed');
@@ -278,5 +280,63 @@ describe('runUpdate — self-update backend wheel refresh', () => {
     const opts = vi.mocked(installBundledBackend).mock.calls[0]![1] as Record<string, unknown>;
     expect(opts['version']).toBe(LATEST);
     expect(opts['_wheelPath']).toBe(expectedWheel);
+  });
+
+  // D6: after a successful update the new backend may carry a newer analysis capability than
+  // the local index was built with — kick a non-blocking, structural-only background reindex.
+  async function makeIndex(meta: Record<string, unknown>): Promise<string> {
+    const { mkdtempSync, mkdirSync, writeFileSync: wfs } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const root = mkdtempSync(j(tmpdir(), 'horus-idx-'));
+    mkdirSync(j(root, '.horus', 'source'), { recursive: true });
+    wfs(j(root, '.horus', 'source', 'meta.json'), JSON.stringify(meta));
+    return root;
+  }
+
+  it('D6: a stale-capability index fires a background reindex and the update still returns 0', async () => {
+    // No capability_version stamp → pre-D6 index → stale. No host.json → the detached spawn
+    // fallback (injected here) is used instead of a POST.
+    const idxRoot = await makeIndex({ store_backend: 'sqlite' });
+    const spawnReindex = vi.fn();
+    const { rmSync } = await import('node:fs');
+    try {
+      const { lines, code } = await capture((w) =>
+        runUpdate({
+          write: w,
+          _fetch: stubFetchWithWheel(releaseWithWheel(), true),
+          _currentVersion: CURRENT,
+          _reindexCwd: idxRoot,
+          _spawnReindex: spawnReindex,
+        }),
+      );
+      expect(code).toBe(0);
+      expect(spawnReindex).toHaveBeenCalledWith(idxRoot);
+      expect(lines.join('\n')).toContain('refreshing source index in the background');
+    } finally {
+      rmSync(idxRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('D6: a fresh-capability index fires NO reindex', async () => {
+    // Stamp at/above the expectation → nothing to complete → no reindex.
+    const idxRoot = await makeIndex({ store_backend: 'sqlite', capability_version: 999 });
+    const spawnReindex = vi.fn();
+    const { rmSync } = await import('node:fs');
+    try {
+      const { code } = await capture((w) =>
+        runUpdate({
+          write: w,
+          _fetch: stubFetchWithWheel(releaseWithWheel(), true),
+          _currentVersion: CURRENT,
+          _reindexCwd: idxRoot,
+          _spawnReindex: spawnReindex,
+        }),
+      );
+      expect(code).toBe(0);
+      expect(spawnReindex).not.toHaveBeenCalled();
+    } finally {
+      rmSync(idxRoot, { recursive: true, force: true });
+    }
   });
 });

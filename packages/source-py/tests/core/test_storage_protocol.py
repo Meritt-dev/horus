@@ -287,6 +287,83 @@ class TestTraverseProductOnly:
         assert {n.name for n, _ in pairs} == {"prod_caller", "test_caller", "deep_prod"}
 
 
+class TestTraverseInheritance:
+    """Blast-radius traversal follows incoming EXTENDS/IMPLEMENTS when requested (B3.4)."""
+
+    _RELS = (RelType.CALLS.value, RelType.EXTENDS.value, RelType.IMPLEMENTS.value)
+
+    def _hierarchy(self, backend: StorageBackend) -> dict[str, str]:
+        # A (base class) <-EXTENDS- B (subclass) <-CALLS- caller
+        # IFace (interface) <-IMPLEMENTS- C
+        base = _make_node(label=NodeLabel.CLASS, name="A", file_path="src/base.py")
+        sub = _make_node(label=NodeLabel.CLASS, name="B", file_path="src/sub.py")
+        caller = _make_node(name="use_b", file_path="src/app.py")
+        iface = _make_node(label=NodeLabel.INTERFACE, name="IFace", file_path="src/i.py")
+        impl = _make_node(label=NodeLabel.CLASS, name="C", file_path="src/impl.py")
+        backend.add_nodes([base, sub, caller, iface, impl])
+        backend.add_relationships([
+            _make_rel(sub.id, base.id, RelType.EXTENDS),
+            _make_rel(caller.id, sub.id, RelType.CALLS),
+            _make_rel(impl.id, iface.id, RelType.IMPLEMENTS),
+        ])
+        return {"A": base.id, "B": sub.id, "caller": caller.id,
+                "IFace": iface.id, "C": impl.id}
+
+    def test_subclass_in_blast_radius_transitively(self, backend: StorageBackend) -> None:
+        ids = self._hierarchy(backend)
+        pairs = backend.traverse_with_depth(
+            ids["A"], depth=3, direction="callers", rel_types=self._RELS
+        )
+        by_name = {n.name: d for n, d in pairs}
+        # incoming EXTENDS reaches B, then incoming CALLS reaches its caller.
+        assert by_name == {"B": 1, "use_b": 2}
+
+    def test_implements_reaches_implementor(self, backend: StorageBackend) -> None:
+        ids = self._hierarchy(backend)
+        pairs = backend.traverse_with_depth(
+            ids["IFace"], depth=3, direction="callers", rel_types=self._RELS
+        )
+        assert {n.name for n, _ in pairs} == {"C"}
+
+    def test_default_rel_types_excludes_subtypes(self, backend: StorageBackend) -> None:
+        # Back-compat: without rel_types the walk is CALLS-only, so a base type with
+        # no direct callers has an empty radius (no EXTENDS/IMPLEMENTS traversal).
+        ids = self._hierarchy(backend)
+        pairs = backend.traverse_with_depth(ids["A"], depth=3, direction="callers")
+        assert pairs == []
+
+    def test_product_only_agrees_with_cte(self, backend: StorageBackend) -> None:
+        ids = self._hierarchy(backend)
+        cte = backend.traverse_with_depth(
+            ids["A"], depth=3, direction="callers", rel_types=self._RELS
+        )
+        product = backend.traverse_with_depth(
+            ids["A"], depth=3, direction="callers",
+            product_only=True, rel_types=self._RELS,
+        )
+        assert {n.name for n, _ in cte} == {n.name for n, _ in product}
+
+
+class TestGetEmbeddedNodeIds:
+    """The resumable-embedding diff key: which node_ids already have a vector (B1.2)."""
+
+    def test_matches_stored_subset_and_count(self, backend: StorageBackend) -> None:
+        nodes = [_make_node(name=f"e{i}", file_path=f"src/e{i}.py") for i in range(4)]
+        backend.add_nodes(nodes)
+        embedded = nodes[:2]
+        backend.upsert_embeddings([
+            NodeEmbedding(node_id=n.id, embedding=[1.0] + [0.0] * 383) for n in embedded
+        ])
+        ids = backend.get_embedded_node_ids()
+        assert ids == {n.id for n in embedded}
+        assert len(ids) == backend.count_embeddings()
+
+    def test_empty_when_nothing_embedded(self, backend: StorageBackend) -> None:
+        node = _make_node(name="lonely", file_path="src/l.py")
+        backend.add_nodes([node])
+        assert backend.get_embedded_node_ids() == set()
+
+
 class TestRemoveNodesByFile:
     def test_removes_matching(self, backend: StorageBackend) -> None:
         n1 = _make_node(name="f1", file_path="src/a.py")

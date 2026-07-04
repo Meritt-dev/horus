@@ -27,6 +27,7 @@ from horus_source.core.embeddings.embedder import (
     _DEFAULT_MODEL,
     EMBEDDING_SCHEME_VERSION,
     embed_graph,
+    embed_missing,
     embed_nodes,
 )
 from horus_source.core.graph.graph import KnowledgeGraph
@@ -111,25 +112,47 @@ def ensure_current_embeddings(storage: StorageBackend, repo_path: Path) -> bool:
 
     try:
         graph = storage.load_graph()
-        embeddings = embed_graph(graph)
-
         stats = meta.setdefault("stats", {})
         meta_symbols = int(stats.get("symbols") or 0)
 
-        # Silent-failure guard (HOR-433): meta records symbols but re-embedding produced
-        # ZERO vectors — the loaded graph is empty/mismatched (e.g. a kùzu-era store whose
-        # symbols never made it into the active SQLite store). Marking this "complete" would
-        # pin a permanently unsearchable index and report success. Instead leave it
-        # incomplete, flag a full re-analyze, and signal failure so the caller does NOT treat
-        # this as a restored index. (An empty repo legitimately has 0 symbols and is exempt.)
-        if not embeddings and meta_symbols > 0:
+        if scheme_current:
+            # Branch B (B1.2): the scheme is current but the index is incomplete —
+            # resume missing-only. Diff the target-with-text ids against the vectors
+            # already in code_vec and embed ONLY the remainder, persisting per chunk
+            # so a crash mid-resume keeps the completed vectors durable. Old vectors
+            # are in the SAME space, so keeping them is correct.
+            already = storage.get_embedded_node_ids()
+            n_target, _n_computed = embed_missing(
+                graph, already, persist=storage.upsert_embeddings
+            )
+            embedded_count = storage.count_embeddings()
+            expected = n_target
+        else:
+            # Branch A: the model/scheme CHANGED — old code_vec vectors live in a
+            # different space and MUST all be overwritten. Do NOT diff; recompute the
+            # full graph (HOR-375 / correctness).
+            embeddings = embed_graph(graph)
+            if embeddings:
+                storage.store_embeddings(embeddings)
+            embedded_count = len(embeddings)
+            expected = len(embeddings)
+
+        # Silent-failure guard (HOR-433): meta records symbols but the store still
+        # serves ZERO vectors after the run — the loaded graph is empty/mismatched
+        # (e.g. a kùzu-era store whose symbols never made it into the active SQLite
+        # store). Marking this "complete" would pin a permanently unsearchable index
+        # and report success. Instead leave it incomplete, flag a full re-analyze, and
+        # signal failure so the caller does NOT treat this as a restored index. (An
+        # empty repo legitimately has 0 symbols and is exempt.)
+        if embedded_count == 0 and meta_symbols > 0:
             logger.error(
-                "Re-embedding produced 0 vectors while meta records %s symbols — the index is "
+                "Embedding produced 0 vectors while meta records %s symbols — the index is "
                 "unsearchable and needs a full re-analyze ('horus-source analyze .'). NOT "
                 "marking embeddings complete (HOR-433).",
                 meta_symbols,
             )
             stats["embeddings"] = 0
+            stats["embeddings_expected"] = expected
             meta["embeddings_complete"] = False
             meta["needs_reanalyze"] = True
             _embedding_meta_path(repo_path).write_text(
@@ -138,14 +161,15 @@ def ensure_current_embeddings(storage: StorageBackend, repo_path: Path) -> bool:
             )
             return False
 
-        if embeddings:
-            storage.store_embeddings(embeddings)
+        # State-derived completeness: every target node has a persisted vector.
+        complete = (expected > 0 and embedded_count >= expected) or expected == 0
 
         meta["embedding_model"] = _DEFAULT_MODEL
         meta["embedding_dimensions"] = EMBEDDING_DIMENSIONS
         meta["embedding_scheme_version"] = EMBEDDING_SCHEME_VERSION
-        stats["embeddings"] = len(embeddings)
-        meta["embeddings_complete"] = True
+        stats["embeddings"] = embedded_count
+        stats["embeddings_expected"] = expected
+        meta["embeddings_complete"] = complete
         meta.pop("needs_reanalyze", None)
         _embedding_meta_path(repo_path).write_text(
             json.dumps(meta, indent=2) + "\n",
@@ -153,7 +177,7 @@ def ensure_current_embeddings(storage: StorageBackend, repo_path: Path) -> bool:
         )
         return True
     except Exception:
-        logger.warning("Full re-embedding failed", exc_info=True)
+        logger.warning("Re-embedding failed", exc_info=True)
         return False
 
 

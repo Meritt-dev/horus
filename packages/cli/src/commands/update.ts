@@ -9,12 +9,19 @@ import {
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import pc from 'picocolors';
-import { HORUS_VERSION, PINNED_SOURCE_VERSION } from '@horus/core';
-import { getSourceVersion } from '@horus/connectors';
+import { HORUS_VERSION, PINNED_SOURCE_VERSION, EXPECTED_INDEX_CAPABILITY } from '@horus/core';
+import {
+  getSourceVersion,
+  isAnalyzed,
+  indexCapabilityStale,
+  readSourceHostUrl,
+  isHostHealthy,
+} from '@horus/connectors';
 import { installBundledBackend } from '../lib/bundled-backend.js';
+import { repoRootOrCwd } from '../lib/cloud/session.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -153,6 +160,81 @@ function resolveBinaryPath(): string {
   }
 }
 
+/**
+ * Default detached, unref'd `horus init --reindex` — re-invokes THIS binary the same way it
+ * was launched (argv[0]=runtime, argv[1]=the just-updated binary) so the child runs the NEW
+ * version. `init --reindex` re-analyzes structurally and resumes embeddings in the background
+ * (B1.1), so it never blocks. stdio ignored + unref'd so it outlives the parent.
+ */
+function defaultSpawnReindex(root: string): void {
+  const runtime = process.argv[0];
+  const script = process.argv[1];
+  if (!runtime || !script) return;
+  const child = spawn(runtime, [script, 'init', '--reindex'], {
+    cwd: root,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.on('error', () => {
+    /* best-effort — a failed spawn must never surface after the update already succeeded */
+  });
+  child.unref();
+}
+
+/**
+ * D6: after a successful update, if a LOCAL index exists and its capability stamp is below the
+ * CLI's expectation (e.g. built by a pre-inheritance-traversal host), fire a NON-BLOCKING,
+ * structural-only background reindex to rebuild the graph edges — WITHOUT re-embedding.
+ *
+ * Preference order: POST `/api/reindex {structural_only:true}` against the repo's running
+ * watch-mode host when one is reachable (cheap, in-process); otherwise spawn a detached
+ * `horus init --reindex`. Single-shot and fully best-effort — any failure degrades to the
+ * printed hint and NEVER fails the update. Returns what it did (for tests).
+ */
+export async function maybeBackgroundReindex(opts: {
+  write: (line: string) => void;
+  fetchImpl?: typeof fetch;
+  /** Repo root override (tests); defaults to the discovered repo root or cwd. */
+  cwd?: string;
+  /** Detached-spawn override (tests); defaults to `horus init --reindex`. */
+  spawnReindex?: (root: string) => void;
+}): Promise<'posted' | 'spawned' | 'skipped'> {
+  const write = opts.write;
+  try {
+    const root = opts.cwd ?? repoRootOrCwd();
+    if (!isAnalyzed(root)) return 'skipped';
+    if (!indexCapabilityStale(root, EXPECTED_INDEX_CAPABILITY)) return 'skipped';
+
+    // Prefer the repo's running watch host — a structural-only reindex there completes
+    // inheritance edges in-process without a fresh analyze.
+    const hostUrl = readSourceHostUrl(root);
+    if (hostUrl && (await isHostHealthy(hostUrl))) {
+      try {
+        const doFetch = opts.fetchImpl ?? fetch;
+        const res = await doFetch(`${hostUrl}/api/reindex`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ structural_only: true }),
+        });
+        if (res.ok) {
+          write(pc.dim('  refreshing source index in the background…'));
+          return 'posted';
+        }
+        // Non-watch host (400) or transient error — fall through to a detached reindex.
+      } catch {
+        /* host unreachable mid-flight — fall through to spawn */
+      }
+    }
+
+    (opts.spawnReindex ?? defaultSpawnReindex)(root);
+    write(pc.dim('  refreshing source index in the background…'));
+    return 'spawned';
+  } catch {
+    // Never let index-refresh bookkeeping fail an otherwise-successful update.
+    return 'skipped';
+  }
+}
+
 export async function runUpdate(opts: {
   check?: boolean;
   force?: boolean;
@@ -160,6 +242,10 @@ export async function runUpdate(opts: {
   _fetch?: typeof fetch;
   /** Injectable for tests — defaults to the build-time HORUS_VERSION. */
   _currentVersion?: string;
+  /** Injectable repo root for the D6 background-reindex check (tests). */
+  _reindexCwd?: string;
+  /** Injectable detached-spawn for the D6 background reindex (tests). */
+  _spawnReindex?: (root: string) => void;
 }): Promise<number> {
   const write = opts.write ?? ((l: string) => console.log(l));
   const _fetch = opts._fetch ?? fetch;
@@ -343,5 +429,15 @@ export async function runUpdate(opts: {
   // Only a wheel confirmed downloaded from THIS release may be installed as
   // `latest`; on a failed refresh this skips with the installer fallback.
   await ensureBackendPinned(write, latest, refreshedWheelPath);
+
+  // D6: the new backend may carry a newer analysis capability (e.g. inheritance-aware
+  // blast radius) than the local index was built with. Kick a non-blocking, structural-only
+  // background reindex to complete the graph edges — best-effort, never fails the update.
+  await maybeBackgroundReindex({
+    write,
+    fetchImpl: _fetch,
+    ...(opts._reindexCwd !== undefined ? { cwd: opts._reindexCwd } : {}),
+    ...(opts._spawnReindex !== undefined ? { spawnReindex: opts._spawnReindex } : {}),
+  });
   return 0;
 }

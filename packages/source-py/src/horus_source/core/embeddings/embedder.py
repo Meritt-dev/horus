@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from horus_source.core.embeddings.cache import get_shared_cache, make_key
@@ -202,6 +203,7 @@ def _embed_node_list(
     model_name: str,
     batch_size: int,
     dimensions: int,
+    on_chunk: Callable[[list[NodeEmbedding]], None] | None = None,
 ) -> list[NodeEmbedding]:
     """Embed a list of nodes with their corresponding texts.
 
@@ -209,6 +211,12 @@ def _embed_node_list(
     and code shared across repos hit the cache instead of re-embedding. Only cache
     misses are sent to the model, still in bounded chunks so peak memory stays
     ~constant regardless of repo size.
+
+    When ``on_chunk`` is provided (resumable embedding — B1.2), each chunk's
+    :class:`NodeEmbedding` batch is handed to the callback AND its content-hash
+    cache entries are flushed *before* the next chunk is computed, so an
+    interrupted run leaves the completed vectors durable in both sinks (code_vec
+    and the cache) instead of everything landing only at end-of-run.
     """
     if not texts:
         return []
@@ -235,6 +243,15 @@ def _embed_node_list(
             if v is not None:
                 vec_by_idx[i] = v
 
+    # When streaming, persist cache-hit vectors immediately: a missing node can be
+    # a content-hash HIT (vector known) whose code_vec row was never written. Emitting
+    # these upfront makes them durable before the (expensive) miss-compute runs.
+    if on_chunk is not None and vec_by_idx:
+        hit_idx = sorted(vec_by_idx)
+        on_chunk(
+            [NodeEmbedding(node_id=nodes[i].id, embedding=vec_by_idx[i]) for i in hit_idx]
+        )
+
     miss_idx = [i for i in range(len(texts)) if i not in vec_by_idx]
     if miss_idx:
         model = _get_model(model_name)
@@ -245,14 +262,28 @@ def _embed_node_list(
         for start in range(0, len(miss_idx), _EMBED_CHUNK):
             chunk_idx = miss_idx[start : start + _EMBED_CHUNK]
             chunk_encoded = [encoded[i] for i in chunk_idx]
+            chunk_put: dict[str, list[float]] = {}
             for i, vector in zip(
                 chunk_idx, model.passage_embed(chunk_encoded, batch_size=batch_size)
             ):
                 vec = vector[:dimensions].tolist()
                 vec_by_idx[i] = vec
                 if keys is not None:
-                    to_put[keys[i]] = vec
-        if keys is not None and to_put:
+                    chunk_put[keys[i]] = vec
+            if on_chunk is not None:
+                # Per-chunk durability (B1.2): persist this chunk's vectors and flush
+                # its cache entries before computing the next, so a crash keeps done work.
+                on_chunk(
+                    [
+                        NodeEmbedding(node_id=nodes[i].id, embedding=vec_by_idx[i])
+                        for i in chunk_idx
+                    ]
+                )
+                if keys is not None and chunk_put:
+                    cache.put_many(chunk_put)
+            elif keys is not None:
+                to_put.update(chunk_put)
+        if on_chunk is None and keys is not None and to_put:
             cache.put_many(to_put)
 
     return [
@@ -304,6 +335,66 @@ def embed_graph(
         return []
 
     return _embed_node_list(nodes, texts, model_name, batch_size, dimensions)
+
+
+def embed_missing(
+    graph: KnowledgeGraph,
+    already_embedded: set[str],
+    persist: Callable[[list[NodeEmbedding]], None],
+    model_name: str = _DEFAULT_MODEL,
+    batch_size: int = _DEFAULT_BATCH_SIZE,
+    dimensions: int = _DEFAULT_DIMENSIONS,
+) -> tuple[int, int]:
+    """Embed ONLY the embeddable nodes not already in *already_embedded* (B1.2).
+
+    The resumable driver: it applies the same label/text filtering as
+    :func:`embed_graph`, computes the full set of ``target_ids`` (embeddable nodes
+    with non-empty text), and sends only those NOT in *already_embedded* to the
+    model. Each computed chunk is streamed to *persist* (e.g.
+    ``storage.upsert_embeddings``) as it is produced, so an interrupted run leaves
+    the finished vectors durable and the next call resumes on the remainder.
+
+    Args:
+        graph: The knowledge graph whose nodes should be embedded.
+        already_embedded: node_ids that already have a persisted vector (the diff
+            key, from :meth:`StorageBackend.get_embedded_node_ids`).
+        persist: Called per chunk with the freshly produced NodeEmbeddings.
+
+    Returns:
+        ``(n_target, n_computed)`` — the number of embeddable-with-text nodes and
+        how many of them were missing and just computed. Completeness is derivable
+        by the caller as ``target_ids <= already_embedded ∪ computed``.
+    """
+    all_nodes = [n for n in graph.iter_nodes() if n.label in EMBEDDABLE_LABELS]
+    if not all_nodes:
+        return (0, 0)
+
+    class_method_idx = build_class_method_index(graph)
+
+    target_count = 0
+    missing_nodes = []
+    missing_texts: list[str] = []
+    for node in all_nodes:
+        text = generate_text(node, graph, class_method_idx)
+        if not (text and text.strip()):
+            continue
+        target_count += 1
+        if node.id in already_embedded:
+            continue
+        missing_nodes.append(node)
+        missing_texts.append(text[:_MAX_TEXT_CHARS])
+
+    if missing_texts:
+        _embed_node_list(
+            missing_nodes,
+            missing_texts,
+            model_name,
+            batch_size,
+            dimensions,
+            on_chunk=persist,
+        )
+
+    return (target_count, len(missing_texts))
 
 
 def embed_nodes(
