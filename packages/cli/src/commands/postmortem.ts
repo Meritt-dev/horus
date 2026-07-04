@@ -2,7 +2,6 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import pc from 'picocolors';
 import { openDb, getInvestigation } from '@horus/db';
-import { resolveDbUrl } from '../lib/db-url.js';
 import { generatePostmortem, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 import { renderNarrative } from '@horus/ai';
@@ -38,7 +37,7 @@ export async function runPostmortem(
     if (opts._report !== undefined) {
       report = opts._report;
     } else {
-      const conn = await openDb(await resolveDbUrl(opts.config));
+      const conn = await openDb();
       sql = conn.sql;
       const { db } = conn;
       const row = await getInvestigation(db, id);

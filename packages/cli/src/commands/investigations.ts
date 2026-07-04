@@ -12,7 +12,6 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, listInvestigations } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
-import { resolveDbUrl } from '../lib/db-url.js';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { listCloudInvestigations } from '../lib/cloud/investigation-sync.js';
@@ -59,7 +58,7 @@ export async function runInvestigations(opts: {
   let localRows: Array<{ id: string; createdAt: Date; title: string | null }> = [];
   let localError: Error | null = null;
   try {
-    const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+    const { db, sql } = await openDb();
     try {
       localRows = await listInvestigations(db, opts.limit ?? 20, { project });
     } finally {

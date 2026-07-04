@@ -12,11 +12,11 @@ import type { StateProvider } from '@horus/connectors';
 const dirs: string[] = [];
 
 vi.mock('@horus/db', () => ({
-  checkDatabase: vi.fn(async () => ({
+  checkEmbeddedDb: vi.fn(async () => ({
     reachable: true,
     schemaReady: true,
-    reachableDetail: 'connected',
-    schemaDetail: 'schema ready',
+    reachableDetail: 'embedded (/home/u/.horus/horus.db)',
+    schemaDetail: '13 tables present',
   })),
 }));
 

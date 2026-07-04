@@ -26,7 +26,7 @@ import {
   type ShopifyProvider,
   type RedisServerStatus,
 } from '@horus/connectors';
-import { checkDatabase } from '@horus/db';
+import { checkEmbeddedDb } from '@horus/db';
 
 interface Check {
   label: string;
@@ -564,9 +564,8 @@ export async function runStatus(
     return 1;
   }
 
-  // --- Postgres (always shown, not project-scoped) ---
-  const dbUrl = config.database.url;
-  const h = await checkDatabase(dbUrl);
+  // --- Embedded local database (always shown, not project-scoped) ---
+  const h = await checkEmbeddedDb();
   if (json) {
     jsonOut.database = {
       reachable: h.reachable,
@@ -576,10 +575,7 @@ export async function runStatus(
     };
   } else {
     console.log(
-      `  ${mark(h.reachable)} ${pc.bold('Postgres')}  ${pc.dim(h.reachableDetail)}`,
-    );
-    console.log(
-      `  ${mark(h.schemaReady)} ${pc.bold('Schema')}    ${pc.dim(h.schemaDetail)}`,
+      `  ${mark(h.reachable)} ${pc.bold('Database')}  ${pc.dim(h.reachableDetail)}`,
     );
     console.log('');
   }

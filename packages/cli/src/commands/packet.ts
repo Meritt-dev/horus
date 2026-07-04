@@ -47,7 +47,6 @@ import type {
   MemoryVectorIndex,
   RepoIdentity,
 } from '@horus/engine';
-import { resolveDbUrl } from '../lib/db-url.js';
 import { repoRootOrCwd } from '../lib/cloud/session.js';
 import {
   computeFreshness,
@@ -231,7 +230,7 @@ export async function runPacket(
 
   // ── Saved-id path: load the persisted report, no re-query ───────────────────
   if (UUID_RE.test(hintOrId)) {
-    const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+    const { db, sql } = await openDb();
     try {
       const row = await getInvestigation(db, hintOrId);
       if (!row) {

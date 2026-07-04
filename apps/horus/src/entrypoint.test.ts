@@ -115,9 +115,11 @@ describe('source entrypoint via tsx', () => {
 // ── Machine-readable --json (agent contract) ──────────────────────────────────
 // stdout under --json must be ONE parseable JSON document — no banner, no human
 // text before or after — even on failure. Agents pipe this straight into
-// JSON.parse. DATABASE_URL points at a closed local port so DB-backed commands
-// fail fast and deterministically; cwd is the empty temp dir so no repo config
-// is discoverable.
+// JSON.parse. Local persistence is embedded (pglite): HORUS_DB_DIR points at a
+// fresh temp dir so the store is deterministically EMPTY (and never touches the
+// developer's real ~/.horus db); cwd is the empty temp dir so no repo config is
+// discoverable. DATABASE_URL is deliberately set to a closed port to prove the
+// runtime IGNORES it (embedded always).
 describe('--json stdout is pure, parseable JSON', () => {
   const CLOSED_DB = 'postgresql://horus:horus@127.0.0.1:9/horus';
 
@@ -127,7 +129,8 @@ describe('--json stdout is pure, parseable JSON', () => {
       env: {
         ...process.env,
         NODE_ENV: 'test',
-        DATABASE_URL: CLOSED_DB,
+        DATABASE_URL: CLOSED_DB, // ignored at runtime — embedded persistence always
+        HORUS_DB_DIR: join(tmpDir, 'db'),
         HORUS_CONFIG: '',
         HORUS_NO_UPDATE_CHECK: '1',
       },
@@ -148,19 +151,18 @@ describe('--json stdout is pure, parseable JSON', () => {
     expect(out.healthy).toBe(false);
   });
 
-  it('investigations --json emits valid JSON even when the audit store is unreachable', () => {
+  it('investigations --json emits valid JSON (empty embedded store) and exits 0', () => {
     const result = runJson('investigations', '--json', '--config', missingConfig);
-    expect(result.status).not.toBe(0);
-    const out = JSON.parse(result.stdout) as { error: string; investigations: unknown[] };
-    expect(typeof out.error).toBe('string');
+    expect(result.status).toBe(0);
+    const out = JSON.parse(result.stdout) as { investigations: unknown[]; count: number };
     expect(out.investigations).toEqual([]);
+    expect(out.count).toBe(0);
   });
 
-  it('scores --json emits valid JSON even when the audit store is unreachable', () => {
+  it('scores --json emits valid JSON (empty embedded store) and exits 0', () => {
     const result = runJson('scores', '--json', '--config', missingConfig);
-    expect(result.status).not.toBe(0);
-    const out = JSON.parse(result.stdout) as { error: string; scores: unknown[] };
-    expect(typeof out.error).toBe('string');
+    expect(result.status).toBe(0);
+    const out = JSON.parse(result.stdout) as { scores: unknown[] };
     expect(out.scores).toEqual([]);
   });
 

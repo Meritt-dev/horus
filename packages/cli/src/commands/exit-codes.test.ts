@@ -41,10 +41,6 @@ vi.mock('@horus/db', () => ({
   }),
   getInvestigation: vi.fn(),
   assertLocalDatabaseUrl: () => {},
-  // init's advisory prereq check — offline: unreachable, never gates exit codes.
-  checkDatabase: vi
-    .fn()
-    .mockResolvedValue({ reachable: false, schemaReady: false, schemaDetail: '' }),
 }));
 
 // init's backend probe — offline: absent, so init stays on the write-only path.

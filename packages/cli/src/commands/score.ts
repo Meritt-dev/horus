@@ -2,7 +2,6 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, getInvestigation, listInvestigationsWithReports } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
-import { resolveDbUrl } from '../lib/db-url.js';
 import {
   scoreInvestigation,
   renderScore,
@@ -39,7 +38,7 @@ export async function runScore(
     _aiProvider?: InterpretationProvider;
   },
 ): Promise<number> {
-  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb();
   try {
     const row = await getInvestigation(db, id);
     if (!row) {
@@ -95,7 +94,7 @@ export async function runScores(opts: {
   }
   let scored: Array<{ id: string; title: string | null; createdAt: Date; score: number }>;
   try {
-    const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+    const { db, sql } = await openDb();
     try {
       const rows = await listInvestigationsWithReports(db, opts.limit ?? 15, { project });
       scored = rows

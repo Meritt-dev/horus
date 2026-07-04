@@ -20,7 +20,7 @@ import {
   loadConfig,
   PINNED_SOURCE_VERSION,
 } from '@horus/core';
-import { checkDatabase, type DbHealth } from '@horus/db';
+import { checkEmbeddedDb, type DbHealth } from '@horus/db';
 import { getSourceVersion } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -49,8 +49,6 @@ Confidence / gaps
 - Which checks Horus could verify vs. which require manual confirmation`;
 
 
-const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
-
 type ReadinessStatus = 'pass' | 'warn' | 'fail';
 
 interface ReadinessCheck {
@@ -72,8 +70,8 @@ export async function runReadiness(opts?: {
   cwd?: string;
   config?: string;
   write?: (line: string) => void;
-  /** Injectable for tests — defaults to the real checkDatabase. */
-  _dbCheck?: (url: string) => Promise<DbHealth>;
+  /** Injectable for tests — defaults to the real checkEmbeddedDb. */
+  _dbCheck?: () => Promise<DbHealth>;
   /** Injectable for tests — defaults to the real getSourceVersion. */
   _sourceVersion?: () => Promise<string | null>;
   /** Injectable for tests — defaults to the real loadConfig. */
@@ -85,7 +83,7 @@ export async function runReadiness(opts?: {
 }): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
   const write = opts?.write ?? ((line: string) => console.log(line));
-  const dbChecker = opts?._dbCheck ?? checkDatabase;
+  const dbChecker = opts?._dbCheck ?? checkEmbeddedDb;
   const sourceVersionFn = opts?._sourceVersion ?? getSourceVersion;
   const configLoader = opts?._loadConfig ?? loadConfig;
   const checks: ReadinessCheck[] = [];
@@ -106,35 +104,24 @@ export async function runReadiness(opts?: {
     // No global config — DB URL falls back to env or default.
   }
 
-  // ── Database — BLOCKING ───────────────────────────────────────────────────
-  const dbUrl = globalConfig?.database.url ?? process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
-  const db = await dbChecker(dbUrl);
+  // ── Database (embedded local pglite) — BLOCKING ───────────────────────────
+  // The single local persistence tier: no user-run Postgres, DATABASE_URL ignored. Only a
+  // build shipped without pglite's assets is unavailable (persistence degrades to display-only).
+  const db = await dbChecker();
   if (!db.reachable) {
     checks.push({
       label: 'Database',
       status: 'fail',
       blocking: true,
-      detail: 'Postgres not reachable',
-      next:
-        'docker run -d --name horus-db \\\n' +
-        '        -e POSTGRES_USER=horus -e POSTGRES_PASSWORD=horus -e POSTGRES_DB=horus \\\n' +
-        '        -p 5433:5432 postgres:16\n' +
-        '      or set DATABASE_URL to an existing Postgres 16 instance',
-    });
-  } else if (!db.schemaReady) {
-    checks.push({
-      label: 'Database',
-      status: 'fail',
-      blocking: true,
-      detail: 'connected but schema not applied',
-      next: 'pnpm db migrate',
+      detail: db.reachableDetail,
+      next: 'install via npm or Homebrew for local persistence',
     });
   } else {
     checks.push({
       label: 'Database',
       status: 'pass',
       blocking: true,
-      detail: db.schemaDetail,
+      detail: db.reachableDetail,
     });
   }
 

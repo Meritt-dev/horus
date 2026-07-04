@@ -19,7 +19,6 @@ vi.mock('@horus/db', async (importOriginal) => {
     listInvestigationsWithReports: seams.listInvestigationsWithReports,
   };
 });
-vi.mock('../lib/db-url.js', () => ({ resolveDbUrl: vi.fn(async () => 'postgres://local') }));
 vi.mock('@horus/engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@horus/engine')>();
   return {

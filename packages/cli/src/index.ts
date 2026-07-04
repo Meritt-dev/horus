@@ -64,6 +64,7 @@ import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
 import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
 import { runReadiness } from './commands/readiness.js';
+import { runDbImport } from './commands/db.js';
 import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
 import { runUpdate } from './commands/update.js';
 import { runLogin, runLogout } from './commands/login.js';
@@ -184,6 +185,20 @@ Examples:
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(async (opts: { config?: string; ai?: boolean; aiModel?: string }) => {
       process.exitCode = await runReadiness({ config: opts.config, ai: opts.ai, aiModel: opts.aiModel });
+    });
+
+  const db = program
+    .command('db')
+    .description('Local database utilities (the single embedded persistence tier)');
+  db
+    .command('import')
+    .description(
+      'One-time import of a legacy Postgres into the embedded database ' +
+        '(--from defaults to $DATABASE_URL)',
+    )
+    .option('--from <postgres-url>', 'source Postgres URL (defaults to $DATABASE_URL)')
+    .action(async (opts: { from?: string }) => {
+      process.exitCode = await runDbImport({ ...(opts.from !== undefined ? { from: opts.from } : {}) });
     });
 
   program

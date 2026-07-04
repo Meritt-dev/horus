@@ -30,9 +30,18 @@ function capture(): { out: string[]; write: (l: string) => void } {
   return { out, write: (l: string) => out.push(l) };
 }
 
-const DB_PASS: DbHealth = { reachable: true, reachableDetail: 'connected', schemaReady: true, schemaDetail: 'v7 (7 tables)' };
-const DB_NOT_REACHABLE: DbHealth = { reachable: false, reachableDetail: 'unreachable', schemaReady: false, schemaDetail: '' };
-const DB_SCHEMA_MISSING: DbHealth = { reachable: true, reachableDetail: 'connected', schemaReady: false, schemaDetail: 'connected, no schema' };
+const DB_PASS: DbHealth = {
+  reachable: true,
+  reachableDetail: 'embedded (/home/u/.horus/horus.db)',
+  schemaReady: true,
+  schemaDetail: '13 tables present',
+};
+const DB_NOT_REACHABLE: DbHealth = {
+  reachable: false,
+  reachableDetail: 'embedded database unavailable — this build ships no local persistence',
+  schemaReady: false,
+  schemaDetail: 'install via npm or Homebrew for local persistence',
+};
 
 function makeConfig(opts: {
   sourceUrl?: string;
@@ -100,7 +109,7 @@ describe('horus readiness — fully ready', () => {
     expect(lines(out)).toContain('CLI');
   });
 
-  it('marks Database check as pass with schema detail', async () => {
+  it('marks Database check as pass with the embedded db path', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -110,7 +119,7 @@ describe('horus readiness — fully ready', () => {
     });
     const output = lines(out);
     expect(output).toContain('Database');
-    expect(output).toContain('v7 (7 tables)');
+    expect(output).toContain('embedded (/home/u/.horus/horus.db)');
   });
 
   it('marks source-intelligence backend as pass when version matches pinned', async () => {
@@ -260,7 +269,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     expect(lines(out)).toContain('Not ready');
   });
 
-  it('shows docker run hint when DB unreachable', async () => {
+  it('shows the install hint (not docker) when the embedded db is unavailable', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -268,29 +277,10 @@ describe('horus readiness — blocking (DB failure)', () => {
       _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
-    expect(lines(out)).toContain('docker run');
-  });
-
-  it('exits 1 when DB reachable but schema missing', async () => {
-    const { out, write } = capture();
-    const code = await runReadiness({
-      write,
-      _dbCheck: async () => DB_SCHEMA_MISSING,
-      _sourceVersion: async () => PINNED_SOURCE_VERSION,
-      _loadConfig: async () => makeConfig({}),
-    });
-    expect(code).toBe(1);
-  });
-
-  it('shows migration hint when schema missing', async () => {
-    const { out, write } = capture();
-    await runReadiness({
-      write,
-      _dbCheck: async () => DB_SCHEMA_MISSING,
-      _sourceVersion: async () => null,
-      _loadConfig: async () => { throw new Error('no config'); },
-    });
-    expect(lines(out)).toContain('pnpm db migrate');
+    const output = lines(out);
+    expect(output).toContain('install via npm or Homebrew');
+    expect(output).not.toContain('docker run');
+    expect(output).not.toContain('pnpm db migrate');
   });
 
   it('output separates Blocking from Optional sections', async () => {
@@ -324,7 +314,7 @@ describe('horus readiness — blocking (DB failure)', () => {
 
 const SAMPLE_CHECKS = [
   { label: 'CLI', status: 'pass', blocking: true, detail: 'horus 0.1.15' },
-  { label: 'Database', status: 'fail', blocking: true, detail: 'Postgres not reachable', next: 'docker run ...' },
+  { label: 'Database', status: 'fail', blocking: true, detail: 'embedded database unavailable', next: 'install via npm or Homebrew' },
   { label: 'Local config', status: 'warn', blocking: false, detail: '.horus/config.json not found', next: 'run horus init' },
   { label: 'Source intelligence', status: 'pass', blocking: false, detail: '0.3.1 — ready' },
   { label: 'Elasticsearch', status: 'warn', blocking: false, detail: 'not configured — no runtime log evidence' },
@@ -366,7 +356,7 @@ describe('buildInterpretationPrompt for readiness (HOR-212)', () => {
     });
 
     expect(prompt).toContain('Database');
-    expect(prompt).toContain('Postgres not reachable');
+    expect(prompt).toContain('embedded database unavailable');
     expect(prompt).toContain('Elasticsearch');
     expect(prompt).toContain('.horus/config.json not found');
   });

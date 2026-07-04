@@ -29,19 +29,19 @@ afterEach(() => {
   dirs.length = 0;
 });
 
-// Stub DB checks injected into all tests to avoid live Postgres calls in CI.
+// Stub embedded-db checks injected into all tests to avoid touching the real pglite db in CI.
 const stubDbReady = async () => ({
   reachable: true,
   schemaReady: true,
-  reachableDetail: 'connected',
-  schemaDetail: '9 tables present',
+  reachableDetail: 'embedded (/home/u/.horus/horus.db)',
+  schemaDetail: '13 tables present',
 });
 
 const stubDbUnreachable = async () => ({
   reachable: false,
   schemaReady: false,
-  reachableDetail: 'unreachable',
-  schemaDetail: 'cannot check',
+  reachableDetail: 'embedded database unavailable — this build ships no local persistence',
+  schemaDetail: 'install via npm or Homebrew for local persistence',
 });
 
 // ---------------------------------------------------------------------------
@@ -325,13 +325,6 @@ describe('runDoctor — no global config (HOR-85)', () => {
 // HOR-100: fix hints for missing prerequisites
 // ---------------------------------------------------------------------------
 
-const stubDbReadyNoSchema = async () => ({
-  reachable: true,
-  schemaReady: false,
-  reachableDetail: 'connected',
-  schemaDetail: 'missing: investigations',
-});
-
 describe('runDoctor — fix hints (HOR-100)', () => {
   it('shows horus init hint when local config is missing', async () => {
     const root = tempDir();
@@ -343,40 +336,27 @@ describe('runDoctor — fix hints (HOR-100)', () => {
     expect(output).toContain('horus init');
   });
 
-  it('shows docker run hint when database is not reachable', async () => {
+  it('shows the install hint when the embedded db is unavailable (no docker/DATABASE_URL)', async () => {
     const root = tempDir();
     const { lines } = await captureOutput((write) =>
       runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
     );
     const output = lines.join('\n');
-    expect(output).toContain('docker run');
-    expect(output).toContain('postgres:16');
+    expect(output).toContain('install via npm or Homebrew');
+    // The removed Postgres tier must not be referenced anymore.
+    expect(output).not.toContain('docker run');
+    expect(output).not.toContain('DATABASE_URL');
+    expect(output).not.toContain('pnpm db migrate');
   });
 
-  it('shows DATABASE_URL hint when database is not reachable', async () => {
-    const root = tempDir();
-    const { lines } = await captureOutput((write) =>
-      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
-    );
-    expect(lines.join('\n')).toContain('DATABASE_URL');
-  });
-
-  it('shows pnpm db migrate hint when schema is not applied', async () => {
-    const root = tempDir();
-    const { lines } = await captureOutput((write) =>
-      runDoctor({ cwd: root, _dbCheck: stubDbReadyNoSchema, write }),
-    );
-    expect(lines.join('\n')).toContain('pnpm db migrate');
-  });
-
-  it('shows Database pass when db is healthy', async () => {
+  it('shows Database pass with the embedded db path when the db is healthy', async () => {
     const root = tempDir();
     const { lines } = await captureOutput((write) =>
       runDoctor({ cwd: root, _dbCheck: stubDbReady, write }),
     );
     const output = lines.join('\n');
     expect(output).toContain('Database');
-    expect(output).toContain('9 tables present');
+    expect(output).toContain('embedded (/home/u/.horus/horus.db)');
   });
 
   it('shows horus init hint when source-intelligence host is not configured', async () => {

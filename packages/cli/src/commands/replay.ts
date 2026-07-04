@@ -1,6 +1,5 @@
 import pc from 'picocolors';
 import { openDb, getInvestigation, updateInvestigationReport } from '@horus/db';
-import { resolveDbUrl } from '../lib/db-url.js';
 import { renderReport, reportToMarkdown, reportToJSON, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 import { renderNarrative } from '@horus/ai';
@@ -22,7 +21,7 @@ export async function runReplay(
     refreshAi?: boolean;
   },
 ): Promise<number> {
-  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb();
   try {
     const row = await getInvestigation(db, id);
     if (!row) {

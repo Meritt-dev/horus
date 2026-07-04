@@ -20,7 +20,6 @@ vi.mock('@horus/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@horus/db')>();
   return { ...actual, openDb: seams.openDb, listInvestigations: seams.listInvestigations };
 });
-vi.mock('../lib/db-url.js', () => ({ resolveDbUrl: vi.fn(async () => 'postgres://local') }));
 vi.mock('../lib/cloud/context-store.js', () => ({
   readCloudConfig: seams.readCloudConfig,
   isCloudActive: seams.isCloudActive,

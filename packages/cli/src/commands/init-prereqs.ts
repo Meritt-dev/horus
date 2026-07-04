@@ -1,27 +1,23 @@
 /**
- * Prerequisite checks for `horus init` (HOR-37, HOR-84): the Horus
- * source-intelligence backend and the Horus Postgres. Advisory only — the
- * checks print status lines and guide fixes, but never gate init's exit code
- * (config write and indexing degrade gracefully instead).
+ * Prerequisite check for `horus init` (HOR-37, HOR-84): the Horus
+ * source-intelligence backend. Advisory only — the check prints a status line
+ * and guides fixes, but never gates init's exit code (config write and indexing
+ * degrade gracefully instead).
  *
- * The old standalone `horus setup` command was merged into `horus init` and
- * then removed entirely — `horus init` is the only onboarding command.
+ * Local persistence is embedded (pglite) — there is no Postgres to check. The old
+ * standalone `horus setup` command was merged into `horus init` and then removed
+ * entirely — `horus init` is the only onboarding command.
  */
 
 import pc from 'picocolors';
-import { loadConfig, PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED } from '@horus/core';
+import { PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED } from '@horus/core';
 import { getSourceVersion } from '@horus/connectors';
-import { checkDatabase } from '@horus/db';
-
-const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
 export interface PrereqStatus {
   /** horus-source binary responded with a version. */
   backendPresent: boolean;
   /** Version matches the pin (false when absent or drifted). */
   backendVersionOk: boolean;
-  dbReachable: boolean;
-  schemaReady: boolean;
 }
 
 export async function checkPrerequisites(
@@ -31,8 +27,6 @@ export async function checkPrerequisites(
   const status: PrereqStatus = {
     backendPresent: false,
     backendVersionOk: false,
-    dbReachable: false,
-    schemaReady: false,
   };
 
   // 1. Source-intelligence backend — presence and version.
@@ -69,46 +63,6 @@ export async function checkPrerequisites(
     write(
       `  ${pc.green('●')} Horus source-intelligence backend ` +
       pc.dim(`(${backendVersion})`),
-    );
-  }
-
-  // 2. Horus's own Postgres.
-  let dbUrl = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
-  try {
-    const config = await loadConfig(opts.config);
-    dbUrl = config.database.url;
-  } catch {
-    // No config resolvable — fall back to the default DB URL.
-  }
-  let db: { reachable: boolean; schemaReady: boolean; schemaDetail: string };
-  try {
-    db = await checkDatabase(dbUrl);
-  } catch {
-    db = { reachable: false, schemaReady: false, schemaDetail: '' };
-  }
-  if (db.reachable) {
-    status.dbReachable = true;
-    status.schemaReady = db.schemaReady;
-    write(`  ${pc.green('●')} Postgres reachable ${pc.dim(`(${db.schemaDetail})`)}`);
-    if (!db.schemaReady) {
-      write(
-        pc.dim(
-          `      schema not applied — run migrations:\n` +
-          `        from the Horus repo: pnpm db migrate\n` +
-          `        or apply the schema directly: https://github.com/meritt-dev/horus/tree/master/packages/db/drizzle`,
-        ),
-      );
-    }
-  } else {
-    write(`  ${pc.red('●')} Postgres unreachable ${pc.dim('(needed for `horus investigate`, not for init)')}`);
-    write(
-      pc.dim(
-        `      start a local instance:\n` +
-        `        docker run -d --name horus-db \\\n` +
-        `          -e POSTGRES_USER=horus -e POSTGRES_PASSWORD=horus -e POSTGRES_DB=horus \\\n` +
-        `          -p 5433:5432 postgres:16\n` +
-        `      or set DATABASE_URL to an existing Postgres 16 instance`,
-      ),
     );
   }
 

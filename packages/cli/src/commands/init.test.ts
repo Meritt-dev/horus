@@ -21,7 +21,6 @@ import { basename, join } from 'node:path';
 const seams = vi.hoisted(() => ({
   sourceAvailable: vi.fn(async () => false),
   getSourceVersion: vi.fn(async () => null as string | null),
-  checkDatabase: vi.fn(async () => ({ reachable: false, schemaReady: false, schemaDetail: '' })),
   runIndex: vi.fn(async () => 0),
 }));
 
@@ -32,10 +31,6 @@ vi.mock('@horus/connectors', async (importOriginal) => {
     sourceAvailable: seams.sourceAvailable,
     getSourceVersion: seams.getSourceVersion,
   };
-});
-vi.mock('@horus/db', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@horus/db')>();
-  return { ...actual, checkDatabase: seams.checkDatabase };
 });
 vi.mock('./init-index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./init-index.js')>();
@@ -173,12 +168,13 @@ describe('runInit (backend available: delegates to the index flow)', () => {
     expect(code).toBe(1);
   });
 
-  it('prereq check lines are advisory — a red Postgres never gates the exit code', async () => {
-    seams.checkDatabase.mockResolvedValue({ reachable: false, schemaReady: false, schemaDetail: '' });
+  it('prereq lines are advisory and there is no Postgres tier to check', async () => {
+    // Local persistence is embedded — init must not probe or mention a Postgres tier, and
+    // an advisory prereq state still never gates the exit code.
     seams.sourceAvailable.mockResolvedValue(true);
 
     const code = await runInit({ path: repo });
     expect(code).toBe(0);
-    expect(logs.join('\n')).toContain('Postgres unreachable');
+    expect(logs.join('\n')).not.toMatch(/Postgres/i);
   });
 });

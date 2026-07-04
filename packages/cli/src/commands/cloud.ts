@@ -26,7 +26,6 @@ import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
 import { resolveTriple, reportCloudError, syncMetaLines, pickContextTarget } from "./context.js";
 import { openDb, listInvestigationsWithReports } from "@horus/db";
 import type { InvestigationReport } from "@horus/engine";
-import { resolveDbUrl } from "../lib/db-url.js";
 import { uploadInvestigationToCloud } from "../lib/cloud/investigation-sync.js";
 
 export async function runCloudLink(
@@ -226,7 +225,7 @@ export async function runCloudSync(
   } catch {
     /* unresolvable — leave unscoped */
   }
-  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb();
   try {
     const uploadable: { id: string; title: string | null; report: InvestigationReport }[] = [];
     let skippedNoReport = 0;

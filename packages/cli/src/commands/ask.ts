@@ -4,7 +4,6 @@ import { loadConfig } from '@horus/core';
 import type { Symbol, SymbolContext } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import type { CodeProvider } from '@horus/connectors';
-import { resolveDbUrl } from '../lib/db-url.js';
 import {
   refineInvestigation,
   renderRefined,
@@ -76,7 +75,7 @@ type LocalLookup =
  * (`# Investigation <id>`) is this local id — so the local store is the right first stop.
  */
 async function lookupLocalInvestigation(id: string, configPath?: string): Promise<LocalLookup> {
-  const { db, sql } = await openDb(await resolveDbUrl(configPath));
+  const { db, sql } = await openDb();
   try {
     const row = await getInvestigation(db, id);
     if (!row) return { kind: 'not-found' };

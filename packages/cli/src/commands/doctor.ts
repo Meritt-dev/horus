@@ -9,9 +9,7 @@ import {
   findPlaintextConnectorSecrets,
   type ConnectorsConfig,
 } from '@horus/core';
-import { checkDatabase, type DbHealth } from '@horus/db';
-
-const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
+import { checkEmbeddedDb, type DbHealth } from '@horus/db';
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -234,8 +232,8 @@ export async function runDoctor(opts?: {
   config?: string;
   json?: boolean;
   write?: (line: string) => void;
-  /** Injectable for tests — defaults to the real checkDatabase. */
-  _dbCheck?: (url: string) => Promise<DbHealth>;
+  /** Injectable for tests — defaults to the real checkEmbeddedDb. */
+  _dbCheck?: () => Promise<DbHealth>;
 }): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
   const write = opts?.write ?? ((line: string) => console.log(line));
@@ -340,43 +338,24 @@ export async function runDoctor(opts?: {
     }
   }
 
-  // Database check — probe Postgres for reachability and schema readiness.
+  // Database check — the embedded local database (pglite). No user-run Postgres and
+  // DATABASE_URL is ignored; the only failure mode is a build that ships without pglite's
+  // assets (then persistence degrades to display-only).
   {
-    const dbChecker = opts?._dbCheck ?? checkDatabase;
-    let dbUrl = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
-    let globalConfig: Awaited<ReturnType<typeof loadConfig>> | null = null;
-    try {
-      globalConfig = await loadConfig(opts?.config, { cwd });
-      dbUrl = globalConfig.database.url;
-    } catch {
-      // No global config — use env var or default URL
-    }
-
-    const db = await dbChecker(dbUrl);
+    const dbChecker = opts?._dbCheck ?? checkEmbeddedDb;
+    const db = await dbChecker();
     if (!db.reachable) {
       checks.push({
         label: 'Database',
         status: 'warn',
-        detail: 'Postgres not reachable',
-        next:
-          'start a local instance:\n' +
-          '      docker run -d --name horus-db \\\n' +
-          '        -e POSTGRES_USER=horus -e POSTGRES_PASSWORD=horus -e POSTGRES_DB=horus \\\n' +
-          '        -p 5433:5432 postgres:16\n' +
-          '    or set DATABASE_URL to an existing Postgres 16 instance',
-      });
-    } else if (!db.schemaReady) {
-      checks.push({
-        label: 'Database',
-        status: 'warn',
-        detail: 'connected but schema not applied',
-        next: 'run migrations: pnpm db migrate',
+        detail: db.reachableDetail,
+        next: 'install via npm or Homebrew for local persistence',
       });
     } else {
       checks.push({
         label: 'Database',
         status: 'pass',
-        detail: db.schemaDetail,
+        detail: db.reachableDetail,
       });
     }
   }

@@ -2,7 +2,7 @@
  * HOR-384 — Tests for `horus packet`.
  *
  * Fully offline: the engine packet projection (buildPacket/renderPacketMarkdown/packetToJSON)
- * runs for real against a fixture report; only the DB, investigation runner and db-url layers
+ * runs for real against a fixture report; only the DB and investigation runner layers
  * are mocked. We pin input disambiguation (UUID → saved-id load, no re-run; otherwise hint →
  * run), `--for` validation, mandatory context teardown, and that `--json` stays clean (a single
  * parseable JSON document).
@@ -38,7 +38,6 @@ vi.mock('@horus/engine', async (importActual) => {
     recallMemory: engineMocks.recallMemory,
   };
 });
-vi.mock('../lib/db-url.js', () => ({ resolveDbUrl: vi.fn(async () => 'postgres://x') }));
 vi.mock('../lib/investigation-runner.js', () => runner);
 // Pin repoRoot so freshness reads no real files / git — deterministic + offline.
 vi.mock('../lib/cloud/session.js', () => ({ repoRootOrCwd: vi.fn(() => '/no-such-repo') }));

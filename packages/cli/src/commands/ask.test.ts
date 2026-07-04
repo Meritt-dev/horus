@@ -38,7 +38,6 @@ const source = vi.hoisted(() => ({
 vi.mock('@horus/core', () => ({ loadConfig: source.loadConfig }));
 vi.mock('@horus/connectors', () => ({ codeForRepo: source.codeForRepo }));
 vi.mock('@horus/db', () => db);
-vi.mock('../lib/db-url.js', () => ({ resolveDbUrl: vi.fn(async () => 'postgres://x') }));
 vi.mock('@horus/engine', () => engine);
 vi.mock('../lib/cloud/context-store.js', () => ({
   readCloudConfig: vi.fn(() => ({})),

@@ -59,9 +59,9 @@ import { openDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 import { parseHostPort } from '../lib/ensure-host.js';
 
-async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Promise<void> {
+async function stitchQueueMap(hostUrl: string, label: string): Promise<void> {
   const source = new SourceHttpClient({ baseUrl: hostUrl });
-  const { db, sql } = await openDb(dbUrl);
+  const { db, sql } = await openDb();
   try {
     const summary = await stitch(source, db, { project: label });
     console.log(
@@ -316,8 +316,6 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     // so a timeout/abort mid-index still leaves a clean tree. The success paths call this again
     // (idempotent). Without it, a failed init left `?? .horus/` dirtying git status (dogfood 0.21.1).
     ensureProjectGitignore(root);
-    const dbUrlDefault =
-      process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 
     // Try to resolve a config (central or .horus). Non-fatal if absent.
     let config: HorusConfig | null = null;
@@ -326,7 +324,6 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     } catch {
       config = null;
     }
-    const dbUrl = config?.database.url ?? dbUrlDefault;
 
     // Is this repo already a configured project? Matched by its PATH in the config —
     // the repo's config is the identity. If so, we reuse its host and do NOT write
@@ -532,7 +529,7 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     // zero-edge summary rather than aborting the whole index (knowledge pass + config
     // write still run). stitchQueueMap already self-degrades; this guards openDb itself.
     try {
-      await stitchQueueMap(hostUrl, dbUrl, label);
+      await stitchQueueMap(hostUrl, label);
     } catch (err) {
       console.log(
         pc.dim(`[${label}]  `) +
