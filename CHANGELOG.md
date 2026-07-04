@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.7] — 2026-07-04
+
+Shared team memory: promote a decision once, your teammates pull it — cloud-owned, vectors stay on your device.
+
+- **`horus memory promote <id>` and `horus memory pull`.** A memory item you've captured (a decision, a pitfall, a convention) can be promoted to your team once — it becomes a **cloud-owned** team item, and teammates `horus memory pull` it into their local cache. Pulled items show **who promoted them** and keep their confidence, so recall ranks them honestly (never inflated by attribution). The local store is a disposable read-cache: the cloud is the source of truth for shared items (server wins — a re-promote is an idempotent no-op, there's no way to silently un-share), and `pull` refreshes the cache for the repo you run it in. Requires a repo linked to Horus Cloud (`horus login` + `horus cloud link`).
+- **Your embeddings never leave the device.** Promotion sends only the claim text and metadata — never a vector. Pulled team items are re-embedded **locally** into your own semantic index. Confirmed-outcome memories are refused from promotion (they stay private), enforced on both the client and the server.
+
 ## [0.21.6] — 2026-07-04
 
 Blast radius understands inheritance, embeddings resume where they left off, and re-exports resolve across files.
