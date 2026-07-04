@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalDb, type HorusDb, type MemoryItem, type NewMemoryItem } from '@horus/db';
 import { createLocalMemoryStore } from './memory.js';
-import type { MemoryStore, AuditCtx } from './memory-store.js';
+import type { LocalMemoryStore, AuditCtx } from './memory-store.js';
 import {
   recallMemory,
   deriveFreshness,
@@ -48,6 +48,10 @@ function makeItem(p: Partial<MemoryItem>): MemoryItem {
     repo: 'r',
     userId: null,
     visibility: 'private',
+    origin: 'local',
+    cloudId: null,
+    authorName: null,
+    pulledAt: null,
     payload: null,
     signature: null,
     tags: null,
@@ -114,7 +118,7 @@ describe('recallMemory (embedded pglite)', () => {
   let dir: string;
   let close: () => Promise<void>;
   let db: HorusDb;
-  let store: MemoryStore;
+  let store: LocalMemoryStore;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'horus-mem-recall-'));
@@ -235,5 +239,61 @@ describe('recallMemory (embedded pglite)', () => {
     const out2 = await recallMemory(store, { repo: 'r' }, { now: NOW, code: unresolved });
     expect(out2[0]!.freshness.driftDetected).toBe(false);
     expect(out2[0]!.freshness.status).toBe('fresh');
+  }, 30_000);
+
+  // ---- HOR-464 / M4: merged local + cloud-cache recall + teammate attribution ----
+
+  const cache = (over: Partial<NewMemoryItem>) =>
+    store.upsertCached(
+      {
+        id: 'mem_c',
+        kind: 'decision',
+        claim: 'team claim',
+        scope: 'repo',
+        source: 'human',
+        confidence: 0.8,
+        repo: 'r',
+        visibility: 'team',
+        cloudId: 'cloud-1',
+        authorName: 'Bob',
+        ...over,
+      },
+      { actor: { kind: 'system' } },
+    );
+
+  it('recall merges local-private and cloud-cache rows from one query', async () => {
+    const localRow = await add({ kind: 'decision', claim: 'local one', scope: 'repo', source: 'human', confidence: 0.8, repo: 'r' });
+    const cached = await cache({ id: 'mem_team', claim: 'team one' });
+
+    const out = await recallMemory(store, { repo: 'r' }, { now: NOW });
+    const ids = new Set(out.map((r) => r.item.id));
+    expect(ids).toEqual(new Set([localRow.id, cached.id]));
+  }, 30_000);
+
+  it('a pulled item ranks by its OWN confidence, not 0 (server must persist confidence)', async () => {
+    await add({ kind: 'decision', claim: 'weak local', scope: 'repo', source: 'human', confidence: 0.2, repo: 'r' });
+    const strong = await cache({ id: 'mem_strong', claim: 'strong team', confidence: 0.95 });
+
+    const out = await recallMemory(store, { repo: 'r' }, { now: NOW });
+    // The high-confidence pulled item outranks the weak local one — proof its confidence survives.
+    expect(out[0]!.item.id).toBe(strong.id);
+    expect(out[0]!.rank).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('authorName attribution is present but DOES NOT change rank/order (honesty invariant)', async () => {
+    // Two equally-confident items: one local (no author), one cloud (attributed). Order must be the
+    // deterministic tie-break (by id), NOT influenced by the presence of an author name.
+    const localRow = await add({ kind: 'decision', claim: 'aaa local', scope: 'repo', source: 'human', confidence: 0.8, repo: 'r' });
+    const cached = await cache({ id: 'zzz_team', claim: 'zzz team', confidence: 0.8, authorName: 'Bob' });
+
+    const out = await recallMemory(store, { repo: 'r' }, { now: NOW });
+    // Attribution surfaces on the cached row…
+    const cachedOut = out.find((r) => r.item.id === cached.id)!;
+    expect(cachedOut.item.authorName).toBe('Bob');
+    expect(cachedOut.item.origin).toBe('cloud');
+    const localOut = out.find((r) => r.item.id === localRow.id)!;
+    expect(localOut.item.authorName).toBeNull();
+    // …but ranks are identical (author never feeds the score).
+    expect(cachedOut.rank).toBeCloseTo(localOut.rank);
   }, 30_000);
 });

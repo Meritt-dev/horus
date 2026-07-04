@@ -45,6 +45,14 @@ export type MemoryStatus =
 /** Visibility scope. `team` activates for cloud/multi-tenant later; M1 stays `private`. */
 export type Visibility = 'private' | 'team';
 
+/**
+ * Provenance of a stored row (HOR-464 / M4). `local` = authored on this device (the durable
+ * system-of-record). `cloud` = a disposable read-cache row pulled from the server-owned team-memory
+ * store; the server is authoritative for it, so it is READONLY locally (mutations throw
+ * {@link MemoryCacheReadonlyError}) and is never re-pushed by `memory sync` (which pushes `local`).
+ */
+export type MemoryOrigin = 'local' | 'cloud';
+
 /** Authored-item kind (validated in TS, stored as text). */
 export type MemoryKind =
   | 'code-fact'
@@ -207,6 +215,12 @@ export interface MemoryQuery {
   orgId?: string;
   workspaceId?: string;
   userId?: string;
+  /**
+   * Provenance filter (HOR-464). Omitted → local-authored AND cloud-cached rows both surface (the
+   * merged recall view). `local` restricts to authored rows (used by `memory sync` so a pulled cache
+   * row is never re-pushed); `cloud` restricts to the disposable team-cache rows.
+   */
+  origin?: MemoryOrigin;
   /** Cap on rows returned. */
   limit?: number;
 }
@@ -278,6 +292,45 @@ export interface MemoryStore {
   links(id: string, opts?: LinksOpts): Promise<AnnotatedMemoryLink[]>;
   /** The append-only audit trail for an item, most-recent-first. */
   history(id: string): Promise<MemoryAudit[]>;
+}
+
+/**
+ * The LOCAL (drizzle/pglite) store — a `MemoryStore` PLUS the disposable team-memory read-cache
+ * primitives (HOR-464 / M4). These live only on the local store: the cache is a device-local mirror
+ * of the server-owned team store, so there is no cloud/dual-write counterpart. `horus memory pull`
+ * drives them directly against the local db.
+ *
+ * INVARIANTS:
+ *  - `upsertCached` FORCES `origin='cloud'` and appends exactly ONE `pulled` audit row (never a
+ *    replayed trail). It is upsert-on-id so a refresh overwrites the prior cache row in place.
+ *  - `reconcileCache` DELETEs only stale `origin='cloud'` rows for the repo — it never touches a
+ *    `local` (authored) row. Callers MUST run it ONLY after a fully-paginated, successful pull
+ *    (a partial/offline pull must never reconcile, or it would wipe the cache).
+ *  - `setStatus`/`setVisibility`/`update` REJECT an `origin='cloud'` row with
+ *    {@link MemoryCacheReadonlyError} — the server owns team items; re-promote to change one.
+ */
+export interface LocalMemoryStore extends MemoryStore {
+  /**
+   * Upsert a pulled team item as a disposable cache row (upsert-on-id, forces `origin='cloud'`,
+   * stamps `pulledAt`), appending exactly ONE `pulled` audit row. Returns the persisted row.
+   */
+  upsertCached(item: NewMemoryItem, audit: AuditCtx): Promise<MemoryItem>;
+  /**
+   * Delete the repo's `origin='cloud'` cache rows whose id is NOT in `keepIds` (the ids the latest
+   * full pull returned). Never deletes an `origin='local'` row. Returns the number deleted. MUST be
+   * called only after a fully-successful pull.
+   */
+  reconcileCache(repo: string, keepIds: string[]): Promise<number>;
+  /**
+   * One-way local promotion bookkeeping (HOR-464): after the server accepts a `memory promote`, flip
+   * the authored local row to `visibility='team'`, `origin='cloud'`, stamp `cloudId` (+ optional
+   * `authorName`), and append a single `promote` audit row. The vector stays local. Returns the row.
+   */
+  markPromoted(
+    id: string,
+    provenance: { cloudId: string; authorName?: string | null },
+    audit: AuditCtx,
+  ): Promise<MemoryItem>;
 }
 
 // ---------------------------------------------------------------------------

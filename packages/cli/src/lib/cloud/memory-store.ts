@@ -159,6 +159,12 @@ function fromWire(r: MemoryItemRecord, repo: string): MemoryItem {
     repo,
     userId: r.createdByUserId ?? null,
     visibility: r.visibility,
+    // This is the write-only private mirror path (dualWrite reads local): a round-tripped record is
+    // the device's OWN authored item, so it carries no team-cache provenance (HOR-464).
+    origin: 'local',
+    cloudId: null,
+    authorName: null,
+    pulledAt: null,
     payload: null,
     // Incident-family recall keys are LOCAL-ONLY context (like vectors): they never enter the
     // cloud-sync path, so a cloud-read row carries neither.
@@ -245,6 +251,10 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
         repo: item.repo ?? repoFallback,
         userId: item.userId ?? null,
         visibility: input.visibility ?? "private",
+        origin: "local",
+        cloudId: null,
+        authorName: null,
+        pulledAt: null,
         payload: null,
         // Incident-family recall keys stay LOCAL-ONLY — never synced, so the cloud echo carries neither.
         signature: null,
@@ -282,6 +292,10 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
         repo: repoFallback,
         userId: null,
         visibility: "private",
+        origin: "local",
+        cloudId: null,
+        authorName: null,
+        pulledAt: null,
         payload: null,
         signature: null,
         tags: null,

@@ -48,6 +48,8 @@ import {
   runMemoryUnlink,
   runMemoryDetect,
   runMemorySync,
+  runMemoryPromote,
+  runMemoryPull,
   runMemoryAccuracy,
 } from './commands/memory.js';
 import { runSimulate } from './commands/simulate.js';
@@ -674,6 +676,27 @@ Examples:
         process.exitCode = await runMemorySync(opts);
       },
     );
+
+  memory
+    .command('promote <id>')
+    .description('Promote a local memory item into the shared team memory (one-way; refuses confirmed-outcome)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option('--json', 'output JSON')
+    .action(async (id: string, opts: { config?: string; repo?: string; json?: boolean }) => {
+      process.exitCode = await runMemoryPromote(id, opts);
+    });
+
+  memory
+    .command('pull')
+    .description('Refresh the local cache of shared team memory (full pull; offline serves stale cache)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option('--force', 'force a full refresh even if the cache looks current')
+    .option('--json', 'output JSON')
+    .action(async (opts: { config?: string; repo?: string; force?: boolean; json?: boolean }) => {
+      process.exitCode = await runMemoryPull(opts);
+    });
 
   // `eval` — the read-only accuracy harness (HOR-403). READ-ONLY over the outcome-label eval store:
   // it never writes labels (only `horus feedback` + `horus memory confirm` do). Shares the read

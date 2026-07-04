@@ -85,6 +85,13 @@
       "when": 1750440000000,
       "tag": "0011_investigations_project",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1750526400000,
+      "tag": "0012_memory_item_origin",
+      "breakpoints": true
     }
   ]
 }

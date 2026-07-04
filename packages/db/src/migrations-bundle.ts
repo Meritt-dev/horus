@@ -125,5 +125,15 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
       "UPDATE \"investigations\" SET \"project\" = incident_input->>'repo'\nWHERE \"project\" IS NULL AND incident_input->>'repo' IS NOT NULL;",
       "CREATE INDEX \"investigations_project_created_idx\" ON \"investigations\" (\"project\",\"created_at\");"
     ]
+  },
+  {
+    "tag": "0012_memory_item_origin",
+    "statements": [
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"origin\" text DEFAULT 'local' NOT NULL;",
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"cloud_id\" text;",
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"author_name\" text;",
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"pulled_at\" timestamp with time zone;",
+      "CREATE INDEX IF NOT EXISTS \"memory_item_origin_idx\" ON \"memory_item\" (\"repo\",\"origin\");"
+    ]
   }
 ];

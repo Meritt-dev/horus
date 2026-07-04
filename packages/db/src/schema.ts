@@ -214,6 +214,17 @@ export const memoryItem = pgTable(
     repo: text('repo').notNull(), // == today's `project` scoping key; recall fails CLOSED on null (HOR-46)
     userId: text('user_id'),
     visibility: text('visibility').notNull().default('private'), // private|team
+    // HOR-464 (M4): team-memory cache provenance. `origin` distinguishes a locally-authored row
+    // (`local`) from a disposable read-cache row pulled from the cloud team store (`cloud`). The
+    // cloud-owned copy is server-authoritative — `origin='cloud'` rows are readonly locally (any
+    // local mutation throws `MemoryCacheReadonlyError`; re-promote to change) and are NEVER re-pushed
+    // by `memory sync` (which pushes `origin='local'` only). `cloudId` is the server team-memory id,
+    // `authorName` the promoting teammate (DISPLAY-ONLY — never feeds rank), `pulledAt` the last
+    // refresh time (staleness).
+    origin: text('origin').notNull().default('local'), // local|cloud
+    cloudId: text('cloud_id'), // server team_memory id (provenance/join)
+    authorName: text('author_name'), // promoting teammate's display name (attribution, display-only)
+    pulledAt: timestamp('pulled_at', { withTimezone: true }), // last cache-refresh time
     payload: jsonb('payload'), // forward-compat, zero-migration extension
     // Incident-family recall keys, populated at WRITE for incident-derived kinds
     // (confirmed-outcome|incident-pattern) from the source investigation report. Nullable: a
@@ -228,6 +239,8 @@ export const memoryItem = pgTable(
     index('memory_item_status_idx').on(t.status),
     index('memory_item_tenancy_idx').on(t.orgId, t.workspaceId, t.repo, t.userId),
     index('memory_item_signature_idx').on(t.signature),
+    // HOR-464: fast repo-scoped split of local-authored vs cloud-cached rows (pull reconcile + sync filter).
+    index('memory_item_origin_idx').on(t.repo, t.origin),
   ],
 );
 

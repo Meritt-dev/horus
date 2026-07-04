@@ -12,8 +12,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalDb, type HorusDb, type NewMemoryItem } from '@horus/db';
-import { createLocalMemoryStore, detectClaimSecret, MemorySecretError } from './memory.js';
-import type { MemoryStore, AuditCtx } from './memory-store.js';
+import {
+  createLocalMemoryStore,
+  detectClaimSecret,
+  MemorySecretError,
+  MemoryCacheReadonlyError,
+} from './memory.js';
+import type { LocalMemoryStore, AuditCtx } from './memory-store.js';
 
 const actor = { kind: 'user' as const, id: 'u1', name: 'Alice' };
 
@@ -21,7 +26,7 @@ describe('createLocalMemoryStore (embedded pglite)', () => {
   let dir: string;
   let close: () => Promise<void>;
   let db: HorusDb;
-  let store: MemoryStore;
+  let store: LocalMemoryStore;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'horus-mem-store-'));
@@ -209,5 +214,119 @@ describe('createLocalMemoryStore (embedded pglite)', () => {
     await expect(
       store.addLink({ id: '', fromMemoryId: item.id, rel: 'supersedes', toKind: 'node', toRef: 'mem_other' }),
     ).rejects.toThrow(/unsupported memory_link rel/);
+  }, 30_000);
+
+  // ---- HOR-464 / M4: disposable team-memory read-cache ----
+
+  const cacheItem = (over: Partial<NewMemoryItem> = {}): NewMemoryItem => ({
+    id: 'mem_team_1',
+    kind: 'decision',
+    claim: 'team: register blueprints before first request',
+    scope: 'repo',
+    source: 'human',
+    confidence: 0.6,
+    repo: 'r',
+    visibility: 'team',
+    cloudId: 'cloud-uuid-1',
+    authorName: 'Bob',
+    ...over,
+  });
+
+  it('upsertCached: inserts then overwrites scalar+provenance and stamps origin=cloud', async () => {
+    const first = await store.upsertCached(cacheItem(), { actor });
+    expect(first.origin).toBe('cloud');
+    expect(first.visibility).toBe('team');
+    expect(first.cloudId).toBe('cloud-uuid-1');
+    expect(first.authorName).toBe('Bob');
+    expect(first.pulledAt).toBeInstanceOf(Date);
+    expect(first.confidence).toBeCloseTo(0.6);
+
+    // Upsert-on-id: a refresh overwrites the SAME row in place (never a duplicate).
+    const second = await store.upsertCached(
+      cacheItem({ claim: 'team: updated claim', confidence: 0.9, authorName: 'Carol' }),
+      { actor },
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.claim).toBe('team: updated claim');
+    expect(second.confidence).toBeCloseTo(0.9);
+    expect(second.authorName).toBe('Carol');
+    expect(second.origin).toBe('cloud');
+
+    expect(await store.query({ repo: 'r' })).toHaveLength(1); // one row, overwritten in place
+  }, 30_000);
+
+  it('upsertCached: appends exactly one `pulled` audit row per refresh (not a replayed trail)', async () => {
+    const row = await store.upsertCached(cacheItem(), { actor, note: 'memory pull' });
+    const history = await store.history(row.id);
+    expect(history).toHaveLength(1);
+    expect(history[0]!.action).toBe('pulled');
+    expect(history[0]!.toStatus).toBe('fresh');
+    expect(history[0]!.note).toBe('memory pull');
+  }, 30_000);
+
+  it('reconcileCache: deletes only stale origin=cloud rows and never origin=local rows', async () => {
+    // One locally-authored row + two cloud-cache rows.
+    const local = await add(
+      { kind: 'decision', claim: 'local authored', scope: 'repo', source: 'human', confidence: 0.8, repo: 'r' },
+      { actor },
+    );
+    await store.upsertCached(cacheItem({ id: 'mem_keep', cloudId: 'c-keep' }), { actor });
+    await store.upsertCached(cacheItem({ id: 'mem_stale', cloudId: 'c-stale' }), { actor });
+
+    // The latest pull returned only `mem_keep`.
+    const removed = await store.reconcileCache('r', ['mem_keep']);
+    expect(removed).toBe(1);
+
+    const ids = (await store.query({ repo: 'r' })).map((i) => i.id).sort();
+    expect(ids).toEqual(['mem_keep', local.id].sort()); // stale cloud row gone; local row untouched
+  }, 30_000);
+
+  it('reconcileCache: an empty keep set drops every cloud row but keeps local rows', async () => {
+    const local = await add(
+      { kind: 'decision', claim: 'local authored', scope: 'repo', source: 'human', confidence: 0.8, repo: 'r' },
+      { actor },
+    );
+    await store.upsertCached(cacheItem({ id: 'mem_c1', cloudId: 'c1' }), { actor });
+    await store.upsertCached(cacheItem({ id: 'mem_c2', cloudId: 'c2' }), { actor });
+
+    const removed = await store.reconcileCache('r', []);
+    expect(removed).toBe(2);
+    expect((await store.query({ repo: 'r' })).map((i) => i.id)).toEqual([local.id]);
+  }, 30_000);
+
+  it('setStatus/setVisibility/update throw MemoryCacheReadonlyError on an origin=cloud row', async () => {
+    const row = await store.upsertCached(cacheItem(), { actor });
+    await expect(store.setStatus(row.id, 'pinned', { actor })).rejects.toBeInstanceOf(
+      MemoryCacheReadonlyError,
+    );
+    await expect(store.setVisibility(row.id, 'private', { actor })).rejects.toBeInstanceOf(
+      MemoryCacheReadonlyError,
+    );
+    await expect(store.update(row.id, { claim: 'hijack' }, { audit: { actor } })).rejects.toBeInstanceOf(
+      MemoryCacheReadonlyError,
+    );
+    // The row is unchanged after the rejected mutations.
+    const back = await store.get(row.id);
+    expect(back!.status).toBe('fresh');
+    expect(back!.visibility).toBe('team');
+  }, 30_000);
+
+  it('markPromoted: flips a local row to a server-owned team item with a single `promote` audit', async () => {
+    const local = await add(
+      { kind: 'pitfall', claim: 'promote me', scope: 'repo', source: 'human', confidence: 0.7, repo: 'r' },
+      { actor },
+    );
+    const promoted = await store.markPromoted(local.id, { cloudId: 'cloud-9', authorName: 'Alice' }, { actor });
+    expect(promoted.visibility).toBe('team');
+    expect(promoted.origin).toBe('cloud');
+    expect(promoted.cloudId).toBe('cloud-9');
+
+    const actions = (await store.history(local.id)).map((h) => h.action);
+    expect(actions).toEqual(['promote', 'add']); // one promote row on top of the original add
+
+    // Post-promote the row is server-owned → local mutation is refused.
+    await expect(store.setStatus(local.id, 'forgotten', { actor })).rejects.toBeInstanceOf(
+      MemoryCacheReadonlyError,
+    );
   }, 30_000);
 });

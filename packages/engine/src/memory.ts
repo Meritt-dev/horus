@@ -24,9 +24,11 @@ import {
   and,
   or,
   desc,
+  notInArray,
 } from '@horus/db';
 import type {
   MemoryStore,
+  LocalMemoryStore,
   MemoryQuery,
   AuditCtx,
   MemoryStatus,
@@ -320,6 +322,22 @@ export class MemorySecretError extends Error {
 }
 
 /**
+ * Thrown when a local mutation targets a cloud-owned cache row (HOR-464 / M4). A pulled team item
+ * (`origin='cloud'`) is server-authoritative: `setStatus`/`setVisibility`/`update` refuse it rather
+ * than let a local edit silently diverge from the shared copy. To change a team item, re-promote it.
+ */
+export class MemoryCacheReadonlyError extends Error {
+  readonly id: string;
+  constructor(id: string) {
+    super(
+      `refusing to mutate a cloud-owned cached memory item (${id}); the team store owns it — re-promote to change it`,
+    );
+    this.name = 'MemoryCacheReadonlyError';
+    this.id = id;
+  }
+}
+
+/**
  * Obvious-secret detectors for the claim gate. These mirror the credential class of
  * `@horus/core`'s redaction patterns but are non-global + labelled so a single match can be
  * reported. PII like bare emails/IPs is intentionally NOT rejected here (it does not block a claim
@@ -467,7 +485,7 @@ function statusAction(status: MemoryStatus): string {
  * HONESTY INVARIANT (spec §8): this is storage only. Nothing here is read by the confidence/verdict
  * scoring path.
  */
-export function createLocalMemoryStore(db: HorusDb): MemoryStore {
+export function createLocalMemoryStore(db: HorusDb): LocalMemoryStore {
   const getById = async (id: string): Promise<MemoryItem | null> => {
     const rows = await db.select().from(memoryItem).where(eq(memoryItem.id, id)).limit(1);
     return rows[0] ?? null;
@@ -569,6 +587,8 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
     async update(id: string, patch: MemoryUpdate, opts: UpdateOpts): Promise<MemoryItem> {
       const current = await getById(id);
       if (current === null) throw new Error(`memory item not found: ${id}`);
+      // A cloud-owned cache row is server-authoritative — refuse a local edit (HOR-464).
+      if (current.origin === 'cloud') throw new MemoryCacheReadonlyError(id);
 
       // Assemble only the fields the caller actually changed (an absent field is left untouched).
       // HONESTY: `status` is NEVER updatable here — a refresh of claim/confidence/payload can never
@@ -611,6 +631,7 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
 
       const conds = [eq(memoryItem.repo, repo)];
       if (q.scope !== undefined) conds.push(eq(memoryItem.scope, q.scope));
+      if (q.origin !== undefined) conds.push(eq(memoryItem.origin, q.origin));
       if (q.visibility !== undefined) conds.push(eq(memoryItem.visibility, q.visibility));
       if (q.orgId !== undefined) conds.push(eq(memoryItem.orgId, q.orgId));
       if (q.workspaceId !== undefined) conds.push(eq(memoryItem.workspaceId, q.workspaceId));
@@ -639,6 +660,8 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
     async setStatus(id: string, status: MemoryStatus, audit: AuditCtx): Promise<void> {
       const current = await getById(id);
       if (current === null) throw new Error(`memory item not found: ${id}`);
+      // A cloud-owned cache row is server-authoritative — refuse a local status flip (HOR-464).
+      if (current.origin === 'cloud') throw new MemoryCacheReadonlyError(id);
       await db.update(memoryItem).set({ status }).where(eq(memoryItem.id, id));
       await appendAudit({
         memoryId: id,
@@ -653,6 +676,8 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
     async setVisibility(id: string, v: Visibility, audit: AuditCtx): Promise<void> {
       const current = await getById(id);
       if (current === null) throw new Error(`memory item not found: ${id}`);
+      // A cloud-owned cache row is server-authoritative — refuse a local visibility flip (HOR-464).
+      if (current.origin === 'cloud') throw new MemoryCacheReadonlyError(id);
       await db.update(memoryItem).set({ visibility: v }).where(eq(memoryItem.id, id));
       await appendAudit({
         memoryId: id,
@@ -865,6 +890,121 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
         .where(eq(memoryAudit.memoryId, id))
         // Most-recent-first; id as the stable tie-break for same-instant rows.
         .orderBy(desc(memoryAudit.at), desc(memoryAudit.id));
+    },
+
+    // ---- HOR-464 / M4: disposable team-memory read-cache + one-way promote ----
+    async upsertCached(item: NewMemoryItem, audit: AuditCtx): Promise<MemoryItem> {
+      // Gate first — even a pulled claim is re-scanned for obvious secrets (defense in depth, §7).
+      assertClaimClean(item.claim);
+
+      const repo = (item.repo ?? '').trim();
+      if (repo === '') throw new Error('memory_item requires a repo (HOR-46 fail-closed)');
+      const id = (item.id ?? '').trim();
+      if (id === '') throw new Error('upsertCached requires a stable item id (the origin client id)');
+
+      const status = item.status ?? 'fresh';
+      const now = new Date();
+      // FORCE origin='cloud' + stamp pulledAt. Cache rows carry NO incident-family recall keys
+      // (LOCAL-ONLY context, like vectors — a pulled row never participates in recurrence).
+      const values = {
+        ...item,
+        id,
+        repo,
+        status,
+        origin: 'cloud' as const,
+        pulledAt: now,
+        signature: null,
+        tags: null,
+      };
+      // Upsert-on-id so a refresh overwrites the prior cache row IN PLACE (add() is insert-only).
+      await db
+        .insert(memoryItem)
+        .values(values)
+        .onConflictDoUpdate({
+          target: memoryItem.id,
+          set: {
+            kind: values.kind,
+            claim: values.claim,
+            scope: values.scope,
+            source: values.source,
+            status,
+            confidence: values.confidence,
+            visibility: values.visibility ?? 'team',
+            evidence: values.evidence,
+            cloudId: values.cloudId ?? null,
+            authorName: values.authorName ?? null,
+            lastVerifiedAt: values.lastVerifiedAt ?? null,
+            lastVerifiedHash: values.lastVerifiedHash ?? null,
+            origin: 'cloud',
+            pulledAt: now,
+          },
+        });
+
+      const row = await getById(id);
+      if (row === null) throw new Error('memory_item upsertCached returned no row');
+
+      // Exactly ONE audit row per refresh — the append-only trail records the pull, never a
+      // replayed history of the item's cloud-side edits.
+      await appendAudit({
+        memoryId: id,
+        action: 'pulled',
+        actor: audit.actor,
+        fromStatus: null,
+        toStatus: status,
+        note: audit.note ?? null,
+        detail: { origin: 'cloud', ...(values.cloudId ? { cloudId: values.cloudId } : {}) },
+      });
+      return row;
+    },
+
+    async reconcileCache(repo: string, keepIds: string[]): Promise<number> {
+      const r = repo.trim();
+      if (r === '') return 0; // HOR-46 fail-closed — never reconcile without a repo identity.
+      // Delete only the repo's CLOUD-origin cache rows that the latest full pull no longer returned;
+      // origin='local' authored rows are never touched. An empty keepIds means the team is empty →
+      // every cache row for the repo is stale (drop them all).
+      const conds =
+        keepIds.length > 0
+          ? and(
+              eq(memoryItem.repo, r),
+              eq(memoryItem.origin, 'cloud'),
+              notInArray(memoryItem.id, keepIds),
+            )
+          : and(eq(memoryItem.repo, r), eq(memoryItem.origin, 'cloud'));
+      const deleted = await db.delete(memoryItem).where(conds).returning();
+      return deleted.length;
+    },
+
+    async markPromoted(
+      id: string,
+      provenance: { cloudId: string; authorName?: string | null },
+      audit: AuditCtx,
+    ): Promise<MemoryItem> {
+      const current = await getById(id);
+      if (current === null) throw new Error(`memory item not found: ${id}`);
+      // Flip the authored row to a server-owned team item: visibility=team, origin=cloud, stamp the
+      // cloud id. Vector stays local (untouched). Idempotent — re-promoting is a harmless no-op flip.
+      await db
+        .update(memoryItem)
+        .set({
+          visibility: 'team',
+          origin: 'cloud',
+          cloudId: provenance.cloudId,
+          authorName: provenance.authorName ?? current.authorName ?? null,
+        })
+        .where(eq(memoryItem.id, id));
+      await appendAudit({
+        memoryId: id,
+        action: 'promote',
+        actor: audit.actor,
+        fromStatus: null,
+        toStatus: null,
+        note: audit.note ?? `promoted to team (cloud id ${provenance.cloudId})`,
+        detail: { origin: 'cloud', visibility: 'team', cloudId: provenance.cloudId },
+      });
+      const updated = await getById(id);
+      if (updated === null) throw new Error(`memory item vanished during promote: ${id}`);
+      return updated;
     },
   };
 }

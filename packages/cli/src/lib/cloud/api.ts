@@ -397,6 +397,72 @@ export interface MemoryListQuery {
   cursor?: string;
 }
 
+// ── Team memory (HOR-464 / M4) ──────────────────────────────────────────────
+// The SERVER-OWNED shared team-memory store. Distinct from the write-only `memory-items` mirror:
+// a locally-authored item is one-way PROMOTED into this store, and every device pulls it back as a
+// disposable local read-cache. FROZEN wire contract — do NOT reuse syncMemoryItems/listMemoryItems.
+// PRIVACY: the promote body is a POSITIVE allowlist — NO vector/embedding/payload field ever.
+
+/** One item as the server team-memory store returns it (workspace-scoped). */
+export interface TeamMemoryItem {
+  id: string;
+  organizationId: string;
+  workspaceId: string;
+  sourceProjectId: string | null;
+  /** The promoting CLI's local `memory_item.id` — the cross-device dedup + cache join key. */
+  originClientId: string;
+  /** Joined from `promotedByUserId` → users.name; DISPLAY-ONLY attribution (never feeds rank). */
+  authorName: string | null;
+  promotedByUserId: string | null;
+  kind: string;
+  claim: string;
+  scope: string;
+  source: string;
+  status: string;
+  confidence: number | null;
+  contentHash: string | null;
+  provenance: Record<string, unknown>;
+  /** bigint serialized as a STRING (avoid JS >2^53 precision loss) — the pull cursor. */
+  seq: string;
+  deletedAt: string | null;
+  promotedAt: string;
+  updatedAt: string;
+}
+
+/** One item promoted into the team store (POSITIVE allowlist — never a vector/payload). */
+export interface TeamMemoryPromoteInput {
+  originClientId: string;
+  kind: string;
+  claim: string;
+  scope: string;
+  source: string;
+  status?: string;
+  confidence?: number | null;
+  contentHash?: string | null;
+  provenance?: Record<string, unknown>;
+}
+
+export interface TeamMemoryPromoteResult {
+  promoted: number;
+  skipped: number;
+  total: number;
+  items: TeamMemoryItem[];
+}
+
+export interface TeamMemoryListQuery {
+  /** The seq high-water mark (v1 client pulls `since:'0'` full). */
+  since: string;
+  limit?: number;
+  includeDeleted?: boolean;
+  search?: string;
+}
+
+export interface TeamMemoryListResult {
+  items: TeamMemoryItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
 export class CloudClient {
   constructor(
     private readonly baseUrl: string,
@@ -693,6 +759,44 @@ export class CloudClient {
     return this.request<{ items: MemoryItemRecord[]; nextCursor?: string }>(
       "GET",
       `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  // ── Team memory (HOR-464 / M4) ────────────────────────────────────────────
+
+  /**
+   * One-way PROMOTE local items into the workspace's shared team-memory store. Server-wins &
+   * idempotent (`ON CONFLICT (workspace_id, origin_client_id) DO NOTHING`); it clamps/skips
+   * confirmed-outcome (privacy). The body is a positive allowlist — vectors NEVER cross the wire.
+   */
+  promoteTeamMemory(
+    projectId: string,
+    body: { items: TeamMemoryPromoteInput[] },
+  ): Promise<TeamMemoryPromoteResult> {
+    return this.request<TeamMemoryPromoteResult>(
+      "POST",
+      `/v1/projects/${projectId}/team-memory/promote`,
+      body,
+    );
+  }
+
+  /**
+   * Read the workspace's team-memory items with `seq > since`, ORDER BY seq ASC. The v1 client pulls
+   * `since:'0'` and paginates on `nextCursor` until `hasMore` is false, then reconciles the local
+   * cache. `includeDeleted` surfaces tombstones (deletedAt) so the cache can drop removed rows.
+   */
+  listTeamMemorySince(
+    projectId: string,
+    q: TeamMemoryListQuery,
+  ): Promise<TeamMemoryListResult> {
+    const params = new URLSearchParams();
+    params.set("since", q.since);
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.includeDeleted) params.set("includeDeleted", "true");
+    if (q.search) params.set("search", q.search);
+    return this.request<TeamMemoryListResult>(
+      "GET",
+      `/v1/projects/${projectId}/team-memory?${params.toString()}`,
     );
   }
 }

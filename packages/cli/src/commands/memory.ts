@@ -70,7 +70,8 @@ import {
   toLinkSyncInput,
   toAuditSyncInput,
 } from '../lib/cloud/memory-store.js';
-import type { MemoryItemSyncInput } from '../lib/cloud/api.js';
+import { CloudOfflineError } from '../lib/cloud/api.js';
+import type { MemoryItemSyncInput, TeamMemoryItem, TeamMemoryPromoteInput } from '../lib/cloud/api.js';
 import { reportCloudError } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -256,6 +257,10 @@ function recalledToJSON(r: RecalledMemory): Record<string, unknown> {
     effectiveStatus: r.freshness.status,
     confidence: r.item.confidence,
     visibility: r.item.visibility,
+    // HOR-464: provenance + teammate attribution. `origin='cloud'` marks a pulled team item; the
+    // `authorName` is DISPLAY-ONLY (it is never read into rank/order — the honesty invariant).
+    origin: r.item.origin,
+    authorName: r.item.authorName ?? null,
     evidence: r.item.evidence,
     freshness: {
       label: r.freshness.label,
@@ -284,6 +289,11 @@ function renderStoredItems(items: RecalledMemory[]): string {
     lines.push(
       `  - ${r.item.kind} · scope: ${r.item.scope} · ${r.freshness.label}${drift} · confidence: ${conf}`,
     );
+    // HOR-464: teammate attribution for a pulled team item — DISPLAY-ONLY (never affects rank/order).
+    if (r.item.origin === 'cloud') {
+      const who = r.item.authorName ? `teammate ${r.item.authorName}` : 'a teammate';
+      lines.push(`  - ${pc.dim(`shared by ${who} (team)`)}`);
+    }
   }
   return lines.join('\n');
 }
@@ -1014,8 +1024,11 @@ export async function runMemorySync(opts: {
   const { db, sql } = await openDb(config.database.url);
   try {
     const store = createLocalMemoryStore(db);
+    // HOR-464: push LOCAL-authored rows ONLY. A pulled team item is an `origin='cloud'` disposable
+    // cache row owned by the server — re-pushing it through the private mirror would fork the truth.
     items = await store.query({
       repo: project,
+      origin: 'local',
       status: SYNCABLE_STATUSES,
       limit: opts.limit ?? 5000,
     });
@@ -1177,6 +1190,299 @@ export async function runMemorySync(opts: {
     );
   }
   return failed > 0 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// memory promote <id> — one-way local → shared team memory (HOR-464 / M4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a LOCAL `MemoryItem` → the team-memory promote wire shape. PRIVACY CHOKE POINT (spec §5): a
+ * POSITIVE allowlist — `payload` (where a vector could hide) is NEVER serialized. `provenance` stays
+ * an empty object here (agent/model/investigation refs only — never a vector).
+ */
+function toPromoteInput(item: MemoryItem): TeamMemoryPromoteInput {
+  return {
+    originClientId: item.id,
+    kind: item.kind,
+    claim: item.claim,
+    scope: item.scope,
+    source: item.source,
+    status: item.status,
+    confidence: item.confidence,
+    contentHash: item.lastVerifiedHash ?? null,
+    provenance: {},
+  };
+}
+
+/**
+ * `horus memory promote <id>` — one-way promotion of a LOCAL authored item into the workspace's
+ * shared team-memory store (HOR-464). Refuses a `confirmed-outcome` (privacy: a confirmed outcome is
+ * PRIVATE and never leaves as team). On success it flips the local row to a server-owned cache row
+ * (visibility=team, origin=cloud, cloudId) and appends a `promote` audit; the vector stays LOCAL.
+ *
+ * Idempotent + best-effort: the server is server-wins (`ON CONFLICT DO NOTHING`), so re-promoting is
+ * safe; a network failure never corrupts local state (the local flip only happens AFTER the server
+ * accepts). PRIVACY: the body is a positive allowlist — vectors never cross the wire.
+ */
+export async function runMemoryPromote(
+  id: string,
+  opts: { config?: string; cwd?: string; repo?: string; json?: boolean },
+): Promise<number> {
+  const json = opts.json === true;
+  const fail = (msg: string): number => {
+    if (json) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else console.error(pc.red(msg));
+    return 1;
+  };
+
+  const memId = (id ?? '').trim();
+  if (memId === '') return fail('A memory item id is required.');
+
+  const root = repoRootOrCwd(opts.cwd);
+  const cfg = readCloudConfig(root);
+  if (!isCloudActive(cfg) || !cfg.project) {
+    return fail("This repo isn't linked to a cloud project. Run `horus cloud link` first.");
+  }
+  const session = authedClient();
+  if (!session) return fail('Not logged in. Run `horus login` first.');
+
+  let config: HorusConfig;
+  try {
+    config = await loadConfig(opts.config);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+  const project = resolveProject(config, opts.repo);
+  if (!project) return 1;
+
+  const { db, sql } = await openDb(config.database.url);
+  try {
+    const store = createLocalMemoryStore(db);
+    const row = await store.get(memId);
+    if (row === null) return fail(`Memory item not found: ${memId}`);
+
+    // Privacy clamp (spec §5.2): a confirmed-outcome is PRIVATE — it can never be promoted to team.
+    if (row.kind === 'confirmed-outcome' || row.source === 'confirmed-outcome') {
+      return fail('Refusing to promote a confirmed-outcome item — it stays private (spec §5.2).');
+    }
+    // Already a server-owned cache row (previously promoted or pulled) — nothing to do.
+    if (row.origin === 'cloud') {
+      if (json) console.log(JSON.stringify({ ok: true, id: memId, alreadyTeam: true }, null, 2));
+      else console.log(pc.dim(`${memId} is already a team item — nothing to promote.`));
+      return 0;
+    }
+
+    // POST exactly ONE allowlisted item. The server clamps/skips confirmed-outcome too (defense in
+    // depth) and is server-wins on conflict.
+    const res = await session.client.promoteTeamMemory(cfg.project.id, {
+      items: [toPromoteInput(row)],
+    });
+    const promoted = res.items.find((it) => it.originClientId === memId);
+    if (!promoted) {
+      // The server accepted the call but did not return our item (skipped by its privacy clamp, or a
+      // pre-existing conflict it chose not to echo). Do NOT flip local state on an unconfirmed promote.
+      return fail(
+        `The server did not promote ${memId} (skipped ${res.skipped}/${res.total}). Local state unchanged.`,
+      );
+    }
+
+    // Flip the local row to a server-owned team item (visibility=team, origin=cloud, cloudId) + a
+    // single `promote` audit. The LOCAL vector is left as-is (it stays device-local).
+    const updated = await store.markPromoted(
+      memId,
+      { cloudId: promoted.id, authorName: promoted.authorName ?? null },
+      { actor: { kind: 'user' }, note: `promoted to team ${cfg.project.slug}` },
+    );
+
+    if (json) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            id: memId,
+            cloudId: promoted.id,
+            visibility: updated.visibility,
+            origin: updated.origin,
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(
+        pc.green(`Promoted ${memId} to team memory (${cfg.project.slug}) — now visible to teammates.`),
+      );
+    }
+    return 0;
+  } catch (err) {
+    return fail((err as Error).message);
+  } finally {
+    await sql.end();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// memory pull — refresh the local team-memory cache from the shared store (HOR-464 / M4)
+// ---------------------------------------------------------------------------
+
+/** Team-memory list page size (server returns limit+1 to compute hasMore). */
+const TEAM_PULL_PAGE_LIMIT = 200;
+/** Hard cap on pages so a misbehaving server can never spin the pull forever. */
+const TEAM_PULL_MAX_PAGES = 10_000;
+
+/** Format an age (ms) as a compact human string for the stale-cache note. */
+function formatAge(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+/**
+ * `horus memory pull` — refresh the LOCAL disposable read-cache of the workspace's shared team memory
+ * (HOR-464). A FULL pull (`since='0'`) paginated to `hasMore=false`, then:
+ *   - upsert each item as an `origin='cloud'` cache row (server-owned, readonly locally);
+ *   - a tombstone (`deletedAt`) drops the cached row;
+ *   - RE-EMBED each claim into the LOCAL vector index (vectors never leave the device);
+ *   - `reconcileCache(repo, keepIds)` — delete stale cache rows — ONLY after a fully-successful pull.
+ *
+ * OFFLINE-HONEST: a `CloudOfflineError` serves the EXISTING cache with a `stale, last pulled <age>`
+ * note and NEVER reconciles (a partial/empty pull must never wipe the cache). Never blocks local work.
+ */
+export async function runMemoryPull(opts: {
+  config?: string;
+  cwd?: string;
+  repo?: string;
+  json?: boolean;
+  force?: boolean;
+}): Promise<number> {
+  const json = opts.json === true;
+  const fail = (msg: string): number => {
+    if (json) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else console.error(pc.red(msg));
+    return 1;
+  };
+
+  const root = repoRootOrCwd(opts.cwd);
+  const cfg = readCloudConfig(root);
+  if (!isCloudActive(cfg) || !cfg.project) {
+    return fail("This repo isn't linked to a cloud project. Run `horus cloud link` first.");
+  }
+  const session = authedClient();
+  if (!session) return fail('Not logged in. Run `horus login` first.');
+
+  let config: HorusConfig;
+  try {
+    config = await loadConfig(opts.config);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+  const project = resolveProject(config, opts.repo);
+  if (!project) return 1;
+
+  const { db, sql } = await openDb(config.database.url);
+  try {
+    const store = createLocalMemoryStore(db);
+    const vectorIndex = buildVectorIndex(config, project);
+
+    // 1. FULL pull (since='0') — paginate on nextCursor until hasMore is false. Include tombstones so
+    // the cache can drop removed rows. A network failure here degrades to serving the stale cache.
+    const items: TeamMemoryItem[] = [];
+    let since = '0';
+    try {
+      for (let page = 0; page < TEAM_PULL_MAX_PAGES; page++) {
+        const res = await session.client.listTeamMemorySince(cfg.project.id, {
+          since,
+          limit: TEAM_PULL_PAGE_LIMIT,
+          includeDeleted: true,
+        });
+        items.push(...res.items);
+        if (!res.hasMore || !res.nextCursor) break;
+        since = res.nextCursor;
+      }
+    } catch (err) {
+      if (err instanceof CloudOfflineError) {
+        // OFFLINE — serve the existing cache, honest stale note, NEVER reconcile (no partial wipe).
+        const cached = await store.query({ repo: project, origin: 'cloud' });
+        const newest = cached
+          .map((c) => (c.pulledAt ? new Date(c.pulledAt).getTime() : 0))
+          .reduce((a, b) => Math.max(a, b), 0);
+        const note =
+          newest > 0 ? `stale — last pulled ${formatAge(Date.now() - newest)}` : 'stale — never pulled';
+        if (json) {
+          console.log(
+            JSON.stringify({ ok: true, offline: true, stale: true, cached: cached.length, note }, null, 2),
+          );
+        } else {
+          console.log(pc.yellow(`Offline — serving ${cached.length} cached team item(s) (${note}).`));
+        }
+        return 0;
+      }
+      throw err;
+    }
+
+    // 2. Apply: upsert live items as cache rows + re-embed locally; tombstones drop the cache row.
+    const keepIds: string[] = [];
+    let upserted = 0;
+    let removed = 0;
+    for (const it of items) {
+      if (it.deletedAt) {
+        // Tombstone — excluded from keepIds so reconcile deletes it; also drop its local vector.
+        await bestEffortRemove(vectorIndex, it.originClientId);
+        continue;
+      }
+      const cacheRow: NewMemoryItem = {
+        id: it.originClientId, // stable cross-device id (the promoting device's local id)
+        kind: it.kind,
+        claim: it.claim,
+        scope: it.scope,
+        source: it.source,
+        status: (it.status as MemoryStatus) ?? 'fresh',
+        // A null server confidence stores as 0 — honest (unknown confidence ranks low, never inflated).
+        confidence: it.confidence ?? 0,
+        evidence: [],
+        repo: project,
+        visibility: 'team',
+        cloudId: it.id,
+        authorName: it.authorName,
+      };
+      await store.upsertCached(cacheRow, { actor: { kind: 'system' }, note: 'memory pull' });
+      // LOCAL re-embed of the pulled claim (vectors never leave the device). Best-effort.
+      await bestEffortUpsert(vectorIndex, {
+        memoryId: it.originClientId,
+        claim: it.claim,
+        repo: project,
+        scope: it.scope,
+      });
+      keepIds.push(it.originClientId);
+      upserted += 1;
+    }
+
+    // 3. Reconcile — ONLY after a fully-successful pull. Deletes stale origin='cloud' rows the pull no
+    // longer returned (never an origin='local' authored row).
+    removed = await store.reconcileCache(project, keepIds);
+
+    if (json) {
+      console.log(
+        JSON.stringify({ ok: true, project, pulled: upserted, removed, total: items.length }, null, 2),
+      );
+    } else {
+      console.log(
+        pc.green(
+          `Pulled ${upserted} team memory item(s)` + (removed ? `, dropped ${removed} stale` : '') + '.',
+        ),
+      );
+      console.log(pc.dim('Team items are read-only locally — re-promote to change one. Vectors stay local.'));
+    }
+    return 0;
+  } catch (err) {
+    return fail((err as Error).message);
+  } finally {
+    await sql.end();
+  }
 }
 
 // ---------------------------------------------------------------------------

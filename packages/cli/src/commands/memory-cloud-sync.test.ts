@@ -228,6 +228,13 @@ describe('runMemorySync — bulk backfill', () => {
     expect(q.status).toEqual(expect.arrayContaining(['fresh', 'pinned', 'deprecated', 'contradicted', 'possibly-stale']));
   });
 
+  it('excludes origin=cloud cache rows from the push (queries origin=local only) — HOR-464', async () => {
+    link();
+    await runMemorySync({ config: configPath, cwd: repo, yes: true });
+    const q = store.query.mock.calls[0]![0] as { origin?: string };
+    expect(q.origin).toBe('local');
+  });
+
   it('--dry-run previews without uploading', async () => {
     link();
     const code = await runMemorySync({ config: configPath, cwd: repo, dryRun: true });

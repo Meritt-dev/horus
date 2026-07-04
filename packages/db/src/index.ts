@@ -54,7 +54,7 @@ export {
   cloudDatabaseUrlReason,
   CloudDatabaseUrlError,
 } from './guard.js';
-export { eq, desc, sql, and, or } from 'drizzle-orm';
+export { eq, desc, sql, and, or, inArray, notInArray } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
 export {
   recordOutcomeLabel,
