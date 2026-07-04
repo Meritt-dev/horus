@@ -936,6 +936,12 @@ export function createLocalMemoryStore(db: HorusDb): LocalMemoryStore {
             lastVerifiedAt: values.lastVerifiedAt ?? null,
             lastVerifiedHash: values.lastVerifiedHash ?? null,
             origin: 'cloud',
+            // Re-scope to the repo we're pulling into. The cache is disposable and
+            // project-isolated (HOR-46): a team item's id is the promoter's local id and is
+            // stable across a workspace, so pulling it from a different repo on the same store
+            // must move the cache row to the current repo — otherwise "pull here" silently
+            // leaves it invisible here, stuck in whichever repo first pulled it.
+            repo: values.repo,
             pulledAt: now,
           },
         });

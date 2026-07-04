@@ -255,6 +255,19 @@ describe('createLocalMemoryStore (embedded pglite)', () => {
     expect(await store.query({ repo: 'r' })).toHaveLength(1); // one row, overwritten in place
   }, 30_000);
 
+  it('upsertCached: re-pulling into a different repo re-scopes the cache row to that repo', async () => {
+    // A team item's id is stable across the workspace; pulling it from repo `r` then repo `r2`
+    // must move the disposable cache row to the repo being pulled — so "pull here" shows it here.
+    const first = await store.upsertCached(cacheItem({ repo: 'r' }), { actor });
+    expect(await store.query({ repo: 'r' })).toHaveLength(1);
+
+    const moved = await store.upsertCached(cacheItem({ repo: 'r2' }), { actor });
+    expect(moved.id).toBe(first.id); // same row (same id)
+    expect(moved.repo).toBe('r2');
+    expect(await store.query({ repo: 'r2' })).toHaveLength(1); // now visible in r2
+    expect(await store.query({ repo: 'r' })).toHaveLength(0); // and no longer in r (single row moved)
+  }, 30_000);
+
   it('upsertCached: appends exactly one `pulled` audit row per refresh (not a replayed trail)', async () => {
     const row = await store.upsertCached(cacheItem(), { actor, note: 'memory pull' });
     const history = await store.history(row.id);
