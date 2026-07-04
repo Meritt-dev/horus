@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.3] — 2026-07-04
+
+Init durability — large monorepos onboard. (Batch B1 of the dogfood campaign.)
+
+- **`horus init` no longer times out on large repos.** It used to block on the full embedding pass, so big monorepos hit the 900s analyze cap and left nothing usable — the campaign's #1 finding (medusa, vendure, nx). Init now returns as soon as the **structural index** is built (symbols + relationships), and embeddings warm in the background. Proven: **medusa (22,966 files) onboards in 40s** and **vendure in ~22s** — both previously timed out at 900s with no config written. `search`, `explain`, `blast-radius`, and `queues` all work immediately (semantic ranking sharpens once embeddings finish, which `init` now tells you: *"index ready (semantic search warming up)"*).
+- **Resumable-friendly + honest progress.** The analyze timeout is now adaptive to repo size (and overridable via `HORUS_ANALYZE_TIMEOUT_MS`), and long indexing runs stream phase/files/elapsed liveness instead of looking hung. A structural-complete index with embeddings still warming is no longer mistaken for a broken index and needlessly re-analyzed.
+- **No more false "dead code" from same-file calls.** A cross-language call-blocklist (meant for things like Python's `str.format`) was dropping real same-file/imported calls in other languages, so a live function like prettier's `format` reported `isDead: true` with zero callers — a verdict you could act on by deleting working code. The blocklist now never drops a call that resolves to a same-file or imported definition.
+
 ## [0.21.2] — 2026-07-04
 
 The 12-round dogfood campaign's fix batch (~48 OSS repos + real projects), plus a simpler local story: **zero infrastructure**.
