@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.2] — 2026-07-04
+
+The 12-round dogfood campaign's fix batch (~48 OSS repos + real projects), plus a simpler local story: **zero infrastructure**.
+
+- **Local persistence is embedded — Docker and Postgres are gone.** The local database is pglite at `~/.horus` (nothing to install, nothing running). The `docker-compose.yml`, the `DATABASE_URL` runtime tier, and every "Postgres reachable" check are removed; a `database` block in config now just warns. Migrating off an old local Postgres is one command: `horus db import` (defaults to `$DATABASE_URL`) copies your investigations, evidence, findings, hypotheses, memory, and scores into the embedded store. Teams that want a shared database use Horus Cloud — that's what it's for.
+- **Single-file installs stop crashing on `blast-radius`/`queues`.** The standalone binary shipped without the embedded database's runtime assets and both commands hard-crashed (`HORUS_DB_UNAVAILABLE`). They now degrade gracefully (a one-line note, no crash), the GitHub release publishes the assets, and `install.sh` places them next to the binary.
+- **Machine-JSON contract hardened.** A `--json` failure (no config, host down, bad query) now always prints one parseable JSON error object on stdout — no more empty stdout or raw stack traces (`search`/`explain` were the worst offenders). `search --json` returns an object (`{results: […]}`) instead of a bare array; `explain --json` marks capped `alternatives` with `truncatedCount`; `packet` carries repo identity (name/branch/commit).
+- **No more fake queues from type declarations.** Enum members in `.d.ts`/`.interface.ts` files (kafkajs/NestJS `GZIP`→`Snappy` from Kafka compression enums) can no longer register as queues, async boundaries, or blast-radius upstreams — types can't produce messages.
+- **External-system detection requires real evidence.** Word-bounded matching (no more `stripe` inside `stripEndSlash`, `redis` inside `Redistribution`), comment/JSDoc lines skipped (no integrations minted from `{@link}` URLs or license headers), `.yarn/`/`generated/` excluded, and a repo's own language-support plugins (prettier's GraphQL formatter) no longer count as integrations.
+- **Resolver: product code now beats test namesakes everywhere.** Product-vs-test is a hard tier on the qualified path too — an inherited product method outranks a same-named test-fixture method (undici `Pool.dispatch`), 16 fixture namesakes can't outvote one product class (oclif `Command`), and `.tst.*` files are recognized as tests (pino).
+- **Failed init no longer dirties your repo.** `.horus/` is excluded via `.git/info/exclude` *before* analysis starts, so even a timed-out first index leaves `git status` clean.
+- **Honest change attribution.** Chore/typo/formatting commits can't anchor a "deployment regression" cause, and commit attribution intersects the seed symbol's actual line range (`git log -L`) — a commit elsewhere in the same 4000-line file no longer reads as "a recent change to retry logic". Falls back to explicit "touching <file>" wording when line-level attribution isn't possible.
+
 ## [0.21.1] — 2026-07-03
 
 Dogfood-driven fixes (wide TS/JS cycle on 0.21.0); all validated live, no behavior changes to real projects.
