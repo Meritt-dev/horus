@@ -273,6 +273,47 @@ class TestHostEndpoint:
         data = _TestClient(app).get("/host").json()
         assert data["indexing"] is True
 
+    def test_host_info_advertises_degraded_mode_fields(self, tmp_path: Path) -> None:
+        # B1.4: the structural index is ready + searchable while embeddings warm in the
+        # background, so /host advertises structuralReady=True + embeddingsPending=True.
+        from types import SimpleNamespace
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient as _TestClient
+
+        from horus_source.web.routes.host import router as host_router
+
+        def _client(runtime: object | None) -> dict:
+            app = FastAPI()
+            app.state.repo_path = tmp_path
+            app.state.host_url = "http://127.0.0.1:8420"
+            app.state.mcp_url = "http://127.0.0.1:8420/mcp"
+            app.state.watch = False
+            app.state.mode = "host"
+            app.state.runtime = runtime
+            app.include_router(host_router)
+            return _TestClient(app).get("/host").json()
+
+        # Structural ready + still indexing → embeddings pending (the warming-up window).
+        warming = _client(SimpleNamespace(indexing=True, structural_ready=True))
+        assert warming["structuralReady"] is True
+        assert warming["embeddingsPending"] is True
+
+        # Structural ready + indexing done → fully ready, nothing pending.
+        ready = _client(SimpleNamespace(indexing=False, structural_ready=True))
+        assert ready["structuralReady"] is True
+        assert ready["embeddingsPending"] is False
+
+        # No structural index yet → not ready, and not "pending" (there is nothing to warm).
+        cold = _client(SimpleNamespace(indexing=True, structural_ready=False))
+        assert cold["structuralReady"] is False
+        assert cold["embeddingsPending"] is False
+
+        # Absent a runtime the host reports the conservative defaults.
+        default = _client(None)
+        assert default["structuralReady"] is False
+        assert default["embeddingsPending"] is False
+
 
 class TestNodeEndpoint:
     def test_node_not_found(self, client: TestClient) -> None:

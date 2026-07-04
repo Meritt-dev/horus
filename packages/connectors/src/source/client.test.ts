@@ -58,3 +58,43 @@ describe('impact / flows — include_tests plumbing (product-only default)', () 
     expect(urls[1]).toContain('/api/flows/function:src/app.ts:run?include_tests=true');
   });
 });
+
+describe('hostInfo — symbol-only degraded-mode fields (B1.4)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function clientReturning(body: unknown): SourceHttpClient {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    );
+    return new SourceHttpClient({ baseUrl: 'http://127.0.0.1:8420', maxRetries: 0 });
+  }
+
+  it('parses structuralReady + embeddingsPending from /api/host', async () => {
+    const info = await clientReturning({
+      repoPath: '/repos/app',
+      hostUrl: 'http://127.0.0.1:8420',
+      mcpUrl: 'http://127.0.0.1:8420/mcp',
+      watch: false,
+      mode: 'host',
+      indexing: true,
+      structuralReady: true,
+      embeddingsPending: true,
+    }).hostInfo();
+    expect(info.structuralReady).toBe(true);
+    expect(info.embeddingsPending).toBe(true);
+    expect(info.repoPath).toBe('/repos/app');
+  });
+
+  it('tolerates an older backend that omits the fields (undefined, not a crash)', async () => {
+    const info = await clientReturning({
+      repoPath: '/repos/app',
+      hostUrl: 'http://127.0.0.1:8420',
+      mcpUrl: 'http://127.0.0.1:8420/mcp',
+      watch: false,
+      mode: 'host',
+    }).hostInfo();
+    expect(info.structuralReady).toBeUndefined();
+    expect(info.embeddingsPending).toBeUndefined();
+  });
+});

@@ -178,6 +178,51 @@ describe('runIndex structural-only readiness gate (B1.1)', () => {
     expect(logs.join('\n')).toContain('Indexed');
   });
 
+  it('B1.4: surfaces "semantic search warming up" when the host is structural-ready + embeddings-pending', async () => {
+    // Force the spawn path onto a structural-complete/embeddings-pending index (as B1.1 leaves
+    // it), then have the host advertise the degraded-mode fields. init should print the warming
+    // notice so the user knows search works now while semantic ranking catches up.
+    seams.isHostHealthy.mockResolvedValue(false);
+    seams.assertSourceVersionPinned.mockResolvedValue(undefined);
+    seams.isAnalyzed.mockReturnValue(true);
+    seams.indexNeedsReanalyze
+      .mockReturnValueOnce('legacy KùzuDB store present')
+      .mockReturnValue(null);
+    seams.analyzeRepo.mockResolvedValue(undefined);
+    // Both the identity probe (hostServesRepo) and the B1.4 probe read hostInfo — advertise
+    // the warming-up window on the same mock.
+    seams.hostInfo.mockResolvedValue({
+      repoPath: repo,
+      structuralReady: true,
+      embeddingsPending: true,
+    });
+
+    const code = await runIndex({ path: repo });
+
+    expect(code).toBe(0);
+    expect(logs.join('\n')).toContain('semantic search warming up');
+  });
+
+  it('B1.4: stays silent once embeddings have landed (no false warming notice)', async () => {
+    seams.isHostHealthy.mockResolvedValue(false);
+    seams.assertSourceVersionPinned.mockResolvedValue(undefined);
+    seams.isAnalyzed.mockReturnValue(true);
+    seams.indexNeedsReanalyze
+      .mockReturnValueOnce('legacy KùzuDB store present')
+      .mockReturnValue(null);
+    seams.analyzeRepo.mockResolvedValue(undefined);
+    seams.hostInfo.mockResolvedValue({
+      repoPath: repo,
+      structuralReady: true,
+      embeddingsPending: false,
+    });
+
+    const code = await runIndex({ path: repo });
+
+    expect(code).toBe(0);
+    expect(logs.join('\n')).not.toContain('semantic search warming up');
+  });
+
   it('REGRESSION: a 0-embedding index with NO structural marker (HOR-433 kùzu) still aborts', async () => {
     // The genuine kùzu-era empty store: indexNeedsReanalyze() keeps returning a reason even
     // after analyze, so init must still fail loudly and never register a host on it.

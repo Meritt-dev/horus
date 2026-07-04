@@ -170,6 +170,14 @@ export interface SourceHostInfo {
   mcpUrl: string;
   watch: boolean;
   mode: string;
+  /**
+   * B1.4 symbol-only degraded-mode contract. `structuralReady` is true once the
+   * structural index (symbols + edges) is persisted and searchable; `embeddingsPending`
+   * is true while it is usable but semantic vectors are still warming in the background.
+   * Optional for back-compat: older backends omit them (treated as absent).
+   */
+  structuralReady?: boolean;
+  embeddingsPending?: boolean;
 }
 
 export interface SourceHealth {
