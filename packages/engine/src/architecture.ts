@@ -179,7 +179,15 @@ export function isOwnCapability(marker: string, productFiles: string[]): boolean
       .slice(0, -1)
       .some((seg) => seg.replace(/[^a-z0-9]/g, '').includes(needle)),
   ).length;
-  return inOwnDir / productFiles.length >= 0.5;
+  // A repo's own capability for X lives in a directory named after X (`src/language-graphql`,
+  // `src/graphql`, `packages/redis`). It may be CONCENTRATED there (≥50%) or DIFFUSE across
+  // several dirs while still anchored by a real same-named module — prettier's GraphQL support
+  // is only ~35% under `src/language-graphql` (the rest is in `language-js/embed`, `main/plugins`),
+  // yet it is unmistakably prettier's own plugin, not a Stripe-style integration (dogfood 0.21.2).
+  // Require a genuine cluster (≥2 files in a same-named dir) so a single coincidental path
+  // (`src/redis/util.ts` in a repo that really talks to Redis) never suppresses a real external.
+  const frac = inOwnDir / productFiles.length;
+  return frac >= 0.5 || (inOwnDir >= 2 && frac >= 0.33);
 }
 
 export async function discoverArchitecture(deps: {

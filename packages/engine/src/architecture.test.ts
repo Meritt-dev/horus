@@ -277,7 +277,21 @@ describe('external-system detection — evidence threshold (dogfood 0.21, A3)', 
     expect(
       isOwnCapability('graphql', ['src/api/resolvers.ts', 'src/server.ts']),
     ).toBe(false);
-    // Below the 50% dominance bar → treated as a real dependency.
+    // DIFFUSE own capability — prettier: a real `src/language-graphql/` module (≥2 files) plus
+    // the rest of the graphql handling scattered across language-js/embed + main/plugins, so only
+    // ~33% sit under the like-named dir. Still the repo's own plugin, not a dependency (0.21.2 F2).
+    expect(
+      isOwnCapability('graphql', [
+        'src/language-graphql/parser.ts',
+        'src/language-graphql/printer.ts',
+        'src/language-js/embed/graphql.js',
+        'src/main/plugins.ts',
+        'src/main/core.ts',
+        'src/document/printer.ts',
+      ]),
+    ).toBe(true);
+    // A SINGLE coincidental own-dir file among real integration usages → still a dependency
+    // (the ≥2-file cluster guard stops one stray path from suppressing a real external).
     expect(
       isOwnCapability('graphql', ['src/language-graphql/p.ts', 'src/api/a.ts', 'src/api/b.ts']),
     ).toBe(false);

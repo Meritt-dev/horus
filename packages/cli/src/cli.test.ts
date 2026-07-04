@@ -2,6 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildProgram } from './index.js';
 import { HORUS_VERSION } from '@horus/core';
 
+// F3 (0.21.2): the explain `.action` dropped `--full` on the floor, so `explain --json --full`
+// was byte-identical to the capped output. Mock runExplain to assert the option is forwarded.
+vi.mock('./commands/explain.js', () => ({ runExplain: vi.fn(async () => 0) }));
+import { runExplain } from './commands/explain.js';
+const mockRunExplain = vi.mocked(runExplain);
+
 describe('CLI program structure', () => {
   it('has the correct name', () => {
     expect(buildProgram().name()).toBe('horus');
@@ -60,6 +66,28 @@ describe('CLI program structure', () => {
     expect(out).not.toMatch(/\n {2}setup\b/);
     expect(out).not.toMatch(/\n {2}index\b/);
     expect(out).toMatch(/\n {2}init\b/);
+  });
+
+  it('explain forwards --full through to runExplain (0.21.2 F3 wiring)', async () => {
+    mockRunExplain.mockClear();
+    const program = buildProgram();
+    program.exitOverride();
+    await program.parseAsync(['explain', 'MySymbol', '--json', '--full'], { from: 'user' });
+    expect(mockRunExplain).toHaveBeenCalledWith(
+      'MySymbol',
+      expect.objectContaining({ json: true, full: true }),
+    );
+  });
+
+  it('explain without --full forwards full undefined (compact default)', async () => {
+    mockRunExplain.mockClear();
+    const program = buildProgram();
+    program.exitOverride();
+    await program.parseAsync(['explain', 'MySymbol', '--json'], { from: 'user' });
+    expect(mockRunExplain).toHaveBeenCalledWith(
+      'MySymbol',
+      expect.objectContaining({ json: true, full: undefined }),
+    );
   });
 
   it('investigate command has --env, --format options (and NO --project)', () => {

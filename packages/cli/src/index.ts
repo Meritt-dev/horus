@@ -413,13 +413,14 @@ Examples:
     .action(
       async (
         query: string,
-        opts: { config?: string; depth?: number; repo?: string; json?: boolean },
+        opts: { config?: string; depth?: number; repo?: string; json?: boolean; full?: boolean },
       ) => {
         process.exitCode = await runExplain(query, {
           config: opts.config,
           depth: opts.depth,
           repo: opts.repo,
           json: opts.json,
+          full: opts.full,
         });
       },
     );
