@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.8] — 2026-07-11
+
+User-filed bug reports become investigation evidence: the Lens connector is native — no setup, no config.
+
+- **Lens reports feed `horus investigate` (HOR-470).** Every bug report your users file through Lens (comment, captured frontend errors, failing network calls, route, release/git SHA) now folds into the investigation as first-class evidence. A report's top stack frame is a direct code seed — same machinery as Sentry's — so a user-reported error lands the investigation on the raising code, and the report's comment matches the hint like an error signature. Reports are scoped to the incident window and relevance-classified (a report about an unrelated page is demoted to ambient, never inflating confidence).
+- **Zero configuration — it's native.** There is no `horus connect lens` and no config stanza: the connector lights up automatically when you're logged into Horus Cloud (`horus login`) and the repo is cloud-linked (`horus cloud link`). Not logged in? It silently stays out of the way. Privacy holds the usual line: comments and error messages are secret-redacted, reporter identity is never read, and console bodies never leave the cloud.
+
 ## [0.21.7] — 2026-07-04
 
 Shared team memory: promote a decision once, your teammates pull it — cloud-owned, vectors stay on your device.
