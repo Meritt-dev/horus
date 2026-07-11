@@ -23,6 +23,7 @@ import {
   mongoForEnv,
   postgresForEnv,
   sentryForEnv,
+  lensForCloud,
   axiomForEnv,
   shopifyForEnv,
   queueForEnv,
@@ -33,6 +34,7 @@ import type {
   LogsProvider,
   StateProvider,
   SentryProvider,
+  LensProvider,
   AxiomProvider,
   ShopifyProvider,
   QueueRuntimeProvider,
@@ -50,6 +52,8 @@ import type { InvestigationReport, CauseCandidate } from '@horus/engine';
 import { applyReranker, isRerankerModel } from '@horus/eval';
 import { resolveSourceHostUrl } from './ensure-host.js';
 import { readIndexMeta, STALE_INDEX_MS } from './freshness.js';
+import { readAuth } from './cloud/auth-store.js';
+import { readCloudConfig } from './cloud/context-store.js';
 
 /**
  * Everything a single `investigate()` call needs: the resolved env, the live connectors,
@@ -66,6 +70,8 @@ export interface InvestigationContext {
   mongo: StateProvider | null;
   postgres: StateProvider | null;
   sentry: SentryProvider | null;
+  /** Native Lens (Horus Cloud) provider — non-null only when logged in + repo cloud-linked (HOR-470). */
+  lens: LensProvider | null;
   axiom: AxiomProvider | null;
   shopify: ShopifyProvider | null;
   queue: QueueRuntimeProvider | null;
@@ -140,6 +146,16 @@ export async function buildInvestigationContext(
   const mongo = mongoForEnv(renv);
   const postgres = postgresForEnv(renv);
   const sentry = sentryForEnv(renv);
+  // Native Lens connector (HOR-470): no config stanza, no `horus connect lens`. It lights up
+  // automatically iff the CLI is logged into Horus Cloud (`~/.horus/auth.json`) AND this repo
+  // is cloud-linked (`<repo>/.horus/cloud.json` carries `workspace.id`). Degrade silently to
+  // null when either is absent.
+  const auth = readAuth();
+  const cloudCfg = readCloudConfig(renv.path);
+  const lens =
+    auth && cloudCfg?.workspace?.id
+      ? lensForCloud({ apiBaseUrl: auth.apiBaseUrl, token: auth.token, workspaceId: cloudCfg.workspace.id })
+      : null;
   const axiom = axiomForEnv(renv);
   const shopify = shopifyForEnv(renv);
   const queue = queueForEnv(renv);
@@ -162,6 +178,7 @@ export async function buildInvestigationContext(
     mongo,
     postgres,
     sentry,
+    lens,
     axiom,
     shopify,
     queue,
@@ -257,6 +274,7 @@ export async function runOneInvestigation(
       mongo: ctx.mongo,
       postgres: ctx.postgres,
       sentry: ctx.sentry,
+      lens: ctx.lens,
       axiom: ctx.axiom,
       shopify: ctx.shopify,
       queue: ctx.queue,
@@ -273,6 +291,9 @@ export async function runOneInvestigation(
         mongodb: !!renv.connectors.mongodb,
         postgres: !!renv.connectors.postgres,
         sentry: !!renv.connectors.sentry,
+        // Lens is NATIVE (no config stanza) — "configured" == provider present, mirroring how
+        // `queue` is derived from `ctx.queue`. Absent when not logged in / repo not cloud-linked.
+        lens: ctx.lens != null,
         axiom: !!renv.connectors.axiom,
         shopify: !!renv.connectors.shopify,
         redis: !!renv.connectors.redis,

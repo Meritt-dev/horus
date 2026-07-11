@@ -91,6 +91,7 @@ describe('hasAnyRuntimeConnector — one definition for gaps AND routing', () =>
     expect(hasAnyRuntimeConnector({ elasticsearch: true })).toBe(true);
     expect(hasAnyRuntimeConnector({ grafana: true })).toBe(true);
     expect(hasAnyRuntimeConnector({ sentry: true })).toBe(true);
+    expect(hasAnyRuntimeConnector({ lens: true })).toBe(true);
     expect(hasAnyRuntimeConnector({ mongodb: true })).toBe(true);
     expect(hasAnyRuntimeConnector({ postgres: true })).toBe(true);
     expect(hasAnyRuntimeConnector({ redis: true })).toBe(true);

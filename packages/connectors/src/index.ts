@@ -61,3 +61,20 @@ export type {
   ShopifyProviderOpts,
   ShopifyRecord,
 } from './shopify/index.js';
+// Lens (native Horus Cloud connector, HOR-470): explicit re-export of the public
+// surface. The pure helpers `buildTitle` / `computeRelevance` are intentionally NOT
+// re-exported here to avoid a barrel name-clash with Sentry/Axiom/Shopify's same-named
+// helpers (all are tested via their local `./lens/index.js` barrel). The stack parser
+// `parseStackTopFrame` IS re-exported — it's a distinctly-named, independently-useful helper.
+export { LensCloudClient, LensProvider, parseStackTopFrame } from './lens/index.js';
+export type {
+  LensClientOpts,
+  LensSite,
+  LensReport,
+  LensReportSummary,
+  LensReportMetadata,
+  LensProviderOpts,
+  LensReportSignal,
+  LensTopFrame,
+  LensFailingRequest,
+} from './lens/index.js';

@@ -29,6 +29,25 @@ export interface ConnectorFlags {
    */
   axiom?: boolean;
   /**
+   * True when the native Lens (Horus Cloud) connector is present (HOR-470) — i.e. the CLI is
+   * logged into Cloud AND the repo is cloud-linked. Lens is a user-report error source like
+   * Sentry (its evidence is `kind: 'log'`), so a present Lens that returns reports clears the
+   * logs gap. Native: "configured" == "provider present" (there is no config stanza). A
+   * present-but-empty Lens is negative evidence, not a gap.
+   */
+  lens?: boolean;
+  /**
+   * True when Lens report collection ran to completion (even with zero reports).
+   * False/absent + lens:true means collection was attempted but failed. Lets the gap
+   * detector distinguish "no reports" (negative evidence) from "collection failed".
+   */
+  lensCollected?: boolean;
+  /**
+   * Short leak-safe category of why Lens collection failed. Only set when
+   * collection was attempted and failed.
+   */
+  lensFailureReason?: string;
+  /**
    * True when a Shopify Admin connector is configured (auth present) for the env. Shopify
    * evidence is application `state` (orders/inventory/fulfillment), driven by queries the
    * caller supplies (`--shopify-query`) or config declares. A configured Shopify with no
@@ -161,6 +180,7 @@ export function hasAnyRuntimeConnector(c: ConnectorFlags): boolean {
   return Boolean(
     c.elasticsearch ||
       c.sentry ||
+      c.lens ||
       c.axiom ||
       c.grafana ||
       c.mongodb ||

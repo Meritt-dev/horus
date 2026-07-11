@@ -22,6 +22,7 @@ import type {
   SymbolContext,
   Flow,
 } from '@horus/core';
+import { redactSecrets } from '@horus/core';
 import type {
   CodeProvider,
   GitCommit,
@@ -35,6 +36,7 @@ import type {
   RedisStateProvider,
   RedisStateAnalysis,
   SentryProvider,
+  LensProvider,
   AxiomProvider,
   ShopifyProvider,
   DurationDimensionOptions,
@@ -122,6 +124,15 @@ export interface EngineDeps {
    * negative evidence, not a gap; one failing provider never aborts the investigation.
    */
   sentry?: SentryProvider | null;
+  /**
+   * Optional Lens user-report evidence provider (HOR-470) — folds user-filed bug reports
+   * (comment + captured frontend errors + failing requests) into the same error-signature /
+   * directSignatures / seed path as Elasticsearch/Sentry. Each report carries a direct code
+   * seed (the top parseable stack frame). NATIVE Horus Cloud connector: present whenever the
+   * CLI is logged into Cloud AND the repo is cloud-linked. A configured-but-empty Lens is
+   * negative evidence, not a gap; one failing provider never aborts the investigation.
+   */
+  lens?: LensProvider | null;
   /**
    * Optional Axiom logs-evidence provider — folds structured log rows (APL query) into the
    * same log-evidence path as Elasticsearch / Sentry. A configured-but-empty Axiom is
@@ -2608,6 +2619,129 @@ export async function investigate(
     }
   }
 
+  // e0a2b. LENS USER-REPORT EVIDENCE (HOR-470) — user-filed bug reports (comment + captured
+  // frontend error stacks + failing requests) folded into the SAME error-signature /
+  // directSignatures / seed path as Elasticsearch logs + Sentry. Each report is both "what
+  // the user saw" (comment + route) AND a direct code seed (the top parseable stack frame →
+  // filePath:fn:line). A user-filed report whose comment matches the hint is high-signal even
+  // with zero captured errors. NATIVE Cloud connector; a configured-but-empty Lens is negative
+  // evidence (not a gap). One failing provider must never abort the investigation.
+  let lensCollected = false;
+  let lensFailureReason: string | undefined;
+  let lensReportCount = 0;
+  if (deps.lens) {
+    try {
+      const from = logWindowFrom(input.logsSince ?? input.since);
+      const to = new Date().toISOString();
+      // Seed terms mirror the log/Sentry blocks: hint + seed symbol + seed file base, so a
+      // Lens report whose comment/error/frame names the implicated code is 'direct' (HOR-156).
+      const lensSeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const lensTerms = top
+        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(lensSeedBase)])]
+        : [...new Set(tokenize(hint))];
+      const seedFileBase = top ? (top.filePath.split('/').pop() ?? '').toLowerCase() : '';
+
+      const signals = await deps.lens.collect({ from, to, hintTerms: lensTerms });
+      lensCollected = true;
+      lensReportCount = signals.length;
+
+      for (const sig of signals.slice(0, 10)) {
+        const frame = sig.topFrame;
+        // A signature "key" the relevance classifier can tokenize: the user comment plus the
+        // captured top error message + frame symbol/file (so domain terms in any count). The
+        // comment matters most — a user-filed report that names the hint is high-signal.
+        const sigKey = [sig.comment ?? '', sig.topErrorMessage ?? '', frame?.function ?? '', frame?.filename ?? '']
+          .filter(Boolean)
+          .join(' ');
+        // The frame's file is the strongest link: when it matches the resolved seed file,
+        // this report IS the error at the seed — force 'direct'.
+        const frameFileBase = (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
+        const frameMatchesSeed =
+          seedFileBase.length > 0 && frameFileBase.length > 0 &&
+          (frameFileBase === seedFileBase || frameFileBase.includes(seedFileBase) || seedFileBase.includes(frameFileBase));
+
+        const { relevanceClass: classified, relevanceReason } = classifyLogRelevance(
+          sigKey,
+          frame?.filename ? [frame.filename] : [],
+          lensTerms,
+          input.service,
+        );
+        const relevanceClass: LogRelevanceClass = frameMatchesSeed ? 'direct' : classified;
+        const reason = frameMatchesSeed
+          ? `Lens report frame at seed file ${frame?.filename ?? ''}`
+          : relevanceReason;
+
+        const commentText = sig.comment ? redactSecrets(sig.comment).slice(0, 80) : '(no comment)';
+        const where = sig.route ?? sig.url ?? '';
+        const whereStr = where !== '' ? ` · ${where}` : '';
+        const frameLoc = frame?.filename
+          ? ` @ ${frame.filename}${frame.lineno !== undefined ? `:${frame.lineno}` : ''}`
+          : '';
+        const tag = relevanceClass === 'ambient' ? ' [ambient]' : '';
+        const title =
+          `Lens report: "${commentText}" · ${sig.errorCount} error(s)${whereStr} (${shortTs(sig.createdAt)})${frameLoc}${tag}`.slice(
+            0,
+            220,
+          );
+
+        const links: EvidenceLinks = {};
+        if (frame?.filename !== undefined) links.file = frame.filename;
+        if (frame?.lineno !== undefined) links.line = frame.lineno;
+
+        const ev = mkEv(
+          'log',
+          title,
+          {
+            source: 'lens',
+            reportId: sig.id,
+            comment: sig.comment ? redactSecrets(sig.comment) : null,
+            route: sig.route ?? null,
+            url: sig.url ?? null,
+            release: sig.release ?? null,
+            gitSha: sig.gitSha ?? null,
+            trigger: sig.trigger ?? null,
+            errorCount: sig.errorCount,
+            topError: sig.topErrorMessage ? redactSecrets(sig.topErrorMessage) : null,
+            // Direct code seed — same fields the engine reads off a code symbol.
+            filePath: frame?.filename ?? null,
+            symbolName: frame?.function ?? null,
+            lineStart: frame?.lineno ?? null,
+            failingRequests: sig.failingRequests,
+            reactComponents: sig.reactComponents ?? null,
+            featureFlags: sig.featureFlags ?? null,
+            relevanceClass,
+            relevanceReason: reason,
+          },
+          links,
+          sig.submittedAt ?? sig.createdAt ?? undefined,
+          // Direct: full report weight, boosted when the raise-site frame is resolved.
+          // Ambient: demoted so unrelated reports don't inflate confidence.
+          relevanceClass === 'direct' ? (frame?.filename ? 0.95 : 0.9) : 0.45,
+        );
+        logEvIds.push(ev.id);
+        if (relevanceClass === 'direct') {
+          directLogEvIds.push(ev.id);
+          // Key the signature on the comment (the user's own words) when present, else the
+          // captured top error message — so recurring user reports group in directSignatures.
+          const sigLabel = sig.comment && sig.comment.trim() !== ''
+            ? redactSecrets(sig.comment).slice(0, 120)
+            : sig.topErrorMessage
+              ? redactSecrets(sig.topErrorMessage)
+              : `Lens report ${sig.id}`;
+          // A report is itself one occurrence — never push count 0 (a comment-only report
+          // would otherwise render as "0x" in the top-signature line).
+          directSignatures.push({ key: sigLabel, count: Math.max(1, sig.errorCount), message: sigLabel });
+        } else {
+          ambientLogEvIds.push(ev.id);
+        }
+      }
+    } catch (lensErr) {
+      // Lens failure must never break the investigation — continue without it.
+      lensCollected = false;
+      lensFailureReason = connectorFailureReason(lensErr);
+    }
+  }
+
   // e0a3. AXIOM LOG EVIDENCE (HOR-429) — structured log rows from an APL query folded
   // into the SAME log-evidence path as Elasticsearch + Sentry. Each row becomes one
   // kind:'log' Evidence, relevance-classified against the seed via classifyLogRelevance
@@ -4246,6 +4380,7 @@ export async function investigate(
           ['mongodb', deps.connectors.mongodb, deps.mongo],
           ['postgres', deps.connectors.postgres, deps.postgres],
           ['sentry', deps.connectors.sentry, deps.sentry],
+          ['lens', deps.connectors.lens, deps.lens],
           ['axiom', deps.connectors.axiom, deps.axiom],
           ['shopify', deps.connectors.shopify, deps.shopify],
           ['redis', deps.connectors.redis, deps.redisState],
@@ -4266,6 +4401,8 @@ export async function investigate(
         // `unavailable` instead of silently flipping to "not configured".
         sentryCollected,
         sentryFailureReason,
+        lensCollected,
+        lensFailureReason,
         axiomCollected,
         axiomFailureReason,
         shopifyCollected,
@@ -4289,6 +4426,9 @@ export async function investigate(
         sentry: deps.sentry != null,
         sentryCollected,
         sentryFailureReason,
+        lens: deps.lens != null,
+        lensCollected,
+        lensFailureReason,
         axiom: deps.axiom != null,
         axiomCollected,
         axiomFailureReason,

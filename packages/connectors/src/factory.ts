@@ -38,6 +38,8 @@ import { PostgresStateClient } from './postgres/client.js';
 import { PostgresStateProvider } from './postgres/provider.js';
 import { SentryClient } from './sentry/client.js';
 import { SentryProvider } from './sentry/provider.js';
+import { LensCloudClient } from './lens/client.js';
+import { LensProvider } from './lens/provider.js';
 import { AxiomClient } from './axiom/client.js';
 import { AxiomProvider } from './axiom/provider.js';
 import { ShopifyAdminClient } from './shopify/client.js';
@@ -324,6 +326,31 @@ export function shopifyForEnv(renv: ResolvedEnvironment): ShopifyProvider | null
       store: s.store,
       ...(s.queries !== undefined ? { queries: s.queries } : {}),
     },
+  );
+}
+
+/**
+ * Return a Lens user-report evidence `LensProvider` (HOR-470). Lens is the NATIVE Horus
+ * Cloud connector: there is NO config stanza and NO `horus connect lens` — it is wired
+ * straight from the CLI's cloud auth (bearer token + `apiBaseUrl`) and the repo's
+ * cloud-linked `workspace.id`, so it lights up automatically whenever the CLI is logged
+ * into Horus Cloud AND the repo is cloud-linked. Unlike the `*ForEnv` builders it takes no
+ * `ResolvedEnvironment` — there is nothing in the project config to resolve. The CLI passes
+ * `null` for the whole provider (never calls this) when either auth or the workspace id is
+ * absent, so this always receives a complete triple. Read-only; surfaces user-filed bug
+ * reports as `kind: 'log'` evidence with a direct code seed (the top parseable stack frame).
+ */
+export function lensForCloud(opts: {
+  apiBaseUrl: string;
+  token: string;
+  workspaceId: string;
+}): LensProvider {
+  return new LensProvider(
+    new LensCloudClient({
+      apiBaseUrl: opts.apiBaseUrl,
+      token: opts.token,
+      workspaceId: opts.workspaceId,
+    }),
   );
 }
 
