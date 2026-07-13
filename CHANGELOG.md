@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.9] — 2026-07-13
+
+Work the Lens backlog directly: every client-reported issue as a queue your agent can pick up and fix — not just investigation evidence.
+
+- **`horus lens` — the client-report work queue (HOR-471).** `horus investigate` already folds Lens reports in as incident evidence; now `horus lens` lists **every** bug report your users filed, newest first, so an agent (or you) can work the backlog straight through. `horus lens show <id>` opens one in full — comment, route, release/git SHA, failing requests, and the **code seed** (`file:line` — the raising frame to fix), resolved with the same machinery an investigation uses. Filter with `--status` / `--since` / `--limit`, add `--json` for agents. Reports merge across all Lens sites in the workspace.
+- **Exposed to agents over MCP.** Two new MCP tools — `list_lens_reports` and `get_lens_report` — let a coding agent pull the backlog and jump to each report's raise site without leaving its editor. These are the first cloud-backed MCP tools; the existing local knowledge tools are unchanged.
+- **Native, same as the connector.** No `horus connect`, no config: `horus lens` lights up when you're logged in (`horus login`) and the repo is cloud-linked (`horus cloud link`), and degrades to a one-line remedy (with valid JSON under `--json`) otherwise. Read-only; comments and errors are secret-redacted and reporter identity is never read.
+
 ## [0.21.8] — 2026-07-11
 
 User-filed bug reports become investigation evidence: the Lens connector is native — no setup, no config.
