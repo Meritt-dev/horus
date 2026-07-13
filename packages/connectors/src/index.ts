@@ -66,7 +66,14 @@ export type {
 // re-exported here to avoid a barrel name-clash with Sentry/Axiom/Shopify's same-named
 // helpers (all are tested via their local `./lens/index.js` barrel). The stack parser
 // `parseStackTopFrame` IS re-exported — it's a distinctly-named, independently-useful helper.
-export { LensCloudClient, LensProvider, parseStackTopFrame } from './lens/index.js';
+// `buildSignal` (summary + full report → shaped signal incl. resolved code seed) is likewise
+// distinctly-named and reused by the `horus lens` work-queue surface (HOR-CLI).
+export {
+  LensCloudClient,
+  LensProvider,
+  parseStackTopFrame,
+  buildSignal,
+} from './lens/index.js';
 export type {
   LensClientOpts,
   LensSite,

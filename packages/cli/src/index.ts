@@ -31,6 +31,7 @@ import { runBlastRadius } from './commands/blast-radius.js';
 import { runRepos } from './commands/repos.js';
 import { runSearch } from './commands/search.js';
 import { runInvestigations } from './commands/investigations.js';
+import { runLensList, runLensShow } from './commands/lens.js';
 import { runReplay } from './commands/replay.js';
 import { runOwner } from './commands/owner.js';
 import { runPostmortem } from './commands/postmortem.js';
@@ -60,7 +61,11 @@ import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
 import { runConnect } from './commands/connect.js';
 import { runNotify, type NotifyOptions } from './commands/notify.js';
-import { runSecretsStatus, runSecretsMigrate, runSecretsKey } from './commands/secrets.js';
+import {
+  runSecretsStatus,
+  runSecretsMigrate,
+  runSecretsKey,
+} from './commands/secrets.js';
 import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
@@ -71,7 +76,12 @@ import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.j
 import { runUpdate } from './commands/update.js';
 import { runLogin, runLogout } from './commands/login.js';
 import { runContextList, runContextUse, runContextShow } from './commands/context.js';
-import { runCloudLink, runCloudUnlink, runCloudStatus, runCloudSync } from './commands/cloud.js';
+import {
+  runCloudLink,
+  runCloudUnlink,
+  runCloudStatus,
+  runCloudSync,
+} from './commands/cloud.js';
 import {
   runTelemetryStatus,
   runTelemetryEnable,
@@ -111,18 +121,23 @@ export function buildProgram(): Command {
 
   program
     .command('doctor')
-    .description('Check local readiness: CLI version, git root, .horus config, and source-intelligence setup')
+    .description(
+      'Check local readiness: CLI version, git root, .horus config, and source-intelligence setup',
+    )
     .option('-c, --config <path>', 'path to horus.config.js for connector checks')
     .option('--json', 'output machine-readable JSON instead of human-readable text')
     .action(async (opts: { config?: string; json?: boolean }) => {
       process.exitCode = await runDoctor({ config: opts.config, json: opts.json });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus doctor
   horus doctor --json
   horus doctor --config ./horus.config.js
-`);
+`,
+    );
 
   const providers = program
     .command('providers')
@@ -130,7 +145,9 @@ Examples:
 
   providers
     .command('doctor')
-    .description('Check which local AI providers (Codex, Claude, Gemini, etc.) are available')
+    .description(
+      'Check which local AI providers (Codex, Claude, Gemini, etc.) are available',
+    )
     .action(async () => {
       process.exitCode = await runProvidersDoctorCommand();
     });
@@ -141,14 +158,26 @@ Examples:
       'Set up this repo for Horus: check prerequisites, write/register .horus config, start the source-intelligence host, and index the code',
     )
     .option('--env <name>', 'environment name (default: production)')
-    .option('--source <url>', 'external source-intelligence host URL — recorded verbatim, skips the local host/index')
+    .option(
+      '--source <url>',
+      'external source-intelligence host URL — recorded verbatim, skips the local host/index',
+    )
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--full', 'build a full project-knowledge snapshot (default)')
-    .option('--changed', 'pre-push-safe: refresh PROJECT KNOWLEDGE for changed files only (does not reanalyze the source graph)')
+    .option(
+      '--changed',
+      'pre-push-safe: refresh PROJECT KNOWLEDGE for changed files only (does not reanalyze the source graph)',
+    )
     .option('--fast', 'speed hint, used with --changed')
-    .option('--reindex', 'force a full source re-analysis: stop the host, wipe .horus/source, rebuild (purges stale graph edges)')
-    .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
+    .option(
+      '--reindex',
+      'force a full source re-analysis: stop the host, wipe .horus/source, rebuild (purges stale graph edges)',
+    )
+    .option(
+      '--import-kb <path>',
+      'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source',
+    )
     .action(
       async (opts: {
         env?: string;
@@ -164,43 +193,55 @@ Examples:
         process.exitCode = await runInit(opts);
       },
     )
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus init
   horus init --changed --fast          # pre-push: refresh project knowledge only (no source reanalysis)
   horus init --reindex                 # full source re-analysis (e.g. after a backend update)
   horus init --source http://127.0.0.1:8420   # use an already-running external host
-`);
+`,
+    );
 
   program
     .command('projects')
-    .description('List projects registered in the global registry (~/.horus/registry.json)')
+    .description(
+      'List projects registered in the global registry (~/.horus/registry.json)',
+    )
     .action(async () => {
       process.exitCode = await runProjects();
     });
 
   program
     .command('readiness')
-    .description('Summarize release/demo readiness: DB, source intelligence, connectors, and local config (HOR-97)')
+    .description(
+      'Summarize release/demo readiness: DB, source intelligence, connectors, and local config (HOR-97)',
+    )
     .option('-c, --config <path>', 'path to horus.config.js')
     .option('--ai', 'append AI readiness summary and recommended next action')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(async (opts: { config?: string; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runReadiness({ config: opts.config, ai: opts.ai, aiModel: opts.aiModel });
+      process.exitCode = await runReadiness({
+        config: opts.config,
+        ai: opts.ai,
+        aiModel: opts.aiModel,
+      });
     });
 
   const db = program
     .command('db')
     .description('Local database utilities (the single embedded persistence tier)');
-  db
-    .command('import')
+  db.command('import')
     .description(
       'One-time import of a legacy Postgres into the embedded database ' +
         '(--from defaults to $DATABASE_URL)',
     )
     .option('--from <postgres-url>', 'source Postgres URL (defaults to $DATABASE_URL)')
     .action(async (opts: { from?: string }) => {
-      process.exitCode = await runDbImport({ ...(opts.from !== undefined ? { from: opts.from } : {}) });
+      process.exitCode = await runDbImport({
+        ...(opts.from !== undefined ? { from: opts.from } : {}),
+      });
     });
 
   program
@@ -209,13 +250,25 @@ Examples:
       'Add or update a connector (elasticsearch / mongodb / postgres / sentry / axiom / shopify / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
-    .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
+    .option(
+      '--provider <name>',
+      'AI provider for `connect ai` (anthropic / claude / codex / gemini)',
+    )
     .option('--api-key <key>', 'Anthropic API key for `connect ai`')
     .option('--model <id>', 'default model for `connect ai`')
-    .option('--url <url>', 'connector URL or connection string (Redis with auth: redis://:password@host:6379)')
+    .option(
+      '--url <url>',
+      'connector URL or connection string (Redis with auth: redis://:password@host:6379)',
+    )
     .option('--username <user>', 'username (elasticsearch / grafana)')
-    .option('--password <pass>', 'password (elasticsearch / grafana; for Redis embed in --url)')
-    .option('--index-pattern <pattern>', 'Elasticsearch index pattern (required for elasticsearch)')
+    .option(
+      '--password <pass>',
+      'password (elasticsearch / grafana; for Redis embed in --url)',
+    )
+    .option(
+      '--index-pattern <pattern>',
+      'Elasticsearch index pattern (required for elasticsearch)',
+    )
     .option('--service <name>', 'service name scope for log queries')
     .option('--database <name>', 'database name (required for mongodb)')
     .option('--collections <list>', 'comma-separated collection allowlist (mongodb)')
@@ -223,13 +276,28 @@ Examples:
     .option('--tables <list>', 'comma-separated table allowlist (postgres)')
     .option('--auth-token <token>', 'Sentry API auth token (required for sentry)')
     .option('--org <slug>', 'Sentry org slug (required for sentry)')
-    .option('--sentry-project <slug>', 'Sentry project slug — provider domain data (required for sentry)')
+    .option(
+      '--sentry-project <slug>',
+      'Sentry project slug — provider domain data (required for sentry)',
+    )
     .option('--token <token>', 'Axiom API token (required for axiom)')
     .option('--dataset <name>', 'Axiom dataset to query (required for axiom)')
-    .option('--store <name>', 'Shopify store subdomain, e.g. my-store — .myshopify.com is added automatically (required for shopify)')
-    .option('--api-version <ver>', 'Shopify Admin API version, e.g. 2025-10 (shopify; defaults to a recent version)')
-    .option('--access-id <id>', 'Shopify app client_id — omit for a static Admin API token (shopify)')
-    .option('--secret <secret>', 'Shopify client_secret, or a static Admin API access token — encrypted at rest (required for shopify)')
+    .option(
+      '--store <name>',
+      'Shopify store subdomain, e.g. my-store — .myshopify.com is added automatically (required for shopify)',
+    )
+    .option(
+      '--api-version <ver>',
+      'Shopify Admin API version, e.g. 2025-10 (shopify; defaults to a recent version)',
+    )
+    .option(
+      '--access-id <id>',
+      'Shopify app client_id — omit for a static Admin API token (shopify)',
+    )
+    .option(
+      '--secret <secret>',
+      'Shopify client_secret, or a static Admin API access token — encrypted at rest (required for shopify)',
+    )
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
     .option(
       '--db <spec>',
@@ -240,7 +308,10 @@ Examples:
       },
       [] as string[],
     )
-    .option('--bullmq-prefix <prefix>', 'BullMQ key prefix for redis queue DBs (default: bull)')
+    .option(
+      '--bullmq-prefix <prefix>',
+      'BullMQ key prefix for redis queue DBs (default: bull)',
+    )
     .option('--no-scan-dbs', 'skip interactive Redis DB scan')
     .option('--no-test', 'skip live connection probe')
     .action(
@@ -310,7 +381,9 @@ Examples:
 
   const notify = program
     .command('notify')
-    .description('Configure the outbound notify sink for `horus watch` (webhook / cloud) — HOR-454');
+    .description(
+      'Configure the outbound notify sink for `horus watch` (webhook / cloud) — HOR-454',
+    );
   const notifyAction =
     (sub: string | undefined) =>
     async (opts: NotifyOptions): Promise<void> => {
@@ -322,8 +395,14 @@ Examples:
     .option('-c, --config <path>', 'path to a horus config file')
     .option('--env <name>', 'environment to configure (default: first)')
     .option('--url <url>', 'webhook URL to POST confident auto-investigations to')
-    .option('--secret <secret>', 'HMAC signing secret (stored encrypted, never plaintext)')
-    .option('--min-confidence <n>', 'only dispatch at/above this confidence (0..1, default 0.6)')
+    .option(
+      '--secret <secret>',
+      'HMAC signing secret (stored encrypted, never plaintext)',
+    )
+    .option(
+      '--min-confidence <n>',
+      'only dispatch at/above this confidence (0..1, default 0.6)',
+    )
     .option('--cloud', 'also push headlines to Horus Cloud')
     .option('--no-cloud', 'disable the Horus Cloud push')
     .action(notifyAction('set'));
@@ -348,23 +427,31 @@ Examples:
 
   const secrets = program
     .command('secrets')
-    .description('Manage encrypted connector credentials (.horus/secrets.local.json) — HOR-452');
+    .description(
+      'Manage encrypted connector credentials (.horus/secrets.local.json) — HOR-452',
+    );
   secrets
     .command('status')
-    .description('Show the master key source, stored secrets, plaintext in config, and gitignore state')
+    .description(
+      'Show the master key source, stored secrets, plaintext in config, and gitignore state',
+    )
     .action(() => {
       process.exitCode = runSecretsStatus();
     });
   secrets
     .command('migrate')
-    .description('Move plaintext connector secrets out of config.json into the encrypted store')
+    .description(
+      'Move plaintext connector secrets out of config.json into the encrypted store',
+    )
     .option('--dry-run', 'list what would be migrated without changing anything')
     .action((opts: { dryRun?: boolean }) => {
       process.exitCode = runSecretsMigrate({ dryRun: opts.dryRun });
     });
   secrets
     .command('key')
-    .description('Show the master key source; --show prints it (base64) for CI (HORUS_SECRET_KEY)')
+    .description(
+      'Show the master key source; --show prints it (base64) for CI (HORUS_SECRET_KEY)',
+    )
     .option('--show', 'print the master key (treat as a credential)')
     .action((opts: { show?: boolean }) => {
       process.exitCode = runSecretsKey({ show: opts.show });
@@ -372,7 +459,9 @@ Examples:
 
   program
     .command('stop')
-    .description('Stop the source-intelligence host for the current repo (or --all to stop every host)')
+    .description(
+      'Stop the source-intelligence host for the current repo (or --all to stop every host)',
+    )
     .option('--all', 'stop all registered source-intelligence hosts')
     .action(async (opts: { all?: boolean }) => {
       process.exitCode = await runStop(opts);
@@ -380,7 +469,9 @@ Examples:
 
   program
     .command('hosts')
-    .description('List registered source-intelligence hosts and their live status (port, repo, running/stopped)')
+    .description(
+      'List registered source-intelligence hosts and their live status (port, repo, running/stopped)',
+    )
     .option('--reap', 'stop orphaned source hosts that no registered repo owns')
     .action(async (opts: { reap?: boolean }) => {
       process.exitCode = await runHosts({ reap: opts.reap });
@@ -392,15 +483,13 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--json', 'output machine-readable JSON instead of human-readable text')
-    .action(
-      async (opts: { config?: string; env?: string; json?: boolean }) => {
-        const code = await runStatus(opts.config, {
-          env: opts.env,
-          json: opts.json,
-        });
-        process.exitCode = code;
-      },
-    );
+    .action(async (opts: { config?: string; env?: string; json?: boolean }) => {
+      const code = await runStatus(opts.config, {
+        env: opts.env,
+        json: opts.json,
+      });
+      process.exitCode = code;
+    });
 
   program
     .command('explain <query>')
@@ -409,13 +498,22 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--json', 'output JSON')
     .option('--full', 'full JSON: uncapped lists + snippets (default: compact)')
     .action(
       async (
         query: string,
-        opts: { config?: string; depth?: number; repo?: string; json?: boolean; full?: boolean },
+        opts: {
+          config?: string;
+          depth?: number;
+          repo?: string;
+          json?: boolean;
+          full?: boolean;
+        },
       ) => {
         process.exitCode = await runExplain(query, {
           config: opts.config,
@@ -429,10 +527,14 @@ Examples:
 
   const knowledge = program
     .command('knowledge')
-    .description('Query the local project-knowledge index (.horus/index) — offline, no Cloud');
+    .description(
+      'Query the local project-knowledge index (.horus/index) — offline, no Cloud',
+    );
   knowledge
     .command('status')
-    .description('Show last indexed commit, schema version, item counts, and stale/dirty status')
+    .description(
+      'Show last indexed commit, schema version, item counts, and stale/dirty status',
+    )
     .option('--cloud', 'also compare the local index with the linked cloud snapshot')
     .action(async (opts: { cloud?: boolean }) => {
       const local = runKnowledgeStatus();
@@ -441,13 +543,17 @@ Examples:
     });
   knowledge
     .command('search <query>')
-    .description('Keyword search across indexed operations, types, concepts, and patterns')
+    .description(
+      'Keyword search across indexed operations, types, concepts, and patterns',
+    )
     .action((query: string) => {
       process.exitCode = runKnowledgeSearch(query);
     });
   knowledge
     .command('contracts <name>')
-    .description('Show operations/types/enums/auth rules verbatim (no hallucinated values)')
+    .description(
+      'Show operations/types/enums/auth rules verbatim (no hallucinated values)',
+    )
     .action((name: string) => {
       process.exitCode = runKnowledgeContracts(name);
     });
@@ -465,13 +571,17 @@ Examples:
     });
   knowledge
     .command('validate')
-    .description('Validate the index (schema + content hash + staleness) — pre-push friendly')
+    .description(
+      'Validate the index (schema + content hash + staleness) — pre-push friendly',
+    )
     .action(() => {
       process.exitCode = runKnowledgeValidate();
     });
   knowledge
     .command('push')
-    .description('Upload the local knowledge snapshot to the linked cloud project (optional; content-hash deduped)')
+    .description(
+      'Upload the local knowledge snapshot to the linked cloud project (optional; content-hash deduped)',
+    )
     .option('--dry-run', 'preview what would be uploaded without sending')
     .action(async (opts: { dryRun?: boolean }) => {
       process.exitCode = await runKnowledgePush({ dryRun: opts.dryRun });
@@ -495,22 +605,44 @@ Examples:
       'Synthesize owned areas, runtime paths, past investigations and weak spots for a scope',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--json', 'output JSON')
-    .action(async (scope: string, opts: { config?: string; repo?: string; json?: boolean }) => {
-      process.exitCode = await runMemoryShow(scope, opts);
-    });
+    .action(
+      async (scope: string, opts: { config?: string; repo?: string; json?: boolean }) => {
+        process.exitCode = await runMemoryShow(scope, opts);
+      },
+    );
 
-  const collectEvidence = (value: string, prev: string[]): string[] => prev.concat([value]);
+  const collectEvidence = (value: string, prev: string[]): string[] =>
+    prev.concat([value]);
 
   memory
     .command('add <claim>')
     .description('Add an authored memory claim (human source) for the repo')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
-    .option('--scope <scope>', 'applicability scope: global|repo|module:<area>|symbol:<node_id>', 'repo')
-    .option('--kind <kind>', 'code-fact|contract|decision|pitfall|incident-pattern', 'code-fact')
-    .option('--evidence <kind:ref>', 'evidence reference (repeatable); "kind:ref" or bare "ref"', collectEvidence, [])
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
+    .option(
+      '--scope <scope>',
+      'applicability scope: global|repo|module:<area>|symbol:<node_id>',
+      'repo',
+    )
+    .option(
+      '--kind <kind>',
+      'code-fact|contract|decision|pitfall|incident-pattern',
+      'code-fact',
+    )
+    .option(
+      '--evidence <kind:ref>',
+      'evidence reference (repeatable); "kind:ref" or bare "ref"',
+      collectEvidence,
+      [],
+    )
     .option('--confidence <0..1>', 'confidence in the claim (default 0.75)')
     .option('--json', 'output JSON')
     .action(
@@ -532,9 +664,14 @@ Examples:
 
   memory
     .command('confirm <investigationId>')
-    .description('Record a confirmed-outcome memory item from an investigation (private, PII-gated)')
+    .description(
+      'Record a confirmed-outcome memory item from an investigation (private, PII-gated)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
@@ -548,50 +685,74 @@ Examples:
 
   memory
     .command('forget <id>')
-    .description('Soft-delete a memory item (retained + audited, excluded from recall, reversible)')
+    .description(
+      'Soft-delete a memory item (retained + audited, excluded from recall, reversible)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
-    .action(async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
-      process.exitCode = await runMemoryForget(id, opts);
-    });
+    .action(
+      async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
+        process.exitCode = await runMemoryForget(id, opts);
+      },
+    );
 
   memory
     .command('pin <id>')
-    .description('Pin a memory item so it floats to the top of recall (never auto-hidden)')
+    .description(
+      'Pin a memory item so it floats to the top of recall (never auto-hidden)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
-    .action(async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
-      process.exitCode = await runMemoryPin(id, opts);
-    });
+    .action(
+      async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
+        process.exitCode = await runMemoryPin(id, opts);
+      },
+    );
 
   memory
     .command('list')
     .description('List persisted authored memory items for the repo')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--all', 'include forgotten/deprecated/contradicted items')
     .option('--json', 'output JSON')
-    .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
-      process.exitCode = await runMemoryList(opts);
-    });
+    .action(
+      async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
+        process.exitCode = await runMemoryList(opts);
+      },
+    );
 
   // Memory→memory link graph (FROZEN day-0 rels). NB: these are `memory link/unlink` SUBcommands —
   // distinct from the unrelated top-level `link` (cloud link).
   memory
     .command('link <a> <b>')
-    .description('Author a memory→memory edge (supersedes|contradicts|recurs-with) between two items')
+    .description(
+      'Author a memory→memory edge (supersedes|contradicts|recurs-with) between two items',
+    )
     .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
       async (
         a: string,
         b: string,
-        opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+        opts: {
+          config?: string;
+          repo?: string;
+          rel?: string;
+          note?: string;
+          json?: boolean;
+        },
       ) => {
         process.exitCode = await runMemoryLink(a, b, opts);
       },
@@ -599,17 +760,28 @@ Examples:
 
   memory
     .command('unlink <a> <b>')
-    .description('Remove a memory→memory edge (inverse of `memory link`); a missing edge is a no-op')
+    .description(
+      'Remove a memory→memory edge (inverse of `memory link`); a missing edge is a no-op',
+    )
     .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
       async (
         a: string,
         b: string,
-        opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+        opts: {
+          config?: string;
+          repo?: string;
+          rel?: string;
+          note?: string;
+          json?: boolean;
+        },
       ) => {
         process.exitCode = await runMemoryUnlink(a, b, opts);
       },
@@ -617,27 +789,46 @@ Examples:
 
   memory
     .command('detect')
-    .description('Auto-detect memory→memory edges (recurrence/contradiction); --dry-run previews only')
+    .description(
+      'Auto-detect memory→memory edges (recurrence/contradiction); --dry-run previews only',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--dry-run', 'print proposed edges for confirmation without writing')
     .option('--limit <n>', 'max items to scan', (v) => Number(v))
     .option('--json', 'output JSON')
     .action(
-      async (opts: { config?: string; repo?: string; dryRun?: boolean; limit?: number; json?: boolean }) => {
+      async (opts: {
+        config?: string;
+        repo?: string;
+        dryRun?: boolean;
+        limit?: number;
+        json?: boolean;
+      }) => {
         process.exitCode = await runMemoryDetect(opts);
       },
     );
 
   memory
     .command('accuracy')
-    .description("Report Horus's measured hit-rate from the converged outcome-label eval set")
+    .description(
+      "Report Horus's measured hit-rate from the converged outcome-label eval set",
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--since <date>', 'only count labels on/after this date (e.g. 2026-06-01)')
     .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
-    .option('--all', 'count the full retained history (disable the default recent window)')
+    .option(
+      '--all',
+      'count the full retained history (disable the default recent window)',
+    )
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
     .option('--json', 'output JSON')
     .action(
@@ -657,9 +848,14 @@ Examples:
 
   memory
     .command('sync')
-    .description('Push local memory items to the linked cloud project (idempotent, best-effort)')
+    .description(
+      'Push local memory items to the linked cloud project (idempotent, best-effort)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--limit <n>', 'max local items to scan', (v) => Number(v))
     .option('--dry-run', 'preview what would be synced without uploading')
     .option('--yes', 'skip the confirmation prompt')
@@ -679,40 +875,69 @@ Examples:
 
   memory
     .command('promote <id>')
-    .description('Promote a local memory item into the shared team memory (one-way; refuses confirmed-outcome)')
+    .description(
+      'Promote a local memory item into the shared team memory (one-way; refuses confirmed-outcome)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--json', 'output JSON')
-    .action(async (id: string, opts: { config?: string; repo?: string; json?: boolean }) => {
-      process.exitCode = await runMemoryPromote(id, opts);
-    });
+    .action(
+      async (id: string, opts: { config?: string; repo?: string; json?: boolean }) => {
+        process.exitCode = await runMemoryPromote(id, opts);
+      },
+    );
 
   memory
     .command('pull')
-    .description('Refresh the local cache of shared team memory (full pull; offline serves stale cache)')
+    .description(
+      'Refresh the local cache of shared team memory (full pull; offline serves stale cache)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--force', 'force a full refresh even if the cache looks current')
     .option('--json', 'output JSON')
-    .action(async (opts: { config?: string; repo?: string; force?: boolean; json?: boolean }) => {
-      process.exitCode = await runMemoryPull(opts);
-    });
+    .action(
+      async (opts: {
+        config?: string;
+        repo?: string;
+        force?: boolean;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runMemoryPull(opts);
+      },
+    );
 
   // `eval` — the read-only accuracy harness (HOR-403). READ-ONLY over the outcome-label eval store:
   // it never writes labels (only `horus feedback` + `horus memory confirm` do). Shares the read
   // flags (--source/--days/--limit/--repo) with `horus memory accuracy`.
   const evalCmd = program
     .command('eval')
-    .description("Read-only accuracy harness over Horus's outcome-label eval set (never writes labels)");
+    .description(
+      "Read-only accuracy harness over Horus's outcome-label eval set (never writes labels)",
+    );
   evalCmd
     .command('build')
-    .description('Emit a byte-stable corpus-<version>.jsonl + manifest from the eval set (read-only)')
+    .description(
+      'Emit a byte-stable corpus-<version>.jsonl + manifest from the eval set (read-only)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--days <n>', 'only include labels from the last N days', (v) => Number(v))
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
-    .option('--out <dir>', 'output directory for the corpus + manifest (default: ./.horus/eval)')
+    .option(
+      '--out <dir>',
+      'output directory for the corpus + manifest (default: ./.horus/eval)',
+    )
     .option('--version <v>', 'corpus schema version tag (default: v1)')
     .option('--json', 'output JSON')
     .action(
@@ -731,9 +956,14 @@ Examples:
     );
   evalCmd
     .command('baseline')
-    .description('Print the baseline hit-rate (== memory accuracy) + a feature-separation diagnostic')
+    .description(
+      'Print the baseline hit-rate (== memory accuracy) + a feature-separation diagnostic',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
@@ -753,7 +983,9 @@ Examples:
 
   program
     .command('train')
-    .description('Fit the local, per-tenant reranker over your outcome-label corpus (off until it beats baseline)')
+    .description(
+      'Fit the local, per-tenant reranker over your outcome-label corpus (off until it beats baseline)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
     .option('--days <n>', 'only train on labels from the last N days', (v) => Number(v))
@@ -766,29 +998,52 @@ candidate causes among those that already clear Horus's confidence gates — it 
 score, a confidence, or a verdict. It ships OFF; once trained, enable with:
   HORUS_RERANK=1 horus investigate "<hint>"`,
     )
-    .action(async (opts: { config?: string; source?: string; days?: number; limit?: number }) => {
-      process.exitCode = await runTrain(opts);
-    });
+    .action(
+      async (opts: {
+        config?: string;
+        source?: string;
+        days?: number;
+        limit?: number;
+      }) => {
+        process.exitCode = await runTrain(opts);
+      },
+    );
 
   program
     .command('mcp')
-    .description('Run the Horus MCP server (stdio) — exposes the local project-knowledge index to agents')
+    .description(
+      'Run the Horus MCP server (stdio) — exposes the local project-knowledge index to agents',
+    )
     .action(async () => {
       process.exitCode = await runMcpServer();
     });
 
   program
     .command('queues [name]')
-    .description('Show queue topology from source intelligence; --live adds real-time Redis/BullMQ state')
+    .description(
+      'Show queue topology from source intelligence; --live adds real-time Redis/BullMQ state',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--live', 'fetch real-time queue depths and failed-job counts from Redis/BullMQ')
+    .option(
+      '--live',
+      'fetch real-time queue depths and failed-job counts from Redis/BullMQ',
+    )
     .option('--json', 'output JSON')
-    .option('--ai', 'append AI narration of queue topology and live state (most useful with --live)')
+    .option(
+      '--ai',
+      'append AI narration of queue topology and live state (most useful with --live)',
+    )
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         name: string | undefined,
-        opts: { config?: string; live?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
+        opts: {
+          config?: string;
+          live?: boolean;
+          json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
+        },
       ) => {
         process.exitCode = await runQueues(name, {
           config: opts.config,
@@ -805,10 +1060,19 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .description('Run a deterministic investigation for an incident hint')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
-    .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
+    .option(
+      '--scope <path>',
+      'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos',
+    )
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
-    .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
+    .option(
+      '--logs-since <dur>',
+      'runtime-log window as a duration (e.g. 30d, 24h); independent of --since',
+    )
     .option(
       '--shopify-query <q>',
       'Shopify Admin GraphQL query to run as evidence: @file, - (stdin), or a raw string; repeatable',
@@ -818,7 +1082,10 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
       },
       [] as string[],
     )
-    .option('--shopify-variables <json>', 'variables (@file or inline JSON object) applied to every --shopify-query')
+    .option(
+      '--shopify-variables <json>',
+      'variables (@file or inline JSON object) applied to every --shopify-query',
+    )
     .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
     .option(
       '--service <name>',
@@ -827,7 +1094,10 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .option('--json', 'output JSON (alias for --format json)')
     .option('--format <fmt>', 'output format: text | markdown | json', 'text')
     .option('--full', 'include raw evidence payloads in JSON output (default: compact)')
-    .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
+    .option(
+      '--ai',
+      'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)',
+    )
     .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
     .action(
       async (
@@ -858,7 +1128,9 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
           since: opts.since,
           logsSince: opts.logsSince,
           ...(opts.shopifyQuery !== undefined ? { shopifyQuery: opts.shopifyQuery } : {}),
-          ...(opts.shopifyVariables !== undefined ? { shopifyVariables: opts.shopifyVariables } : {}),
+          ...(opts.shopifyVariables !== undefined
+            ? { shopifyVariables: opts.shopifyVariables }
+            : {}),
           timeout: opts.timeout,
           service: opts.service,
           json: opts.json,
@@ -869,22 +1141,36 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
         });
       },
     )
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus investigate "checkout latency spike"
   horus investigate --ai "payment failures"
-`);
+`,
+    );
 
   program
     .command('packet <hint|savedId>')
-    .description('Build a compact, honesty-framed agent packet from a hint (fresh run) or saved investigation id')
+    .description(
+      'Build a compact, honesty-framed agent packet from a hint (fresh run) or saved investigation id',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
-    .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core)')
-    .option('--service <name>', 'service name to scope runtime logs, e.g. leadcall-api-prod')
+    .option(
+      '--scope <path>',
+      'resolve the seed only from symbols under this path (e.g. packages/core)',
+    )
+    .option(
+      '--service <name>',
+      'service name to scope runtime logs, e.g. leadcall-api-prod',
+    )
     .option('--since <ref>', 'git ref/range for the change window (e.g. HEAD~5)')
     .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
-    .option('--for <agent>', 'presentation preset: claude | cursor | generic (tightens caps only)')
+    .option(
+      '--for <agent>',
+      'presentation preset: claude | cursor | generic (tightens caps only)',
+    )
     .option('--json', 'emit the packet as JSON (clean for piping into agents)')
     .action(
       async (
@@ -912,19 +1198,28 @@ Examples:
         });
       },
     )
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus packet "checkout latency spike"
   horus packet "queue backlog" --for claude --json
   horus packet <savedId> --json          # project a saved investigation (no re-query)
-`);
+`,
+    );
 
   program
     .command('watch')
-    .description('Proactively monitor a source (Sentry/Elasticsearch) and auto-investigate each new incident')
+    .description(
+      'Proactively monitor a source (Sentry/Elasticsearch) and auto-investigate each new incident',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
-    .option('--source <source>', 'sentry | elasticsearch | auto (default: auto — whichever is configured)', 'auto')
+    .option(
+      '--source <source>',
+      'sentry | elasticsearch | auto (default: auto — whichever is configured)',
+      'auto',
+    )
     .option('--interval <seconds>', 'poll interval in seconds (default 60)', '60')
     .option('--once', 'poll a single cycle then exit (for cron/testing)')
     .action(
@@ -944,13 +1239,16 @@ Examples:
         });
       },
     )
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus watch                                  # auto source, poll every 60s until Ctrl-C
   horus watch --source sentry --once           # one sweep over current Sentry issues
   horus watch --source elasticsearch --interval 30
   horus watch --env production --once
-`);
+`,
+    );
 
   program
     .command('changes <base> [compare]')
@@ -959,12 +1257,33 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON (compact by default)')
-    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
+    .option(
+      '--full',
+      'with --json: uncapped raw structure instead of the compact summary',
+    )
     .option('--ai', 'append AI change-impact review')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
-    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean; full?: boolean; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json, full: opts.full, ai: opts.ai, aiModel: opts.aiModel });
-    });
+    .action(
+      async (
+        base: string,
+        compare: string | undefined,
+        opts: {
+          config?: string;
+          json?: boolean;
+          full?: boolean;
+          ai?: boolean;
+          aiModel?: string;
+        },
+      ) => {
+        process.exitCode = await runChanges(base, compare, {
+          config: opts.config,
+          json: opts.json,
+          full: opts.full,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
+        });
+      },
+    );
 
   program
     .command('timeline [service]')
@@ -972,12 +1291,21 @@ Examples:
       'Reconstruct what changed in a time window (git + change-impact) — evidence, not conclusions',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
-    .option('--since <when>', 'git --since (default "7 days ago"; e.g. "30 days ago", a date)')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
+    .option(
+      '--since <when>',
+      'git --since (default "7 days ago"; e.g. "30 days ago", a date)',
+    )
     .option('--until <when>', 'git --until')
     .option('--all', 'include all history instead of the default recent window')
     .option('--json', 'output JSON (compact by default)')
-    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
+    .option(
+      '--full',
+      'with --json: uncapped raw structure instead of the compact summary',
+    )
     .option('--ai', 'append AI narrative interpretation of the timeline')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
@@ -1015,11 +1343,17 @@ Examples:
       'Concise, evidence-backed summary of what changed for a service in a time window',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--since <when>', 'git --since (default "7 days ago")')
     .option('--until <when>', 'git --until')
     .option('--json', 'output JSON (compact by default)')
-    .option('--full', 'with --json: uncapped raw structure instead of the compact summary')
+    .option(
+      '--full',
+      'with --json: uncapped raw structure instead of the compact summary',
+    )
     .option('--ai', 'append AI interpretation of the changes')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .option('--push', 'push the report to the linked Horus Cloud project')
@@ -1061,9 +1395,21 @@ Examples:
     .option('--json', 'output JSON')
     .option('--ai', 'append AI system explanation grounded in discovered architecture')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
-    .action(async (opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runArchitecture({ config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
-    });
+    .action(
+      async (opts: {
+        config?: string;
+        json?: boolean;
+        ai?: boolean;
+        aiModel?: string;
+      }) => {
+        process.exitCode = await runArchitecture({
+          config: opts.config,
+          json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
+        });
+      },
+    );
 
   program
     .command('blast-radius <query>')
@@ -1072,14 +1418,24 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'traversal depth', (v) => parseInt(v, 10))
-    .option('--include-tests', 'include test/docs/example callers in the traversal (product-only by default)')
+    .option(
+      '--include-tests',
+      'include test/docs/example callers in the traversal (product-only by default)',
+    )
     .option('--json', 'output JSON')
     .option('--ai', 'append AI severity and containment interpretation')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         query: string,
-        opts: { config?: string; depth?: number; includeTests?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
+        opts: {
+          config?: string;
+          depth?: number;
+          includeTests?: boolean;
+          json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
+        },
       ) => {
         process.exitCode = await runBlastRadius(query, {
           config: opts.config,
@@ -1109,7 +1465,10 @@ Examples:
     .option('-n, --limit <n>', 'results per repo', (v) => parseInt(v, 10))
     .option('--json', 'output JSON')
     .action(
-      async (query: string, opts: { config?: string; limit?: number; json?: boolean }) => {
+      async (
+        query: string,
+        opts: { config?: string; limit?: number; json?: boolean },
+      ) => {
         process.exitCode = await runSearch(query, {
           config: opts.config,
           limit: opts.limit,
@@ -1131,25 +1490,99 @@ Examples:
         json: opts.json,
       });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus investigations
   horus investigations -n 20
   horus investigations --json
-`);
+`,
+    );
+
+  const lens = program
+    .command('lens')
+    .description(
+      'Client-reported issues (Lens work queue) — needs `horus login` + `horus cloud link`',
+    );
+
+  lens
+    .command('list', { isDefault: true })
+    .description('List every client-reported Lens issue (newest first)')
+    .option('--status <status>', 'filter by report status (default: submitted)')
+    .option('--all', 'include every status (drop the default submitted filter)')
+    .option('-n, --limit <n>', 'max reports (1–200, default 50)', (v) => parseInt(v, 10))
+    .option('--since <date>', 'only reports created on/after this ISO date')
+    .option('--site <id>', 'restrict to a single Lens site id')
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
+    .action(
+      async (opts: {
+        status?: string;
+        all?: boolean;
+        limit?: number;
+        since?: string;
+        site?: string;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runLensList(opts);
+      },
+    )
+    .addHelpText(
+      'after',
+      `
+Examples:
+  horus lens
+  horus lens --json
+  horus lens --status open -n 100
+  horus lens show rep_abc123
+`,
+    );
+
+  lens
+    .command('show <reportId>')
+    .description(
+      'Show one client report in full — comment, route, error, and the code seed to fix',
+    )
+    .option('--site <id>', "the report's Lens site id (skips the cross-site scan)")
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
+    .action(async (reportId: string, opts: { site?: string; json?: boolean }) => {
+      process.exitCode = await runLensShow(reportId, opts);
+    });
 
   program
     .command('replay <id>')
     .description('Re-render a saved investigation from the audit store (no re-query)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--format <fmt>', 'text | markdown | json', 'text')
-    .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
+    .option(
+      '--ai',
+      'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)',
+    )
     .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
     .option('--refresh-ai', 're-run AI even if a stored judgment already exists')
-    .action(async (id: string, opts: { config?: string; format?: string; ai?: boolean; aiModel?: string; refreshAi?: boolean }) => {
-      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format, ai: opts.ai, aiModel: opts.aiModel, refreshAi: opts.refreshAi });
-    })
-    .addHelpText('after', `
+    .action(
+      async (
+        id: string,
+        opts: {
+          config?: string;
+          format?: string;
+          ai?: boolean;
+          aiModel?: string;
+          refreshAi?: boolean;
+        },
+      ) => {
+        process.exitCode = await runReplay(id, {
+          config: opts.config,
+          format: opts.format,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
+          refreshAi: opts.refreshAi,
+        });
+      },
+    )
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus replay <id>
   horus replay <id> --format markdown
@@ -1159,7 +1592,8 @@ Examples:
   horus replay <id> --ai --refresh-ai
 
   (Use 'horus investigations' to list saved investigation ids.)
-`);
+`,
+    );
 
   program
     .command('postmortem <id>')
@@ -1167,13 +1601,37 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--output <path>', 'write Markdown to a file instead of printing to stdout')
     .option('--force', 'overwrite the output file if it already exists')
-    .option('--ai-summary', 'append an AI-generated summary section (requires ANTHROPIC_API_KEY; falls back gracefully)')
+    .option(
+      '--ai-summary',
+      'append an AI-generated summary section (requires ANTHROPIC_API_KEY; falls back gracefully)',
+    )
     .option('--ai-model <model>', 'AI model for --ai-summary (default: claude-opus-4-8)')
     .option('--refresh-ai', 're-run AI even if a stored judgment already exists')
-    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean; aiSummary?: boolean; aiModel?: string; refreshAi?: boolean }) => {
-      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force, aiSummary: opts.aiSummary, aiModel: opts.aiModel, refreshAi: opts.refreshAi });
-    })
-    .addHelpText('after', `
+    .action(
+      async (
+        id: string,
+        opts: {
+          config?: string;
+          output?: string;
+          force?: boolean;
+          aiSummary?: boolean;
+          aiModel?: string;
+          refreshAi?: boolean;
+        },
+      ) => {
+        process.exitCode = await runPostmortem(id, {
+          config: opts.config,
+          output: opts.output,
+          force: opts.force,
+          aiSummary: opts.aiSummary,
+          aiModel: opts.aiModel,
+          refreshAi: opts.refreshAi,
+        });
+      },
+    )
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus postmortem <id>
   horus postmortem <id> --output ./postmortem.md
@@ -1183,7 +1641,8 @@ Examples:
   horus postmortem <id> --ai-summary --refresh-ai
 
   (Use 'horus investigations' to list saved investigation ids.)
-`);
+`,
+    );
 
   program
     .command('owner <query>')
@@ -1191,7 +1650,10 @@ Examples:
       'Estimate who likely owns a component (git history, with confidence + evidence)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--json', 'output JSON')
     .action(
       async (query: string, opts: { config?: string; repo?: string; json?: boolean }) => {
@@ -1206,15 +1668,25 @@ Examples:
   program
     .command('score <id>')
     .description(
-      'Score a saved investigation\'s quality (a feedback loop for Horus, not engineers)',
+      "Score a saved investigation's quality (a feedback loop for Horus, not engineers)",
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI score explanation and improvement suggestions')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
-    .action(async (id: string, opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runScore(id, { config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
-    });
+    .action(
+      async (
+        id: string,
+        opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string },
+      ) => {
+        process.exitCode = await runScore(id, {
+          config: opts.config,
+          json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
+        });
+      },
+    );
 
   program
     .command('ask <id> <directive>')
@@ -1231,9 +1703,18 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
-    .action(async (id: string, directive: string, opts: { config?: string; json?: boolean }) => {
-      process.exitCode = await runAsk(id, directive, { config: opts.config, json: opts.json });
-    });
+    .action(
+      async (
+        id: string,
+        directive: string,
+        opts: { config?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runAsk(id, directive, {
+          config: opts.config,
+          json: opts.json,
+        });
+      },
+    );
 
   program
     .command('scores')
@@ -1255,19 +1736,33 @@ Examples:
       'Understand a system fast: architecture, critical paths, what breaks, ownership, past incidents',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .option('--json', 'output JSON')
     .option('--ai', 'append AI onboarding guide grounded in discovered system evidence')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
-    .action(async (area: string | undefined, opts: { config?: string; repo?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runOnboard(area, {
-        config: opts.config,
-        repo: opts.repo,
-        json: opts.json,
-        ai: opts.ai,
-        aiModel: opts.aiModel,
-      });
-    });
+    .action(
+      async (
+        area: string | undefined,
+        opts: {
+          config?: string;
+          repo?: string;
+          json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
+        },
+      ) => {
+        process.exitCode = await runOnboard(area, {
+          config: opts.config,
+          repo: opts.repo,
+          json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
+        });
+      },
+    );
 
   program
     .command('simulate [scenario]')
@@ -1275,13 +1770,18 @@ Examples:
       'Practice an incident: pick a synthetic scenario and compare your reasoning with Horus',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
-    .action(async (scenario: string | undefined, opts: { config?: string; repo?: string }) => {
-      process.exitCode = await runSimulate(scenario, {
-        config: opts.config,
-        repo: opts.repo,
-      });
-    });
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
+    .action(
+      async (scenario: string | undefined, opts: { config?: string; repo?: string }) => {
+        process.exitCode = await runSimulate(scenario, {
+          config: opts.config,
+          repo: opts.repo,
+        });
+      },
+    );
 
   program
     .command('logs [service]')
@@ -1291,11 +1791,20 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
-    .option('--level <level>', 'minimum level (with --raw): trace|debug|info|warn|error|fatal')
+    .option(
+      '--level <level>',
+      'minimum level (with --raw): trace|debug|info|warn|error|fatal',
+    )
     .option('--grep <text>', 'match text in the message')
-    .option('--raw', 'dump individual log lines instead of synthesized evidence (error+ by default)')
+    .option(
+      '--raw',
+      'dump individual log lines instead of synthesized evidence (error+ by default)',
+    )
     .option('--all-levels', 'with --raw: show all severity levels, not just error+')
-    .option('--group-by <field>', 'aggregate error counts by a context field, e.g. context.brand_id')
+    .option(
+      '--group-by <field>',
+      'aggregate error counts by a context field, e.g. context.brand_id',
+    )
     .option(
       '--where <field=value>',
       'filter by a structured context field (repeatable, AND-combined), e.g. --where context.brand_id=42',
@@ -1304,7 +1813,10 @@ Examples:
     )
     .option('--limit <n>', 'max records (with --raw)')
     .option('--json', 'output JSON')
-    .option('--ai', 'append AI narration of error signatures (default mode only, not --raw or --json)')
+    .option(
+      '--ai',
+      'append AI narration of error signatures (default mode only, not --raw or --json)',
+    )
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
@@ -1364,7 +1876,10 @@ Examples:
     .option('--dashboard <uid>', 'restrict to a dashboard uid')
     .option('--query <promql>', 'raw datasource query escape hatch')
     .option('--json', 'JSON output')
-    .option('--ai', 'append AI narration of metric findings (default mode only, not --query or --json)')
+    .option(
+      '--ai',
+      'append AI narration of metric findings (default mode only, not --query or --json)',
+    )
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
@@ -1386,17 +1901,26 @@ Examples:
 
   const skill = program
     .command('skill')
-    .description('Manage the Horus agent skill — install playbooks that teach agents to use Horus as their evidence layer');
+    .description(
+      'Manage the Horus agent skill — install playbooks that teach agents to use Horus as their evidence layer',
+    );
 
   skill
     .command('install <target>')
-    .description('Install the Horus skill for a coding agent (claude | codex | gemini | cursor | generic)')
+    .description(
+      'Install the Horus skill for a coding agent (claude | codex | gemini | cursor | generic)',
+    )
     .option('--force', 'overwrite an existing skill file')
     .option('--global', 'install into the home directory instead of the current repo')
     .action(async (target: string, opts: { force?: boolean; global?: boolean }) => {
-      process.exitCode = await runSkillInstall(target, { force: opts.force, global: opts.global });
+      process.exitCode = await runSkillInstall(target, {
+        force: opts.force,
+        global: opts.global,
+      });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Targets:
   claude   → .claude/skills/horus/SKILL.md  (Claude Code skill)
   codex    → AGENTS.md                     (Codex CLI project instructions)
@@ -1408,7 +1932,8 @@ Examples:
   horus skill install claude
   horus skill install generic --force
   horus skill install claude --global
-`);
+`,
+    );
 
   skill
     .command('print <target>')
@@ -1416,11 +1941,14 @@ Examples:
     .action(async (target: string) => {
       process.exitCode = await runSkillPrint(target, {});
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus skill print generic
   horus skill print claude
-`);
+`,
+    );
 
   skill
     .command('path <target>')
@@ -1429,11 +1957,14 @@ Examples:
     .action(async (target: string, opts: { global?: boolean }) => {
       process.exitCode = await runSkillPath(target, { global: opts.global });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus skill path claude
   horus skill path generic --global
-`);
+`,
+    );
 
   program
     .command('update')
@@ -1443,26 +1974,37 @@ Examples:
     .action(async (opts: { check?: boolean; force?: boolean }) => {
       process.exitCode = await runUpdate({ check: opts.check, force: opts.force });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus update              # update to latest
   horus update --check      # check without installing
   horus update --force      # re-download current version
-`);
+`,
+    );
 
   // --- Horus Cloud: login, context selection, repo↔project linking (HOR-226) ---
   program
     .command('login')
-    .description('Log in to Horus Cloud; stores a CLI token in ~/.horus/auth.json (never in the repo)')
-    .option('--token <token>', 'CLI token (or set HORUS_TOKEN); otherwise prompts when interactive')
+    .description(
+      'Log in to Horus Cloud; stores a CLI token in ~/.horus/auth.json (never in the repo)',
+    )
+    .option(
+      '--token <token>',
+      'CLI token (or set HORUS_TOKEN); otherwise prompts when interactive',
+    )
     .option('--api-url <url>', 'Horus Cloud API base URL (or set HORUS_CLOUD_API_URL)')
     .action(async (opts: { token?: string; apiUrl?: string }) => {
       process.exitCode = await runLogin({ token: opts.token, apiUrl: opts.apiUrl });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus login --token <token>
-  HORUS_TOKEN=<token> horus login`);
+  HORUS_TOKEN=<token> horus login`,
+    );
 
   program
     .command('logout')
@@ -1473,7 +2015,9 @@ Examples:
 
   const context = program
     .command('context')
-    .description('Select where this repo stores investigations (local or a cloud project)');
+    .description(
+      'Select where this repo stores investigations (local or a cloud project)',
+    );
   context
     .command('list')
     .description('List the local context and the cloud contexts you can use')
@@ -1482,13 +2026,15 @@ Examples:
     });
   context
     .command('use [target]')
-    .description('Switch context: "local" or "<org>/<workspace>/<project>". With no target, pick from a list of your accessible contexts.')
+    .description(
+      'Switch context: "local" or "<org>/<workspace>/<project>". With no target, pick from a list of your accessible contexts.',
+    )
     .action(async (target: string | undefined) => {
       process.exitCode = await runContextUse(target);
     });
   context
     .command('show')
-    .description('Show the active context and the selected project\'s sync metadata')
+    .description("Show the active context and the selected project's sync metadata")
     .action(async () => {
       process.exitCode = await runContextShow();
     });
@@ -1498,16 +2044,21 @@ Examples:
     .description('Link this repo to a Horus Cloud project and inspect cloud state');
   cloud
     .command('link [target]')
-    .description('Link the current repo to a cloud project (Git-aware); pass <org/workspace/project> to skip the interactive picker')
+    .description(
+      'Link the current repo to a cloud project (Git-aware); pass <org/workspace/project> to skip the interactive picker',
+    )
     .option('-y, --yes', 'skip confirmation prompts')
     .action(async (target: string | undefined, opts: { yes?: boolean }) => {
       process.exitCode = await runCloudLink({ project: target, yes: opts.yes });
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus cloud link                                # interactive / git-remote auto-match
   horus cloud link my-org/main/checkout-api       # non-interactive target
-`);
+`,
+    );
   cloud
     .command('unlink')
     .description("Remove this repo's cloud link (returns to local mode)")
@@ -1524,26 +2075,40 @@ Examples:
     .command('sync')
     .description('Upload existing local investigations to the linked cloud project')
     .option('-c, --config <path>', 'path to horus config for the local database')
-    .option('--limit <n>', 'max local investigations to consider', (v) => Number.parseInt(v, 10))
+    .option('--limit <n>', 'max local investigations to consider', (v) =>
+      Number.parseInt(v, 10),
+    )
     .option('--dry-run', 'show what would be uploaded without uploading')
     .option('-y, --yes', 'skip the confirmation prompt')
-    .action(async (opts: { config?: string; limit?: number; dryRun?: boolean; yes?: boolean }) => {
-      process.exitCode = await runCloudSync({
-        config: opts.config,
-        limit: opts.limit,
-        dryRun: opts.dryRun,
-        yes: opts.yes,
-      });
-    })
-    .addHelpText('after', `
+    .action(
+      async (opts: {
+        config?: string;
+        limit?: number;
+        dryRun?: boolean;
+        yes?: boolean;
+      }) => {
+        process.exitCode = await runCloudSync({
+          config: opts.config,
+          limit: opts.limit,
+          dryRun: opts.dryRun,
+          yes: opts.yes,
+        });
+      },
+    )
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus cloud sync --dry-run     # preview what would upload
   horus cloud sync               # confirm, then upload
-  horus cloud sync --yes         # upload without prompting`);
+  horus cloud sync --yes         # upload without prompting`,
+    );
 
   program
     .command('feedback [investigationId]')
-    .description('Leave quick impact feedback on an investigation — defaults to the latest (helps improve Horus)')
+    .description(
+      'Leave quick impact feedback on an investigation — defaults to the latest (helps improve Horus)',
+    )
     .option(
       '--resolved <verdict>',
       'did Horus point at the cause? yes | partly | no — non-interactive, for agents/scripts',
@@ -1561,7 +2126,10 @@ Examples:
       'free-text context recorded onto the outcome label (pair with --resolved)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd')
+    .option(
+      '--repo <name>',
+      'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
+    )
     .action(
       async (
         investigationId: string | undefined,
@@ -1580,7 +2148,9 @@ Examples:
 
   program
     .command('report [hint]')
-    .description('File a Horus bug or capability gap — opens a pre-filled GitHub issue (no auth, no data sent)')
+    .description(
+      'File a Horus bug or capability gap — opens a pre-filled GitHub issue (no auth, no data sent)',
+    )
     .option('--title <text>', 'issue title (default: derived from the hint)')
     .option('--body <text>', 'issue body / description')
     .option('--labels <list>', 'comma-separated GitHub labels (e.g. bug,cli)')
@@ -1599,17 +2169,22 @@ Examples:
         });
       },
     )
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   horus report "explain command crashes on monorepos"
-  horus report --title "Axiom connector ignores --service" --labels bug,connectors`);
+  horus report --title "Axiom connector ignores --service" --labels bug,connectors`,
+    );
 
   const telemetry = program
     .command('telemetry')
     .description('Manage anonymous usage telemetry that helps improve Horus');
   telemetry
     .command('status')
-    .description('Show the effective telemetry decision, saved preferences, and install ID')
+    .description(
+      'Show the effective telemetry decision, saved preferences, and install ID',
+    )
     .action(async () => {
       process.exitCode = await runTelemetryStatus();
     });

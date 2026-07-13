@@ -4,7 +4,13 @@ import { homedir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import pc from 'picocolors';
 
-export const SUPPORTED_TARGETS = ['claude', 'codex', 'gemini', 'cursor', 'generic'] as const;
+export const SUPPORTED_TARGETS = [
+  'claude',
+  'codex',
+  'gemini',
+  'cursor',
+  'generic',
+] as const;
 export type SkillTarget = (typeof SUPPORTED_TARGETS)[number];
 
 export function isValidTarget(target: string): target is SkillTarget {
@@ -12,7 +18,10 @@ export function isValidTarget(target: string): target is SkillTarget {
 }
 
 /** Legacy flat-file path used by early Horus Claude skill installers. */
-export function getLegacyClaudeSkillPath(opts: { global?: boolean; cwd?: string }): string {
+export function getLegacyClaudeSkillPath(opts: {
+  global?: boolean;
+  cwd?: string;
+}): string {
   const base = opts.global ? homedir() : (opts.cwd ?? process.cwd());
   return join(base, '.claude', 'skills', 'horus.md');
 }
@@ -112,6 +121,24 @@ horus metrics "<hint>" --json
 horus queues --live --json
 \`\`\`
 
+## Client-reported issues (Lens work queue)
+
+Lens reports are bug reports clients filed from the running app. They feed
+\`investigate\` as evidence, but you can also work the backlog DIRECTLY — every reported
+issue, not just the ones relevant to one incident:
+
+\`\`\`bash
+horus lens --json                 # list every client report, newest first
+horus lens --status open -n 100   # filter + widen the window
+horus lens show <reportId> --json # full detail incl. the code seed (file:line to fix)
+\`\`\`
+
+\`show\` resolves the top stack frame of the report's first error into a \`seed\`
+(\`file:line:symbol\` — the raise site), alongside the comment, route, release/gitSha, and
+failing requests. Native/cloud-backed: needs \`horus login\` + \`horus cloud link\`;
+degrades cleanly (a remedy, valid JSON) otherwise. Same reports are exposed to MCP as
+\`list_lens_reports\` / \`get_lens_report\`.
+
 ## Source reasoning
 
 \`\`\`bash
@@ -185,7 +212,8 @@ horus report "<what was wrong or missing>"
 `;
 
 function skillFrontmatter(target: SkillTarget): string {
-  const description = 'Grounded production-incident investigation with Horus — a read-only evidence layer over logs, metrics, queues, application state, and source intelligence. Use when debugging incidents, outages, regressions, or flaky/slow behavior; when asked what changed, what broke, who owns code, or the blast radius of a change; and to verify fixes against runtime evidence.';
+  const description =
+    'Grounded production-incident investigation with Horus — a read-only evidence layer over logs, metrics, queues, application state, and source intelligence. Use when debugging incidents, outages, regressions, or flaky/slow behavior; when asked what changed, what broke, who owns code, or the blast radius of a change; and to verify fixes against runtime evidence.';
   switch (target) {
     case 'claude':
       return `---\nname: horus\ndescription: ${description}\n---\n\n`;
@@ -320,7 +348,9 @@ export async function runSkillInstall(
         rmSync(legacyPath);
         log(`${pc.yellow('!')} Replaced old flat skill file: ${legacyPath}`);
       } catch (err) {
-        log(`${pc.red('✗')} Could not remove legacy skill file ${legacyPath}: ${(err as Error).message}`);
+        log(
+          `${pc.red('✗')} Could not remove legacy skill file ${legacyPath}: ${(err as Error).message}`,
+        );
         return 1;
       }
     }
