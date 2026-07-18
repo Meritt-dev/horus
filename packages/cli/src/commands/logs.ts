@@ -471,7 +471,16 @@ export async function runLogs(
     console.log('');
 
     if (analysis.signatures.length === 0) {
-      console.log(pc.dim('  No error-level logs in the window.'));
+      // Don't claim "no error-level logs" when the count says otherwise — that
+      // contradictory render is exactly the tripwire the count/signature split
+      // produced. Be honest about which case this is.
+      console.log(
+        pc.dim(
+          analysis.totalErrors > 0
+            ? `  ${analysis.totalErrors} error-level log(s) matched, but none could be grouped into a signature (missing the code field). Try --raw to see the lines.`
+            : '  No error-level logs in the window.',
+        ),
+      );
       console.log(
         pc.dim(
           `  Searched: ${scopeService ? `service "${scopeService}"` : 'all services'} · index: ${indexPattern} · from: ${fromDisplay} UTC`,

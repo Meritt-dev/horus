@@ -400,3 +400,48 @@ describe('parseErrorAnalysis — dotted messageField', () => {
     expect(analysis.signatures[0]?.sampleMessage).toBe('top-level fallback');
   });
 });
+
+describe('uncoded-error reconciliation (count vs signatures split)', () => {
+  it('requests a `missing` bucket so uncoded error docs are not dropped', () => {
+    const body = buildErrorAnalysisBody({ from: 'x' }, 'event_code', MERITT_FIELD_MAPPING);
+    const bySig = (body['aggs'] as Record<string, unknown>)['by_sig'] as Record<string, unknown>;
+    expect((bySig['terms'] as Record<string, unknown>)['missing']).toBe('(no code)');
+  });
+
+  it('surfaces uncoded errors as a "(no code)" signature so totalErrors reconciles', () => {
+    // The reported failure window: 48 error docs, none carrying an event_code. ES
+    // routes them into the `missing` bucket instead of dropping them, so the
+    // signature path no longer returns [] while the count says 48.
+    const resp = {
+      hits: { total: { value: 48 } },
+      aggregations: {
+        by_sig: {
+          buckets: [
+            {
+              key: '(no code)',
+              doc_count: 48,
+              first_seen: { value_as_string: '2026-07-18T10:00:00.000Z' },
+              last_seen: { value_as_string: '2026-07-18T10:14:00.000Z' },
+              services: { buckets: [{ key: 'leadcall-api-prod' }] },
+              sample: {
+                hits: {
+                  hits: [{ _source: { message: 'Uncaught TypeError: cannot read x of undefined' } }],
+                },
+              },
+            },
+          ],
+        },
+        affected_services: { buckets: [{ key: 'leadcall-api-prod' }] },
+      },
+    };
+    const a = parseErrorAnalysis(resp, { from: 'x', to: 'y' });
+    expect(a.totalErrors).toBe(48);
+    expect(a.signatures).toHaveLength(1);
+    expect(a.signatures[0]!.key).toBe('(no code)');
+    expect(a.signatures[0]!.count).toBe(48);
+    expect(a.signatures[0]!.sampleMessage).toContain('Uncaught TypeError');
+    // No more "48 errors / 0 signatures": the shown signatures now account for the count.
+    const shown = a.signatures.reduce((sum, s) => sum + s.count, 0);
+    expect(shown).toBe(a.totalErrors);
+  });
+})

@@ -64,6 +64,16 @@ export interface LogAnalysis {
   affectedServices: string[];
 }
 
+/**
+ * Bucket key for error docs that have NO value in the signature field
+ * (`event_code`). A `terms` aggregation silently drops such docs, so without a
+ * `missing` bucket a window of uncoded errors (uncaught exceptions, generic
+ * failures) reports `totalErrors > 0` with `signatures: []` — a count you can't
+ * diagnose from. Routing them into this bucket reconciles the count with the
+ * signatures and still surfaces a sample message to triage from.
+ */
+export const UNCODED_SIGNATURE_KEY = '(no code)';
+
 /** Short, human "MM-DD HH:MM" form of an ISO timestamp (empty-safe). */
 export function shortTs(iso: string): string {
   if (!iso || iso.length < 16) return iso || '—';
@@ -142,7 +152,11 @@ export function buildErrorAnalysisBody(
     query: { bool: { filter: filters, must: mustClause } },
     aggs: {
       by_sig: {
-        terms: { field: sigTerm, size: 25 },
+        // `missing` routes docs with no signature-field value into a single
+        // "(no code)" bucket instead of dropping them — so error docs without an
+        // event_code still surface as a signature (with a sample) and the
+        // per-signature counts reconcile with totalErrors (the count/doc split bug).
+        terms: { field: sigTerm, size: 25, missing: UNCODED_SIGNATURE_KEY },
         aggs: {
           first_seen: { min: { field: mapping.timestampField } },
           last_seen: { max: { field: mapping.timestampField } },
