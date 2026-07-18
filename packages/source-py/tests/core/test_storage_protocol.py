@@ -21,7 +21,11 @@ from horus_source.core.graph.model import (
     RelType,
     generate_id,
 )
-from horus_source.core.storage.base import NodeEmbedding, StorageBackend
+from horus_source.core.storage.base import (
+    TRACE_REL_TYPES,
+    NodeEmbedding,
+    StorageBackend,
+)
 
 
 def _make_node(
@@ -342,6 +346,119 @@ class TestTraverseInheritance:
             product_only=True, rel_types=self._RELS,
         )
         assert {n.name for n, _ in cte} == {n.name for n, _ in product}
+
+
+class TestEdgeNeighbors:
+    """get_edge_neighbors: bidirectional, multi-relation neighbour lookup.
+
+    Backs relationship *trace*. Uses the shared ``_analytics_graph`` so both
+    backends are proven to agree on rel_type, confidence, and direction.
+    """
+
+    @staticmethod
+    def _by_name(neighbors) -> dict[str, tuple[str, str]]:
+        # name -> (rel_type, direction)
+        return {n.node.name: (n.rel_type, n.direction) for n in neighbors}
+
+    def test_outgoing_multi_relation_and_excludes_non_trace(
+        self, backend: StorageBackend
+    ) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        got = self._by_name(backend.get_edge_neighbors(ids["caller"], TRACE_REL_TYPES))
+        # caller -> callee (calls), caller -> Base (uses_type); MEMBER_OF and
+        # STEP_IN_PROCESS are NOT trace relations, so comm1/proc1 are excluded.
+        assert got == {
+            "callee": ("calls", "out"),
+            "Base": ("uses_type", "out"),
+        }
+
+    def test_both_directions_reported(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        got = self._by_name(backend.get_edge_neighbors(ids["callee"], TRACE_REL_TYPES))
+        # incoming CALLS from caller, outgoing CALLS to m1.
+        assert got == {
+            "caller": ("calls", "in"),
+            "m1": ("calls", "out"),
+        }
+
+    def test_incoming_heritage_and_type_use(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        got = self._by_name(backend.get_edge_neighbors(ids["base"], TRACE_REL_TYPES))
+        assert got == {
+            "Child": ("extends", "in"),
+            "caller": ("uses_type", "in"),
+        }
+
+    def test_coupled_with_is_excluded(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        # file_a -> file_b has BOTH imports and coupled_with; only imports traces.
+        neighbors = backend.get_edge_neighbors(ids["file_a"], TRACE_REL_TYPES)
+        rels = {(n.node.name, n.rel_type) for n in neighbors}
+        assert rels == {("b.py", "imports")}
+
+    def test_confidence_carried_and_defaulted(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        by_name = {
+            n.node.name: n
+            for n in backend.get_edge_neighbors(ids["caller"], TRACE_REL_TYPES)
+        }
+        # caller -> callee stored confidence 0.8; caller -> Base (uses_type) has
+        # no confidence property, so it defaults to 1.0.
+        assert by_name["callee"].confidence == pytest.approx(0.8)
+        assert by_name["Base"].confidence == pytest.approx(1.0)
+
+    def test_empty_rel_types_returns_empty(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        assert backend.get_edge_neighbors(ids["caller"], []) == []
+
+    def test_isolated_node_has_no_neighbors(self, backend: StorageBackend) -> None:
+        node = _make_node(name="lonely", file_path="src/l.py")
+        backend.add_nodes([node])
+        assert backend.get_edge_neighbors(node.id, TRACE_REL_TYPES) == []
+
+
+class TestGraphInsights:
+    """get_node_degrees + get_cross_community_edges — back the graph-insights report."""
+
+    def test_hubs_ranked_by_degree(self, backend: StorageBackend) -> None:
+        graph, ids = _analytics_graph()
+        backend.bulk_load(graph)
+        hubs = backend.get_node_degrees(TRACE_REL_TYPES, limit=3)
+        by_name = {n.name: deg for n, deg in hubs}
+        # caller: calls→callee + uses_type→Base = 2; callee: in-calls + calls→m1 = 2;
+        # Base: uses_type(in) + extends(in) = 2. Those three tie at the top.
+        assert set(by_name) == {"caller", "callee", "Base"}
+        assert all(deg == 2 for deg in by_name.values())
+
+    def test_hubs_limit_respected(self, backend: StorageBackend) -> None:
+        graph, _ = _analytics_graph()
+        backend.bulk_load(graph)
+        assert len(backend.get_node_degrees(TRACE_REL_TYPES, limit=2)) == 2
+
+    def test_hubs_empty_rel_types(self, backend: StorageBackend) -> None:
+        graph, _ = _analytics_graph()
+        backend.bulk_load(graph)
+        assert backend.get_node_degrees([], limit=5) == []
+
+    def test_cross_community_edges(self, backend: StorageBackend) -> None:
+        graph, _ = _analytics_graph()
+        backend.bulk_load(graph)
+        rows = backend.get_cross_community_edges(TRACE_REL_TYPES, limit=10)
+        # callee (Comm1) --calls--> m1 (Comm2) is the only edge bridging communities.
+        # caller→callee is intra-Comm1; caller→Base (uses_type) has no community on Base.
+        summary = [(s.name, t.name, rel, sc, tc) for s, t, rel, sc, tc in rows]
+        assert summary == [("callee", "m1", "calls", "Comm1", "Comm2")]
+
+    def test_cross_community_empty_rel_types(self, backend: StorageBackend) -> None:
+        graph, _ = _analytics_graph()
+        backend.bulk_load(graph)
+        assert backend.get_cross_community_edges([], limit=5) == []
 
 
 class TestGetEmbeddedNodeIds:

@@ -37,6 +37,62 @@ export interface SourceImpactResult {
   depths: Record<string, SourceNode[]>;
 }
 
+/** One node on a traced relationship path. */
+export interface SourceTraceNode {
+  id: string;
+  label: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+}
+
+/** One hop's edge: `segments[i]` connects `path[i]` to `path[i+1]`. */
+export interface SourceTraceSegment {
+  relType: string;
+  confidence: number;
+  /** `out` when the edge points forward along the path, `in` when it points back. */
+  direction: 'out' | 'in';
+}
+
+/** GET /api/trace — shortest relationship path between two symbols. */
+export interface SourceTraceResult {
+  found: boolean;
+  /** Present when `found` is false: resolution failure or unreachable target. */
+  error?: string;
+  hops?: number;
+  path?: SourceTraceNode[];
+  segments?: SourceTraceSegment[];
+  notes?: string[];
+}
+
+/** One hub node in the graph-insights report. */
+export interface SourceInsightHub {
+  id: string;
+  name: string;
+  label: string;
+  filePath: string;
+  startLine: number;
+  degree: number;
+}
+
+/** One community-bridging ("surprising") edge in the graph-insights report. */
+export interface SourceInsightBridge {
+  source: string;
+  target: string;
+  relType: string;
+  sourceCommunity: string;
+  targetCommunity: string;
+  sourceId: string;
+  targetId: string;
+}
+
+/** GET /api/insights — hubs, surprising connections, suggested questions. */
+export interface SourceInsightsResult {
+  hubs: SourceInsightHub[];
+  bridges: SourceInsightBridge[];
+  questions: string[];
+}
+
 export interface SourceDiffResult {
   added: SourceNode[];
   removed: SourceNode[];

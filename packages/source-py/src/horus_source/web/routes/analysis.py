@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from horus_source.core.graph.model import RelType
 from horus_source.core.ingestion.pipeline import run_pipeline
 from horus_source.mcp.resources import get_dead_code_symbols
+from horus_source.mcp.tools import compute_insights, compute_trace
 from horus_source.web.routes.graph import _serialize_node
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,104 @@ def get_impact(
         "target": _serialize_node(node),
         "affected": len(affected_with_depth),
         "depths": dict(depths),
+    }
+
+
+@router.get("/trace")
+def get_trace(
+    request: Request,
+    from_symbol: str = Query(..., alias="from"),
+    to_symbol: str = Query(..., alias="to"),
+    max_depth: int = Query(default=10, ge=1, le=10),
+    relations: str | None = Query(default=None),
+) -> dict:
+    """Shortest relationship path between two symbols (backs ``horus trace``).
+
+    ``relations`` is an optional comma-separated edge-kind filter (e.g.
+    ``calls,imports``); omit for all semantic relations. Always returns 200 with
+    a structured payload — ``found`` distinguishes a real path from a resolution
+    failure or an unreachable target (whose message rides in ``error``).
+    """
+    storage = request.app.state.storage
+    rel_list = [r for r in (relations or "").split(",") if r.strip()] or None
+    result = compute_trace(
+        storage,
+        from_symbol,
+        to_symbol,
+        max_depth=max_depth,
+        relations=rel_list,
+    )
+    if not result["found"]:
+        return {
+            "found": False,
+            "error": result.get("error"),
+            "notes": result.get("notes", []),
+        }
+    # Serialize to camelCase for the HTTP boundary (compute_trace is snake_case,
+    # Python-internal, and shared with the MCP renderer).
+    return {
+        "found": True,
+        "hops": result["hops"],
+        "path": [
+            {
+                "id": n["id"],
+                "label": n["label"],
+                "name": n["name"],
+                "filePath": n["file_path"],
+                "startLine": n["start_line"],
+            }
+            for n in result["path"]
+        ],
+        "segments": [
+            {
+                "relType": s["rel_type"],
+                "confidence": s["confidence"],
+                "direction": s["direction"],
+            }
+            for s in result["segments"]
+        ],
+        "notes": result["notes"],
+    }
+
+
+@router.get("/insights")
+def get_insights(
+    request: Request,
+    hub_limit: int = Query(default=8, ge=1, le=50),
+    bridge_limit: int = Query(default=8, ge=1, le=50),
+) -> dict:
+    """Graph-shape insights: hubs, surprising cross-community edges, suggested questions.
+
+    Backs ``horus insights``. Serialized camelCase for the HTTP boundary
+    (compute_insights is snake_case, Python-internal, shared with the MCP renderer).
+    """
+    storage = request.app.state.storage
+    r = compute_insights(storage, hub_limit=hub_limit, bridge_limit=bridge_limit)
+    return {
+        "hubs": [
+            {
+                "id": h["id"],
+                "name": h["name"],
+                "label": h["label"],
+                "filePath": h["file_path"],
+                "startLine": h["start_line"],
+                "degree": h["degree"],
+            }
+            for h in r["hubs"]
+        ],
+        "bridges": [
+            {
+                "source": b["source"],
+                "target": b["target"],
+                "relType": b["rel_type"],
+                "sourceCommunity": b["source_community"],
+                "targetCommunity": b["target_community"],
+                "sourceId": b["source_id"],
+                "targetId": b["target_id"],
+            }
+            for b in r["bridges"]
+        ],
+        "questions": r["questions"],
     }
 
 

@@ -27,6 +27,37 @@ class SearchResult:
     label: str = ""
     snippet: str = ""
 
+@dataclass
+class EdgeNeighbor:
+    """A neighbouring node reached over a single edge, with edge metadata.
+
+    Unlike :meth:`StorageBackend.get_callees` (which returns bare nodes over
+    CALLS only), this carries the edge's ``rel_type`` and ``confidence`` and the
+    ``direction`` of traversal, so a caller reconstructing a path can annotate
+    every hop. ``direction`` is ``"out"`` when the edge points *from* the queried
+    node *to* ``node`` (``queried -> node``), and ``"in"`` when it points the
+    other way (``node -> queried``).
+    """
+
+    node: GraphNode
+    rel_type: str
+    confidence: float
+    direction: str
+
+
+#: Edge kinds a relationship *trace* walks by default. These are the semantic
+#: code relationships (who calls/imports/inherits/uses whom); statistical or
+#: purely structural edges (COUPLED_WITH co-change, CONTAINS/DEFINES scaffolding)
+#: are excluded so a traced path reflects real dependencies rather than
+#: co-location or noise.
+TRACE_REL_TYPES: tuple[RelType, ...] = (
+    RelType.CALLS,
+    RelType.IMPORTS,
+    RelType.EXTENDS,
+    RelType.IMPLEMENTS,
+    RelType.USES_TYPE,
+)
+
 EMBEDDING_DIMENSIONS: int = 384
 """Number of dimensions expected for all embedding vectors."""
 
@@ -104,6 +135,38 @@ class StorageBackend(Protocol):
 
     def get_type_refs(self, node_id: str) -> list[GraphNode]:
         """Return nodes that reference the type identified by *node_id*."""
+        ...
+
+    def get_edge_neighbors(
+        self, node_id: str, rel_types: Sequence[RelType],
+    ) -> list[EdgeNeighbor]:
+        """Return every neighbour of *node_id* over *rel_types*, both directions.
+
+        Each :class:`EdgeNeighbor` carries the edge's ``rel_type``,
+        ``confidence`` and traversal ``direction`` so a caller can reconstruct
+        and annotate a path. Passing an empty ``rel_types`` returns ``[]``.
+        This is the primitive that powers relationship *trace* — a bidirectional,
+        multi-relation walk, as opposed to the CALLS-only :meth:`get_callees`.
+        """
+        ...
+
+    def get_node_degrees(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, int]]:
+        """Return the *limit* highest-degree nodes over *rel_types* — the graph's hubs.
+
+        Degree counts incident edges (in + out). Backs the graph-insights report.
+        """
+        ...
+
+    def get_cross_community_edges(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, GraphNode, str, str, str]]:
+        """Return edges whose endpoints are in DIFFERENT communities — surprising bridges.
+
+        Only edges where both endpoints have a community (and they differ) count.
+        Returns ``(source, target, rel_type, source_community, target_community)``.
+        """
         ...
 
     def get_callers_with_confidence(self, node_id: str) -> list[tuple[GraphNode, float]]:

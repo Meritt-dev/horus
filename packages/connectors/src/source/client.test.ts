@@ -98,3 +98,84 @@ describe('hostInfo — symbol-only degraded-mode fields (B1.4)', () => {
     expect(info.embeddingsPending).toBeUndefined();
   });
 });
+
+describe('trace — relationship path query', () => {
+  const urls: string[] = [];
+  const fetchMock = vi.fn(async (url: string | URL) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ found: true, hops: 1, path: [], segments: [] }), {
+      status: 200,
+    });
+  });
+
+  afterEach(() => {
+    urls.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  function client(): SourceHttpClient {
+    vi.stubGlobal('fetch', fetchMock);
+    return new SourceHttpClient({ baseUrl: 'http://127.0.0.1:8420', maxRetries: 0 });
+  }
+
+  it('sends from/to as query params against /api/trace', async () => {
+    await client().trace('funcA', 'ClassC');
+    expect(urls[0]).toContain('/api/trace?');
+    expect(urls[0]).toContain('from=funcA');
+    expect(urls[0]).toContain('to=ClassC');
+    expect(urls[0]).not.toContain('max_depth');
+    expect(urls[0]).not.toContain('relations');
+  });
+
+  it('maps maxDepth and relations to query params', async () => {
+    await client().trace('funcA', 'ClassC', { maxDepth: 4, relations: ['calls', 'imports'] });
+    expect(urls[0]).toContain('max_depth=4');
+    // URLSearchParams encodes the comma in the joined relations list.
+    expect(urls[0]).toContain('relations=calls%2Cimports');
+  });
+
+  it('returns the parsed structured result', async () => {
+    const res = await client().trace('funcA', 'ClassC');
+    expect(res.found).toBe(true);
+    expect(res.hops).toBe(1);
+  });
+});
+
+describe('insights — graph-shape report', () => {
+  const urls: string[] = [];
+  const fetchMock = vi.fn(async (url: string | URL) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ hubs: [], bridges: [], questions: [] }), {
+      status: 200,
+    });
+  });
+
+  afterEach(() => {
+    urls.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  function client(): SourceHttpClient {
+    vi.stubGlobal('fetch', fetchMock);
+    return new SourceHttpClient({ baseUrl: 'http://127.0.0.1:8420', maxRetries: 0 });
+  }
+
+  it('hits /api/insights with no params by default', async () => {
+    await client().insights();
+    expect(urls[0]).toContain('/api/insights');
+    expect(urls[0]).not.toContain('?');
+  });
+
+  it('maps hubLimit/bridgeLimit to query params', async () => {
+    await client().insights({ hubLimit: 5, bridgeLimit: 3 });
+    expect(urls[0]).toContain('hub_limit=5');
+    expect(urls[0]).toContain('bridge_limit=3');
+  });
+
+  it('returns the parsed structured result', async () => {
+    const res = await client().insights();
+    expect(res.hubs).toEqual([]);
+    expect(res.bridges).toEqual([]);
+    expect(res.questions).toEqual([]);
+  });
+});

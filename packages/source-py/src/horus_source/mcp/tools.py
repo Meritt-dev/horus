@@ -16,10 +16,11 @@ from typing import Any
 
 from horus_source.core.cypher_guard import is_read_only_sql
 from horus_source.core.embeddings.embedder import embed_query
+from horus_source.core.graph.model import RelType
 from horus_source.core.ingestion.community import export_to_igraph
 from horus_source.core.ingestion.dead_code import _is_test_file
 from horus_source.core.search.hybrid import hybrid_search
-from horus_source.core.storage.base import StorageBackend
+from horus_source.core.storage.base import TRACE_REL_TYPES, EdgeNeighbor, StorageBackend
 from horus_source.mcp.resources import get_dead_code_list
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,55 @@ def _resolve_symbol(storage: StorageBackend, symbol: str) -> list:
         if results:
             return results
     return storage.fts_search(symbol, limit=1)
+
+
+def _resolve_symbol_ranked(
+    storage: StorageBackend, symbol: str, limit: int = 5
+) -> list:
+    """Like :func:`_resolve_symbol` but returns the ranked candidate list.
+
+    The extra candidates power the trace ambiguity guard: when the top match
+    barely edges out its runner-up, the resolution is flagged rather than
+    silently committing to a coin-flip.
+    """
+    if hasattr(storage, "exact_name_search"):
+        results = storage.exact_name_search(symbol, limit=limit)
+        if results:
+            return results
+    return storage.fts_search(symbol, limit=limit)
+
+
+#: When the top match wins by less than this fraction of its own score, the
+#: resolution is ambiguous enough to warn about.
+_AMBIGUOUS_MARGIN = 0.10
+
+
+def _ambiguity_note(role: str, query: str, results: list) -> str | None:
+    """Warn when a symbol query resolved to a near-tie (ported guard).
+
+    Returns a one-line note when the runner-up's score is within
+    ``_AMBIGUOUS_MARGIN`` of the winner, else ``None``.
+    """
+    if len(results) < 2:
+        return None
+    top, runner = results[0].score, results[1].score
+    if top > 0 and (top - runner) / top < _AMBIGUOUS_MARGIN:
+        return (
+            f"note: {role} '{query}' was ambiguous — matched "
+            f"{results[0].node_name} ({results[0].file_path}); runner-up "
+            f"{results[1].node_name} ({results[1].file_path}). "
+            f"Pass a more specific name to disambiguate."
+        )
+    return None
+
+
+def _resolve_rel_types(relations: list[str] | None) -> list[RelType]:
+    """Map optional relation-name filters to :class:`RelType`, else the default set."""
+    if not relations:
+        return list(TRACE_REL_TYPES)
+    by_value = {rt.value: rt for rt in RelType}
+    chosen = [by_value[r.strip().lower()] for r in relations if r.strip().lower() in by_value]
+    return chosen or list(TRACE_REL_TYPES)
 
 def handle_list_repos(registry_dir: Path | None = None) -> str:
     """List indexed repositories from the global registry.
@@ -603,6 +653,286 @@ def handle_call_path(
 
     header = f"Call path: {' → '.join(path_names)} ({hop_count} hop{'s' if hop_count != 1 else ''})"
     return header + "\n\n" + "\n".join(lines)
+
+
+def compute_trace(
+    storage: StorageBackend,
+    from_symbol: str,
+    to_symbol: str,
+    max_depth: int = 10,
+    relations: list[str] | None = None,
+) -> dict[str, Any]:
+    """Shortest relationship path between two symbols as structured data.
+
+    Shared core for both the MCP renderer (:func:`handle_trace`) and the HTTP
+    read-path the CLI consumes. Walks every semantic code relationship (calls,
+    imports, extends, implements, uses_type) in BOTH directions via
+    :meth:`StorageBackend.get_edge_neighbors`, so it answers "how are A and B
+    connected?" rather than only "does A call B?".
+
+    Returns a dict with ``found`` and, on failure, an ``error`` string. On
+    success: ``hops``, ``path`` (list of node dicts), ``segments`` (one per hop,
+    each ``{rel_type, confidence, direction}``), and ``notes`` (ambiguity
+    warnings). ``segments[i]`` describes the edge from ``path[i]`` to
+    ``path[i+1]``; ``direction`` is ``"out"`` when it points forward along the
+    path and ``"in"`` when the stored edge points backward.
+    """
+    if not from_symbol or not from_symbol.strip():
+        return {"found": False, "error": "'from_symbol' is required and cannot be empty."}
+    if not to_symbol or not to_symbol.strip():
+        return {"found": False, "error": "'to_symbol' is required and cannot be empty."}
+
+    max_depth = max(1, min(max_depth, MAX_TRAVERSE_DEPTH))
+    rel_types = _resolve_rel_types(relations)
+
+    from_results = _resolve_symbol_ranked(storage, from_symbol)
+    if not from_results:
+        return {"found": False, "error": f"Source symbol '{from_symbol}' not found."}
+    to_results = _resolve_symbol_ranked(storage, to_symbol)
+    if not to_results:
+        return {"found": False, "error": f"Target symbol '{to_symbol}' not found."}
+
+    src_node = storage.get_node(from_results[0].node_id)
+    tgt_node = storage.get_node(to_results[0].node_id)
+    if not src_node or not tgt_node:
+        return {"found": False, "error": "Could not resolve one or both symbols."}
+    if src_node.id == tgt_node.id:
+        return {
+            "found": False,
+            "error": (
+                f"'{from_symbol}' and '{to_symbol}' resolved to the same symbol "
+                f"({src_node.name}). Use more specific names for a meaningful trace."
+            ),
+        }
+
+    # BFS treating edges as undirected — get_edge_neighbors returns both in- and
+    # out-edges — while recording the EdgeNeighbor used to reach each node so the
+    # reconstructed path can be annotated with relation/direction/confidence.
+    parent: dict[str, str] = {}
+    via: dict[str, EdgeNeighbor] = {}
+    visited: set[str] = {src_node.id}
+    queue: deque[tuple[str, int]] = deque([(src_node.id, 0)])
+    found = False
+    while queue:
+        current_id, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        for nb in storage.get_edge_neighbors(current_id, rel_types):
+            if nb.node.id in visited:
+                continue
+            visited.add(nb.node.id)
+            parent[nb.node.id] = current_id
+            via[nb.node.id] = nb
+            if nb.node.id == tgt_node.id:
+                found = True
+                break
+            queue.append((nb.node.id, depth + 1))
+        if found:
+            break
+
+    notes = [
+        n
+        for n in (
+            _ambiguity_note("source", from_symbol, from_results),
+            _ambiguity_note("target", to_symbol, to_results),
+        )
+        if n
+    ]
+
+    if not found:
+        return {
+            "found": False,
+            "error": (
+                f"No relationship path found from '{src_node.name}' to "
+                f"'{tgt_node.name}' within {max_depth} hops."
+            ),
+            "notes": notes,
+        }
+
+    path_ids: list[str] = []
+    node_id: str | None = tgt_node.id
+    while node_id is not None:
+        path_ids.append(node_id)
+        node_id = parent.get(node_id)
+    path_ids.reverse()
+
+    def _node_for(nid: str):
+        if nid == src_node.id:
+            return src_node
+        edge = via.get(nid)
+        return edge.node if edge is not None else None
+
+    path: list[dict[str, Any]] = []
+    for nid in path_ids:
+        node = _node_for(nid)
+        if node is not None:
+            path.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "label": node.label.value if node.label else "unknown",
+                    "file_path": node.file_path,
+                    "start_line": node.start_line,
+                }
+            )
+        else:
+            path.append({"id": nid, "name": nid, "label": "unknown",
+                         "file_path": "", "start_line": 0})
+
+    segments: list[dict[str, Any]] = []
+    for i in range(len(path_ids) - 1):
+        edge = via[path_ids[i + 1]]
+        segments.append(
+            {
+                "rel_type": edge.rel_type,
+                "confidence": edge.confidence,
+                "direction": edge.direction,
+            }
+        )
+
+    return {
+        "found": True,
+        "hops": len(path_ids) - 1,
+        "path": path,
+        "segments": segments,
+        "notes": notes,
+    }
+
+
+def handle_trace(
+    storage: StorageBackend,
+    from_symbol: str,
+    to_symbol: str,
+    max_depth: int = 10,
+    relations: list[str] | None = None,
+) -> str:
+    """Render :func:`compute_trace` as a human-readable MCP response.
+
+    Where :func:`handle_call_path` walks CALLS only, caller→callee, this walks
+    every semantic code relationship in BOTH directions and annotates each hop
+    with its relation, direction and confidence.
+    """
+    result = compute_trace(storage, from_symbol, to_symbol, max_depth, relations)
+    if not result["found"]:
+        out = str(result["error"])
+        if result.get("notes"):
+            out += "\n\n" + "\n".join(result["notes"])
+        return out
+
+    path = result["path"]
+    segments = result["segments"]
+    # Arrow chain: `caller --calls--> helper <--imports-- config`.
+    chain = [path[0]["name"]]
+    for i, seg in enumerate(segments):
+        tag = _confidence_tag(seg["confidence"])
+        nxt_name = path[i + 1]["name"]
+        if seg["direction"] == "out":
+            chain.append(f"--{seg['rel_type']}{tag}--> {nxt_name}")
+        else:
+            chain.append(f"<--{seg['rel_type']}{tag}-- {nxt_name}")
+
+    hop_count = result["hops"]
+    lines = [
+        f"  {i}. {n['name']} ({n['label'].title()}) — {n['file_path']}:{n['start_line']}"
+        for i, n in enumerate(path, 1)
+    ]
+    header = f"Trace: {' '.join(chain)} ({hop_count} hop{'s' if hop_count != 1 else ''})"
+    out = header + "\n\n" + "\n".join(lines)
+    if result.get("notes"):
+        out += "\n\n" + "\n".join(result["notes"])
+    return out
+
+
+def compute_insights(
+    storage: StorageBackend, hub_limit: int = 8, bridge_limit: int = 8,
+) -> dict[str, Any]:
+    """Graph-shape insights as structured data (shared by MCP + the HTTP read-path).
+
+    Surfaces the graph's **hubs** (highest-degree symbols — the "god objects"
+    everything leans on), its **surprising connections** (edges that bridge two
+    detected communities — a subsystem reaching directly into another), and a few
+    **suggested questions** derived deterministically from those findings.
+    """
+    hubs = storage.get_node_degrees(list(TRACE_REL_TYPES), hub_limit)
+    bridges = storage.get_cross_community_edges(list(TRACE_REL_TYPES), bridge_limit)
+
+    hub_list = [
+        {
+            "id": n.id,
+            "name": n.name,
+            "label": n.label.value if n.label else "unknown",
+            "file_path": n.file_path,
+            "start_line": n.start_line,
+            "degree": deg,
+        }
+        for n, deg in hubs
+    ]
+    bridge_list = [
+        {
+            "source": s.name,
+            "target": t.name,
+            "rel_type": rel,
+            "source_community": sc,
+            "target_community": tc,
+            "source_id": s.id,
+            "target_id": t.id,
+        }
+        for s, t, rel, sc, tc in bridges
+    ]
+
+    questions: list[str] = []
+    if hub_list:
+        top = hub_list[0]["name"]
+        questions.append(f'What is the blast radius of {top}?  (horus blast-radius "{top}")')
+    if bridge_list:
+        b = bridge_list[0]
+        questions.append(
+            f'How is {b["source"]} connected to {b["target"]}?  '
+            f'(horus trace "{b["source"]}" "{b["target"]}")'
+        )
+    if len(hub_list) > 1:
+        questions.append(
+            f'Why is {hub_list[1]["name"]} so heavily connected — is it doing too much?'
+        )
+
+    return {"hubs": hub_list, "bridges": bridge_list, "questions": questions}
+
+
+def handle_insights(
+    storage: StorageBackend, hub_limit: int = 8, bridge_limit: int = 8,
+) -> str:
+    """Render :func:`compute_insights` as a human-readable MCP response."""
+    r = compute_insights(storage, hub_limit, bridge_limit)
+    lines = ["Graph insights", ""]
+
+    if r["hubs"]:
+        lines.append("Hubs — most-connected symbols (degree):")
+        for h in r["hubs"]:
+            label = str(h["label"]).title()
+            lines.append(
+                f"  {h['degree']:>3}  {h['name']} ({label}) — {h['file_path']}:{h['start_line']}"
+            )
+    else:
+        lines.append("Hubs: none (empty or unindexed graph).")
+
+    lines.append("")
+    if r["bridges"]:
+        lines.append("Surprising connections — edges bridging communities:")
+        for b in r["bridges"]:
+            lines.append(
+                f"  {b['source']} --{b['rel_type']}--> {b['target']}  "
+                f"[{b['source_community']} → {b['target_community']}]"
+            )
+    else:
+        lines.append("Surprising connections: none detected (run community detection first).")
+
+    if r["questions"]:
+        lines.append("")
+        lines.append("Suggested questions:")
+        for q in r["questions"]:
+            lines.append(f"  • {q}")
+
+    return "\n".join(lines)
 
 
 def handle_communities(
