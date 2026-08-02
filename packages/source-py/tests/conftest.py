@@ -34,6 +34,15 @@ def kuzu_backend(tmp_path: Path) -> KuzuBackend:
     b.close()
 
 
+@pytest.fixture()
+def sqlite_backend(tmp_path: Path) -> SqliteBackend:
+    """Provide the canonical SQLite backend in a temporary directory."""
+    b = SqliteBackend()
+    b.initialize(tmp_path / "horus.db")
+    yield b
+    b.close()
+
+
 @pytest.fixture(params=["kuzu", "sqlite"])
 def backend(request: pytest.FixtureRequest, tmp_path: Path):
     """A StorageBackend parametrized over every concrete implementation.
