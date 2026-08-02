@@ -1313,3 +1313,114 @@ class TestEventsEndpoint:
         response = client.get("/events")
         # sse-starlette returns 200 for SSE responses
         assert response.status_code == 200
+
+
+class TestTraceRoute:
+    """GET /trace over a real SQLite backend (backs the `horus trace` CLI)."""
+
+    def _app_with_graph(self):
+        import tempfile
+
+        from horus_source.core.storage.sqlite_backend import SqliteBackend
+
+        graph = KnowledgeGraph()
+
+        def node(label, fp, name):
+            n = GraphNode(id=f"{label.value}:{fp}:{name}", label=label, name=name,
+                          file_path=fp, start_line=1)
+            graph.add_node(n)
+            return n
+
+        a = node(NodeLabel.FUNCTION, "src/a.py", "funcA")
+        b = node(NodeLabel.FUNCTION, "src/b.py", "funcB")
+        c = node(NodeLabel.CLASS, "src/c.py", "ClassC")
+        node(NodeLabel.FUNCTION, "src/z.py", "lonely")
+        graph.add_relationship(GraphRelationship(
+            id="calls:a->b", type=RelType.CALLS, source=a.id, target=b.id,
+            properties={"confidence": 0.6}))
+        graph.add_relationship(GraphRelationship(
+            id="uses_type:b->c", type=RelType.USES_TYPE, source=b.id, target=c.id))
+
+        backend = SqliteBackend()
+        backend.initialize(Path(tempfile.mkdtemp()) / "horus.db")
+        backend.bulk_load(graph)
+        return _make_app(backend)
+
+    def test_found_path(self):
+        client = TestClient(self._app_with_graph())
+        resp = client.get("/trace", params={"from": "funcA", "to": "ClassC"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["found"] is True
+        assert body["hops"] == 2
+        assert [n["name"] for n in body["path"]] == ["funcA", "funcB", "ClassC"]
+        assert body["path"][1]["filePath"] == "src/b.py"
+        assert [s["relType"] for s in body["segments"]] == ["calls", "uses_type"]
+        assert body["segments"][0]["direction"] == "out"
+
+    def test_relations_filter(self):
+        client = TestClient(self._app_with_graph())
+        resp = client.get("/trace", params={"from": "funcA", "to": "ClassC",
+                                            "relations": "calls"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["found"] is False
+        assert "No relationship path" in body["error"]
+
+    def test_symbol_not_found(self):
+        client = TestClient(self._app_with_graph())
+        resp = client.get("/trace", params={"from": "ghost", "to": "funcA"})
+        assert resp.status_code == 200
+        assert resp.json()["found"] is False
+
+
+class TestInsightsRoute:
+    """GET /insights over a real SQLite backend (backs `horus insights`)."""
+
+    def _app_with_graph(self):
+        import tempfile
+
+        from horus_source.core.storage.sqlite_backend import SqliteBackend
+
+        graph = KnowledgeGraph()
+
+        def node(label, fp, name):
+            n = GraphNode(id=f"{label.value}:{fp}:{name}", label=label, name=name,
+                          file_path=fp, start_line=1)
+            graph.add_node(n)
+            return n
+
+        a = node(NodeLabel.FUNCTION, "src/a.py", "funcA")
+        b = node(NodeLabel.FUNCTION, "src/b.py", "funcB")
+        c = node(NodeLabel.FUNCTION, "src/c.py", "funcC")
+        comm1 = node(NodeLabel.COMMUNITY, "", "Comm1")
+        comm2 = node(NodeLabel.COMMUNITY, "", "Comm2")
+
+        def rel(s, t, rt):
+            graph.add_relationship(GraphRelationship(
+                id=f"{rt.value}:{s}->{t}", type=rt, source=s, target=t))
+
+        rel(a.id, b.id, RelType.CALLS)
+        rel(b.id, c.id, RelType.CALLS)
+        rel(a.id, comm1.id, RelType.MEMBER_OF)
+        rel(b.id, comm1.id, RelType.MEMBER_OF)
+        rel(c.id, comm2.id, RelType.MEMBER_OF)
+
+        backend = SqliteBackend()
+        backend.initialize(Path(tempfile.mkdtemp()) / "horus.db")
+        backend.bulk_load(graph)
+        return _make_app(backend)
+
+    def test_hubs_bridges_questions(self):
+        client = TestClient(self._app_with_graph())
+        resp = client.get("/insights")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["hubs"][0]["name"] == "funcB"
+        assert body["hubs"][0]["degree"] == 2
+        assert [(b["source"], b["target"], b["relType"]) for b in body["bridges"]] == [
+            ("funcB", "funcC", "calls"),
+        ]
+        assert body["bridges"][0]["sourceCommunity"] == "Comm1"
+        assert body["bridges"][0]["targetCommunity"] == "Comm2"
+        assert any("funcB" in q for q in body["questions"])

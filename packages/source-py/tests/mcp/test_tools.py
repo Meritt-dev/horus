@@ -6,13 +6,22 @@ from unittest.mock import MagicMock
 import pytest
 
 from horus_source.core.graph.graph import KnowledgeGraph
-from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
-from horus_source.core.storage.base import SearchResult
+from horus_source.core.graph.model import (
+    GraphNode,
+    GraphRelationship,
+    NodeLabel,
+    RelType,
+    generate_id,
+)
+from horus_source.core.storage.base import TRACE_REL_TYPES, SearchResult
 from horus_source.mcp.resources import get_dead_code_list, get_overview, get_schema
 from horus_source.mcp.tools import (
+    _ambiguity_note,
     _confidence_tag,
     _format_query_results,
     _group_by_process,
+    _resolve_rel_types,
+    compute_insights,
     handle_call_path,
     handle_communities,
     handle_context,
@@ -24,10 +33,12 @@ from horus_source.mcp.tools import (
     handle_explain,
     handle_file_context,
     handle_impact,
+    handle_insights,
     handle_list_repos,
     handle_query,
     handle_review_risk,
     handle_test_impact,
+    handle_trace,
 )
 
 
@@ -1017,3 +1028,172 @@ class TestHandleCycles:
         mock_storage.load_graph.return_value = kg
         result = handle_cycles(mock_storage)
         assert "No symbols" in result
+
+
+def _trace_graph() -> KnowledgeGraph:
+    """funcA --calls(0.6)--> funcB --uses_type--> ClassC ; plus an isolated node."""
+    graph = KnowledgeGraph()
+
+    def node(label: NodeLabel, file_path: str, name: str) -> GraphNode:
+        n = GraphNode(
+            id=generate_id(label, file_path, name),
+            label=label,
+            name=name,
+            file_path=file_path,
+            start_line=1,
+        )
+        graph.add_node(n)
+        return n
+
+    func_a = node(NodeLabel.FUNCTION, "src/a.py", "funcA")
+    func_b = node(NodeLabel.FUNCTION, "src/b.py", "funcB")
+    class_c = node(NodeLabel.CLASS, "src/c.py", "ClassC")
+    node(NodeLabel.FUNCTION, "src/z.py", "lonely")
+
+    def rel(src: str, tgt: str, rt: RelType, **props) -> None:
+        graph.add_relationship(
+            GraphRelationship(
+                id=f"{rt.value}:{src}->{tgt}", type=rt, source=src, target=tgt,
+                properties=props,
+            )
+        )
+
+    rel(func_a.id, func_b.id, RelType.CALLS, confidence=0.6)
+    rel(func_b.id, class_c.id, RelType.USES_TYPE)
+    return graph
+
+
+class TestHandleTrace:
+    """End-to-end trace over a real backend (both kùzu and SQLite via fixture)."""
+
+    def test_multi_relation_forward_path(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        result = handle_trace(backend, "funcA", "ClassC")
+        assert "2 hops" in result
+        # Both edge kinds are annotated, forward arrows, and the low-confidence
+        # CALLS edge carries the (~) tag.
+        assert "--calls (~)-->" in result
+        assert "--uses_type-->" in result
+        assert "funcA" in result and "funcB" in result and "ClassC" in result
+
+    def test_reverse_direction_annotated(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        # Tracing target->source walks the same edges backwards: incoming arrows.
+        result = handle_trace(backend, "ClassC", "funcA")
+        assert "2 hops" in result
+        assert "<--uses_type--" in result
+        assert "<--calls (~)--" in result
+
+    def test_no_path(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        result = handle_trace(backend, "funcA", "lonely")
+        assert "No relationship path found" in result
+
+    def test_relations_filter_narrows_edges(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        # Restricting to CALLS only breaks the funcB--uses_type-->ClassC hop.
+        result = handle_trace(backend, "funcA", "ClassC", relations=["calls"])
+        assert "No relationship path found" in result
+
+    def test_same_symbol(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        result = handle_trace(backend, "funcA", "funcA")
+        assert "same symbol" in result.lower()
+
+    def test_source_not_found(self, backend) -> None:
+        backend.bulk_load(_trace_graph())
+        assert "not found" in handle_trace(backend, "ghost", "funcA").lower()
+
+    def test_empty_inputs(self, backend) -> None:
+        assert "required" in handle_trace(backend, "", "funcA").lower()
+        assert "required" in handle_trace(backend, "funcA", "").lower()
+
+
+class TestTraceHelpers:
+    def test_resolve_rel_types_default(self) -> None:
+        assert _resolve_rel_types(None) == list(TRACE_REL_TYPES)
+        assert _resolve_rel_types([]) == list(TRACE_REL_TYPES)
+
+    def test_resolve_rel_types_filters_and_ignores_unknown(self) -> None:
+        assert _resolve_rel_types(["calls", "bogus"]) == [RelType.CALLS]
+        # All-unknown falls back to the default set rather than an empty walk.
+        assert _resolve_rel_types(["bogus"]) == list(TRACE_REL_TYPES)
+
+    def test_ambiguity_note_flags_near_tie(self) -> None:
+        results = [
+            SearchResult(node_id="a", score=1.0, node_name="pay", file_path="src/a.py"),
+            SearchResult(node_id="b", score=0.95, node_name="pay", file_path="src/b.py"),
+        ]
+        note = _ambiguity_note("source", "pay", results)
+        assert note is not None and "ambiguous" in note
+
+    def test_ambiguity_note_silent_on_clear_winner(self) -> None:
+        results = [
+            SearchResult(node_id="a", score=1.0, node_name="pay", file_path="src/a.py"),
+            SearchResult(node_id="b", score=0.4, node_name="payHelper", file_path="src/b.py"),
+        ]
+        assert _ambiguity_note("source", "pay", results) is None
+
+    def test_ambiguity_note_silent_single_match(self) -> None:
+        results = [SearchResult(node_id="a", score=1.0, node_name="pay", file_path="src/a.py")]
+        assert _ambiguity_note("source", "pay", results) is None
+
+
+def _insights_graph() -> KnowledgeGraph:
+    """funcA→funcB→funcC (calls); Comm1={funcA,funcB}, Comm2={funcC} → one bridge."""
+    graph = KnowledgeGraph()
+
+    def node(label: NodeLabel, fp: str, name: str) -> GraphNode:
+        n = GraphNode(id=generate_id(label, fp, name), label=label, name=name,
+                      file_path=fp, start_line=1)
+        graph.add_node(n)
+        return n
+
+    a = node(NodeLabel.FUNCTION, "src/a.py", "funcA")
+    b = node(NodeLabel.FUNCTION, "src/b.py", "funcB")
+    c = node(NodeLabel.FUNCTION, "src/c.py", "funcC")
+    comm1 = node(NodeLabel.COMMUNITY, "", "Comm1")
+    comm2 = node(NodeLabel.COMMUNITY, "", "Comm2")
+
+    def rel(src: str, tgt: str, rt: RelType, **props) -> None:
+        graph.add_relationship(GraphRelationship(
+            id=f"{rt.value}:{src}->{tgt}", type=rt, source=src, target=tgt, properties=props))
+
+    rel(a.id, b.id, RelType.CALLS, confidence=1.0)
+    rel(b.id, c.id, RelType.CALLS, confidence=1.0)  # the cross-community bridge
+    rel(a.id, comm1.id, RelType.MEMBER_OF)
+    rel(b.id, comm1.id, RelType.MEMBER_OF)
+    rel(c.id, comm2.id, RelType.MEMBER_OF)
+    return graph
+
+
+class TestHandleInsights:
+    def test_hubs_bridges_and_questions(self, backend) -> None:
+        backend.bulk_load(_insights_graph())
+        r = compute_insights(backend, hub_limit=8, bridge_limit=8)
+        # funcB is the top hub (called by A, calls C = degree 2).
+        assert r["hubs"][0]["name"] == "funcB"
+        assert r["hubs"][0]["degree"] == 2
+        # The only community-bridging edge is funcB → funcC.
+        assert [(b["source"], b["target"], b["rel_type"]) for b in r["bridges"]] == [
+            ("funcB", "funcC", "calls"),
+        ]
+        assert r["bridges"][0]["source_community"] == "Comm1"
+        assert r["bridges"][0]["target_community"] == "Comm2"
+        # Deterministic suggested questions reference the findings.
+        joined = " ".join(r["questions"])
+        assert "funcB" in joined  # blast radius of the top hub
+        assert "trace" in joined  # trace across the bridge
+
+    def test_render_contains_sections(self, backend) -> None:
+        backend.bulk_load(_insights_graph())
+        out = handle_insights(backend)
+        assert "Hubs" in out
+        assert "Surprising connections" in out
+        assert "funcB --calls--> funcC" in out
+        assert "Comm1 → Comm2" in out
+        assert "Suggested questions" in out
+
+    def test_empty_graph(self, backend) -> None:
+        out = handle_insights(backend)
+        assert "Hubs: none" in out

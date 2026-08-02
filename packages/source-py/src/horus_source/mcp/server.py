@@ -45,10 +45,12 @@ from horus_source.mcp.tools import (
     handle_explain,
     handle_file_context,
     handle_impact,
+    handle_insights,
     handle_list_repos,
     handle_query,
     handle_review_risk,
     handle_test_impact,
+    handle_trace,
 )
 
 logger = logging.getLogger(__name__)
@@ -330,6 +332,73 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="horus_source_trace",
+        description=(
+            "Trace the shortest RELATIONSHIP path between two symbols across all "
+            "semantic edges (calls, imports, extends, implements, uses_type), in "
+            "both directions. Answers 'how are A and B connected?' — broader than "
+            "call_path (which is CALLS-only, caller->callee). Each hop is annotated "
+            "with its relation, direction and confidence."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "from_symbol": {
+                    "type": "string",
+                    "description": "Name of the source symbol.",
+                },
+                "to_symbol": {
+                    "type": "string",
+                    "description": "Name of the target symbol.",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": f"Maximum hops (default 10, max {MAX_TRAVERSE_DEPTH}).",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": MAX_TRAVERSE_DEPTH,
+                },
+                "relations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional edge kinds to restrict the walk to (e.g. "
+                        "['calls', 'imports']). Omit to use all semantic relations."
+                    ),
+                },
+            },
+            "required": ["from_symbol", "to_symbol"],
+        },
+    ),
+    Tool(
+        name="horus_source_insights",
+        description=(
+            "Graph-shape insights: the codebase's HUBS (highest-degree symbols — "
+            "the 'god objects' everything leans on), SURPRISING CONNECTIONS (edges "
+            "that bridge two detected communities), and a few suggested follow-up "
+            "questions. A fast orientation pass over an unfamiliar repo."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "hub_limit": {
+                    "type": "integer",
+                    "description": "How many top hubs to return (default 8).",
+                    "default": 8,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "bridge_limit": {
+                    "type": "integer",
+                    "description": "How many cross-community edges to return (default 8).",
+                    "default": 8,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+            },
+        },
+    ),
+    Tool(
         name="horus_source_file_context",
         description=(
             "Get comprehensive context for a file: symbols, imports, "
@@ -425,6 +494,14 @@ def _dispatch_tool(name: str, arguments: dict, storage: StorageBackend) -> str:
             arguments.get("to_symbol", ""),
             max_depth=arguments.get("max_depth", 10),
         )
+    elif name == "horus_source_trace":
+        return handle_trace(
+            storage,
+            arguments.get("from_symbol", ""),
+            arguments.get("to_symbol", ""),
+            max_depth=arguments.get("max_depth", 10),
+            relations=arguments.get("relations"),
+        )
     elif name == "horus_source_file_context":
         return handle_file_context(storage, arguments.get("file_path", ""))
     elif name == "horus_source_test_impact":
@@ -436,6 +513,12 @@ def _dispatch_tool(name: str, arguments: dict, storage: StorageBackend) -> str:
     elif name == "horus_source_cycles":
         return handle_cycles(
             storage, min_size=arguments.get("min_size", 2),
+        )
+    elif name == "horus_source_insights":
+        return handle_insights(
+            storage,
+            hub_limit=arguments.get("hub_limit", 8),
+            bridge_limit=arguments.get("bridge_limit", 8),
         )
     else:
         return f"Unknown tool: {name}"

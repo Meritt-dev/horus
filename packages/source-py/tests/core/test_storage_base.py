@@ -94,6 +94,15 @@ class TestStorageBackend:
             def get_callees_with_confidence(self, node_id):
                 return []
 
+            def get_edge_neighbors(self, node_id, rel_types):
+                return []
+
+            def get_node_degrees(self, rel_types, limit=10):
+                return []
+
+            def get_cross_community_edges(self, rel_types, limit=10):
+                return []
+
             def traverse(self, start_id, depth):
                 return []
 

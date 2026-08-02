@@ -21,7 +21,9 @@ import type {
   SourceNodeLine,
   SourceOverview,
   SourceProcessesResult,
+  SourceInsightsResult,
   SourceSearchResult,
+  SourceTraceResult,
 } from './types.js';
 
 /**
@@ -200,6 +202,36 @@ export class SourceHttpClient {
 
   diff(base: string, compare: string): Promise<SourceDiffResult> {
     return this.request<SourceDiffResult>('POST', '/api/diff', { base, compare });
+  }
+
+  /**
+   * Shortest relationship path between two symbols across all semantic edges
+   * (calls, imports, extends, implements, uses_type), in both directions.
+   * Broader than a call-only path — answers "how are A and B connected?".
+   * `relations` optionally narrows the edge kinds (e.g. `['calls']`).
+   */
+  trace(
+    fromSymbol: string,
+    toSymbol: string,
+    opts?: { maxDepth?: number; relations?: string[] },
+  ): Promise<SourceTraceResult> {
+    const params = new URLSearchParams({ from: fromSymbol, to: toSymbol });
+    if (opts?.maxDepth != null) params.set('max_depth', String(opts.maxDepth));
+    if (opts?.relations?.length) params.set('relations', opts.relations.join(','));
+    return this.request<SourceTraceResult>('GET', `/api/trace?${params.toString()}`);
+  }
+
+  /**
+   * Graph-shape insights: the codebase's hubs (highest-degree symbols),
+   * surprising connections (edges bridging detected communities), and a few
+   * suggested follow-up questions.
+   */
+  insights(opts?: { hubLimit?: number; bridgeLimit?: number }): Promise<SourceInsightsResult> {
+    const params = new URLSearchParams();
+    if (opts?.hubLimit != null) params.set('hub_limit', String(opts.hubLimit));
+    if (opts?.bridgeLimit != null) params.set('bridge_limit', String(opts.bridgeLimit));
+    const qs = params.toString();
+    return this.request<SourceInsightsResult>('GET', `/api/insights${qs ? `?${qs}` : ''}`);
   }
 
   async nodeCount(): Promise<number> {

@@ -39,7 +39,12 @@ from horus_source.core.classify import is_product
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.marker_match import content_has_marker
-from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, NodeEmbedding, SearchResult
+from horus_source.core.storage.base import (
+    EMBEDDING_DIMENSIONS,
+    EdgeNeighbor,
+    NodeEmbedding,
+    SearchResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -706,6 +711,134 @@ class SqliteBackend:
                 confidence = float(row[-1]) if row[-1] is not None else 1.0
                 pairs.append((node, confidence))
         return pairs
+
+    def get_edge_neighbors(
+        self, node_id: str, rel_types: Sequence[RelType],
+    ) -> list[EdgeNeighbor]:
+        """Return every neighbour of *node_id* over *rel_types*, both directions.
+
+        One query per direction (unioned): outgoing edges (``node_id`` is the
+        source) yield ``direction="out"``; incoming edges (``node_id`` is the
+        target) yield ``direction="in"``. The ``idx_edges_source`` /
+        ``idx_edges_target`` indexes cover both halves.
+        """
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        rel_values = [rt.value for rt in rel_types]
+        placeholders = ",".join("?" for _ in rel_values)
+        ncols = self._prefixed_node_columns("n")
+        # Outgoing: node_id -> n. Incoming: n -> node_id. The trailing three
+        # columns (rel_type, confidence, direction) are stripped before the row
+        # is decoded into a node via ``_row_to_node``.
+        query = (
+            f"SELECT {ncols}, e.rel_type, e.confidence, 'out' AS dir "
+            f"FROM edges e JOIN nodes n ON n.id = e.target "
+            f"WHERE e.source = ? AND e.rel_type IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT {ncols}, e.rel_type, e.confidence, 'in' AS dir "
+            f"FROM edges e JOIN nodes n ON n.id = e.source "
+            f"WHERE e.target = ? AND e.rel_type IN ({placeholders})"
+        )
+        params = [node_id, *rel_values, node_id, *rel_values]
+        with self._lock:
+            rows = conn.execute(query, params).fetchall()
+        neighbors: list[EdgeNeighbor] = []
+        for row in rows:
+            node = self._row_to_node(row[:-3])
+            if node is None:
+                continue
+            confidence = float(row[-2]) if row[-2] is not None else 1.0
+            neighbors.append(
+                EdgeNeighbor(
+                    node=node,
+                    rel_type=str(row[-3]),
+                    confidence=confidence,
+                    direction=str(row[-1]),
+                )
+            )
+        return neighbors
+
+    def get_node_degrees(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, int]]:
+        """Top-*limit* nodes by degree over *rel_types* — the graph's hubs.
+
+        Degree counts every incident edge (in + out) of the given kinds, so a
+        symbol called from many places and calling many others ranks highest.
+        Ties break by id for a stable ordering across backends.
+        """
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        rel_values = [rt.value for rt in rel_types]
+        placeholders = ",".join("?" for _ in rel_values)
+        ncols = self._prefixed_node_columns("n")
+        query = (
+            f"SELECT {ncols}, d.deg FROM ("
+            f"  SELECT node_id, COUNT(*) AS deg FROM ("
+            f"    SELECT source AS node_id FROM edges WHERE rel_type IN ({placeholders}) "
+            f"    UNION ALL "
+            f"    SELECT target AS node_id FROM edges WHERE rel_type IN ({placeholders}) "
+            f"  ) GROUP BY node_id"
+            f") d JOIN nodes n ON n.id = d.node_id "
+            f"ORDER BY d.deg DESC, n.id ASC LIMIT ?"
+        )
+        params = [*rel_values, *rel_values, limit]
+        with self._lock:
+            rows = conn.execute(query, params).fetchall()
+        out: list[tuple[GraphNode, int]] = []
+        for row in rows:
+            node = self._row_to_node(row[:-1])
+            if node is not None:
+                out.append((node, int(row[-1])))
+        return out
+
+    def get_cross_community_edges(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, GraphNode, str, str, str]]:
+        """Edges whose endpoints live in DIFFERENT communities — surprising bridges.
+
+        These are the connections a reader wouldn't expect: a symbol in one
+        detected subsystem reaching directly into another. Only edges where BOTH
+        endpoints have a community (and the two differ) qualify. Returns
+        ``(source_node, target_node, rel_type, source_community, target_community)``.
+        """
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        rel_values = [rt.value for rt in rel_types]
+        placeholders = ",".join("?" for _ in rel_values)
+        mo = RelType.MEMBER_OF.value
+        scols = self._prefixed_node_columns("sn")
+        tcols = self._prefixed_node_columns("tn")
+        query = (
+            f"SELECT {scols}, {tcols}, e.rel_type, scn.name, tcn.name "
+            f"FROM edges e "
+            f"JOIN edges ms ON ms.source = e.source AND ms.rel_type = ? "
+            f"JOIN edges mt ON mt.source = e.target AND mt.rel_type = ? "
+            f"JOIN nodes sn ON sn.id = e.source "
+            f"JOIN nodes tn ON tn.id = e.target "
+            f"JOIN nodes scn ON scn.id = ms.target "
+            f"JOIN nodes tcn ON tcn.id = mt.target "
+            f"WHERE e.rel_type IN ({placeholders}) AND ms.target <> mt.target "
+            f"ORDER BY e.source ASC, e.target ASC LIMIT ?"
+        )
+        params = [mo, mo, *rel_values, limit]
+        with self._lock:
+            rows = conn.execute(query, params).fetchall()
+        ncol = len(_NODE_COLUMNS.split(","))
+        out: list[tuple[GraphNode, GraphNode, str, str, str]] = []
+        for row in rows:
+            src = self._row_to_node(row[:ncol])
+            tgt = self._row_to_node(row[ncol : ncol * 2])
+            if src is None or tgt is None:
+                continue
+            rel_type = str(row[ncol * 2])
+            src_comm = str(row[ncol * 2 + 1] or "")
+            tgt_comm = str(row[ncol * 2 + 2] or "")
+            out.append((src, tgt, rel_type, src_comm, tgt_comm))
+        return out
 
     _MAX_BFS_DEPTH = 10
 

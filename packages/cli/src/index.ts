@@ -28,6 +28,8 @@ import { runTimeline } from './commands/timeline.js';
 import { runWhatChanged } from './commands/what-changed.js';
 import { runArchitecture } from './commands/architecture.js';
 import { runBlastRadius } from './commands/blast-radius.js';
+import { runTrace } from './commands/trace.js';
+import { runInsights } from './commands/insights.js';
 import { runRepos } from './commands/repos.js';
 import { runSearch } from './commands/search.js';
 import { runInvestigations } from './commands/investigations.js';
@@ -1444,6 +1446,53 @@ Examples:
           json: opts.json,
           ai: opts.ai,
           aiModel: opts.aiModel,
+        });
+      },
+    );
+
+  program
+    .command('trace <from> <to>')
+    .description(
+      'Shortest relationship path between two symbols across all edges (calls, imports, extends, implements, uses_type), both directions',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-d, --max-depth <n>', 'maximum hops (default 10, max 10)', (v) => parseInt(v, 10))
+    .option(
+      '--relations <list>',
+      'comma-separated edge kinds to restrict the walk (e.g. calls,imports)',
+    )
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        from: string,
+        to: string,
+        opts: { config?: string; maxDepth?: number; relations?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runTrace(from, to, {
+          config: opts.config,
+          maxDepth: opts.maxDepth,
+          relations: opts.relations,
+          json: opts.json,
+        });
+      },
+    );
+
+  program
+    .command('insights')
+    .description(
+      "Graph-shape insights: the codebase's hubs (most-connected symbols), surprising cross-community connections, and suggested questions",
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--hubs <n>', 'how many top hubs to show (default 8)', (v) => parseInt(v, 10))
+    .option('--bridges <n>', 'how many cross-community edges to show (default 8)', (v) => parseInt(v, 10))
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: { config?: string; hubs?: number; bridges?: number; json?: boolean }) => {
+        process.exitCode = await runInsights({
+          config: opts.config,
+          hubs: opts.hubs,
+          bridges: opts.bridges,
+          json: opts.json,
         });
       },
     );

@@ -28,7 +28,7 @@ from horus_source.core.classify import is_product
 from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.core.graph.model import GraphNode, GraphRelationship, NodeLabel, RelType
 from horus_source.core.marker_match import content_has_marker
-from horus_source.core.storage.base import NodeEmbedding, SearchResult
+from horus_source.core.storage.base import EdgeNeighbor, NodeEmbedding, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +524,128 @@ class KuzuBackend:
             f"RETURN callee.*, r.confidence"
         )
         return self._query_nodes_with_confidence(query, parameters={"nid": node_id})
+
+    def get_edge_neighbors(
+        self, node_id: str, rel_types: Sequence[RelType],
+    ) -> list[EdgeNeighbor]:
+        """Return every neighbour of *node_id* over *rel_types*, both directions.
+
+        Outgoing (``node_id`` is the source) yields ``direction="out"``; incoming
+        (``node_id`` is the target) yields ``direction="in"``. The rel-type list is
+        interpolated inline (values come from the fixed :class:`RelType` enum, not
+        user input), matching :meth:`get_heritage_dependents`.
+        """
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        table = _table_for_id(node_id)
+        if table is None:
+            return []
+        rel_list = "[" + ", ".join(f"'{rt.value}'" for rt in rel_types) + "]"
+        query = (
+            f"MATCH (a:{table})-[r:CodeRelation]->(b) "
+            f"WHERE a.id = $nid AND r.rel_type IN {rel_list} "
+            f"RETURN b.*, r.rel_type, r.confidence, 'out' "
+            f"UNION ALL "
+            f"MATCH (b)-[r:CodeRelation]->(a:{table}) "
+            f"WHERE a.id = $nid AND r.rel_type IN {rel_list} "
+            f"RETURN b.*, r.rel_type, r.confidence, 'in'"
+        )
+        neighbors: list[EdgeNeighbor] = []
+        try:
+            with self._lock:
+                result = conn.execute(query, parameters={"nid": node_id})
+            while result.has_next():
+                row = result.get_next()
+                node = self._row_to_node(row[:-3])
+                if node is None:
+                    continue
+                confidence = float(row[-2]) if row[-2] is not None else 1.0
+                neighbors.append(
+                    EdgeNeighbor(
+                        node=node,
+                        rel_type=str(row[-3]),
+                        confidence=confidence,
+                        direction=str(row[-1]),
+                    )
+                )
+        except Exception:
+            logger.warning("get_edge_neighbors failed: %s", query, exc_info=True)
+        return neighbors
+
+    def get_node_degrees(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, int]]:
+        """Return the *limit* highest-degree nodes over *rel_types* — the graph's hubs.
+
+        Selects ``(id, degree)`` scalars, then re-fetches each node via
+        :meth:`get_node` — robust against kùzu's multi-node ``RETURN n.*`` column
+        layout, and avoids re-entering the (non-reentrant) connection lock.
+        """
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        rel_list = "[" + ", ".join(f"'{rt.value}'" for rt in rel_types) + "]"
+        query = (
+            f"MATCH (n)-[r:CodeRelation]-(m) "
+            f"WHERE r.rel_type IN {rel_list} "
+            f"RETURN n.id AS id, count(r) AS deg "
+            f"ORDER BY deg DESC, id ASC LIMIT {int(limit)}"
+        )
+        scored: list[tuple[str, int]] = []
+        try:
+            with self._lock:
+                result = conn.execute(query)
+                while result.has_next():
+                    row = result.get_next()
+                    scored.append((str(row[0]), int(row[1])))
+        except Exception:
+            logger.warning("get_node_degrees failed: %s", query, exc_info=True)
+            return []
+        out: list[tuple[GraphNode, int]] = []
+        for nid, deg in scored:
+            node = self.get_node(nid)
+            if node is not None:
+                out.append((node, deg))
+        return out
+
+    def get_cross_community_edges(
+        self, rel_types: Sequence[RelType], limit: int = 10,
+    ) -> list[tuple[GraphNode, GraphNode, str, str, str]]:
+        """Return edges whose endpoints are in DIFFERENT communities — surprising bridges."""
+        if not rel_types:
+            return []
+        conn = self._require_conn()
+        rel_list = "[" + ", ".join(f"'{rt.value}'" for rt in rel_types) + "]"
+        mo = RelType.MEMBER_OF.value
+        query = (
+            f"MATCH (s)-[e:CodeRelation]->(t), "
+            f"(s)-[:CodeRelation {{rel_type: '{mo}'}}]->(sc), "
+            f"(t)-[:CodeRelation {{rel_type: '{mo}'}}]->(tc) "
+            f"WHERE e.rel_type IN {rel_list} AND sc.id <> tc.id "
+            f"RETURN s.id, t.id, e.rel_type, sc.name, tc.name "
+            f"ORDER BY s.id ASC, t.id ASC LIMIT {int(limit)}"
+        )
+        scored: list[tuple[str, str, str, str, str]] = []
+        try:
+            with self._lock:
+                result = conn.execute(query)
+                while result.has_next():
+                    row = result.get_next()
+                    scored.append(
+                        (str(row[0]), str(row[1]), str(row[2]),
+                         str(row[3] or ""), str(row[4] or "")),
+                    )
+        except Exception:
+            logger.warning("get_cross_community_edges failed: %s", query, exc_info=True)
+            return []
+        out: list[tuple[GraphNode, GraphNode, str, str, str]] = []
+        for s_id, t_id, rel, sc, tc in scored:
+            src = self.get_node(s_id)
+            tgt = self.get_node(t_id)
+            if src is not None and tgt is not None:
+                out.append((src, tgt, rel, sc, tc))
+        return out
 
     _MAX_BFS_DEPTH = 10
 
