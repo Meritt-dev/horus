@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.22.0] — 2026-08-02
+
+Follow the shortest path through a codebase, then inspect the graph structure behind it.
+
+- **`horus trace <from> <to>`.** Find the shortest relationship path between two symbols across calls, imports, inheritance, implementations, and type usage. Traversal works in either direction, supports `--max-depth` and `--relations`, prints every hop with source locations and confidence, and has structured `--json` output for agents and scripts.
+- **`horus insights`.** Surface the most-connected symbols, cross-community bridges, and grounded follow-up questions from the canonical source graph. Limits are configurable with `--hubs` and `--bridges`, with the same machine-readable JSON contract.
+- **Graph-aware log reconciliation.** Elasticsearch analysis can now connect log evidence back to indexed source paths, with matching HTTP and MCP APIs for the CLI and Horus Cloud. SQLite remains the canonical local graph backend; the legacy Kuzu suite is retained without gating the new analytics path.
+
 ## [0.21.9] — 2026-07-13
 
 Work the Lens backlog directly: every client-reported issue as a queue your agent can pick up and fix — not just investigation evidence.
