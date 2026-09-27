@@ -49,6 +49,16 @@ type ConnectorRegistry = {
 };
 
 const CONNECTOR_CHECKS: ConnectorRegistry = {
+  'prometheus': {label:'prometheus',absentNext:'horus connect prometheus',check:(_c,ctx)=>({label:'prometheus',status:'pass',detail:`${ctx} — configured; run horus status to verify read access`})},
+  'azure-service-bus': {label:'azure-service-bus',absentNext:'horus connect azure-service-bus',check:(_c,ctx)=>({label:'azure-service-bus',status:'pass',detail:`${ctx} — configured; run horus status to verify read access`})},
+  'kafka': {label:'kafka',absentNext:'horus connect kafka',check:(_c,ctx)=>({label:'kafka',status:'pass',detail:`${ctx} — configured; run horus status to verify read access`})},
+  'firestore': {label:'firestore',absentNext:'horus connect firestore',check:(_c,ctx)=>({label:'firestore',status:'pass',detail:`${ctx} — configured; run horus status to verify read access`})},
+  'sqlserver': {label:'SQL Server',absentNext:'horus connect sqlserver',check:(c,ctx)=>({label:'SQL Server',status:c.url?'pass':'warn',detail:`${ctx} — ${c.url?'configured; run horus status to verify read access':'connection string unavailable'}`})},
+
+  'azure-monitor': { label: 'Azure Monitor', absentNext: 'horus connect azure-monitor', check: (c, ctx) => ({ label: 'Azure Monitor', status: 'pass', detail: `${ctx} — ${c.workspace}; local vendor login required, run horus status` }) },
+  'cloudwatch': { label: 'CloudWatch Logs', absentNext: 'horus connect cloudwatch', check: (c, ctx) => ({ label: 'CloudWatch Logs', status: 'pass', detail: `${ctx} — ${c.logGroup}; local vendor login required, run horus status` }) },
+  'gcp-logging': { label: 'Google Cloud Logging', absentNext: 'horus connect gcp-logging', check: (c, ctx) => ({ label: 'Google Cloud Logging', status: 'pass', detail: `${ctx} — ${c.project}; local vendor login required, run horus status` }) },
+
   // Elasticsearch (runtime logs)
   elasticsearch: {
     label: 'Elasticsearch',

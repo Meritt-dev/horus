@@ -63,9 +63,12 @@ export function validateHypotheses(
       present.has(id),
     ).length;
 
-    const confidence = clamp01(
+    let confidence = clamp01(
       h.confidence + 0.15 * supportingPresent - 0.3 * contradictingPresent,
     );
+
+    // Many correlated metric series must not outvote a directly observed failure.
+    if (h.category === 'benign-variance' && contradictingPresent > 0) confidence = Math.min(confidence, 0.1);
 
     let verdict: Verdict;
     if (contradictingPresent > 0 && confidence < 0.1) {

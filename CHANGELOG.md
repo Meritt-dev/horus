@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.23.0] — 2026-09-28
+
+Eight new read-only evidence connectors feed the existing investigation pipeline:
+Azure Monitor, AWS CloudWatch Logs, Google Cloud Logging, direct Prometheus,
+Azure Service Bus, Kafka, Firestore, and SQL Server.
+
+- Configure them through `horus connect`; inspect access with `horus status` and collect evidence with `horus investigate`, including projects without a source host.
+- Cloud logs reuse structured-log relevance and redaction; Prometheus reuses metric analysis; Firestore/SQL Server reuse state analysis. Broker snapshots read counts and offsets without consuming messages or changing offsets.
+- Credentials use the existing encrypted store or the local vendor CLI login. Collections, tables, queues and topics require explicit scope.
+- Direct runtime errors now contradict the benign-variance hypothesis even when many correlated metrics support it. UUID correlation identifiers survive card-number redaction; credential fields remain redacted.
+- See [connector setup and verification](docs/connectors.md) for commands, limits and live-test coverage. This release does not add unattended triggers or change Cloud memory synchronization.
+
 ## [0.22.0] — 2026-08-02
 
 Follow the shortest path through a codebase, then inspect the graph structure behind it.

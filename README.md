@@ -6,7 +6,7 @@
 
 **Understand what happened.**
 
-Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis (incl. BullMQ queues), Axiom logs, Shopify Admin, and source intelligence into deterministic reports — installable today.
+Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis (incl. BullMQ queues), Axiom logs, Shopify Admin, Azure Monitor, CloudWatch Logs, Google Cloud Logging, Prometheus, Azure Service Bus, Kafka, Firestore, SQL Server, and source intelligence into deterministic reports — installable today.
 
 CLI-only. Read-only against production systems. Horus never writes to your infrastructure.
 
@@ -72,6 +72,8 @@ Pipeline: **Evidence → Correlation → Hypotheses → Timeline → Report**
 ## Sources Horus investigates
 
 Elasticsearch · Sentry · Grafana · MongoDB · Postgres · Redis · BullMQ · Axiom · Git changes · Source graph · Queue map · Ownership
+
+[Set up the eight new connectors](docs/connectors.md): cloud logs, direct Prometheus, broker snapshots, Firestore and SQL Server.
 
 Trace reconstruction is not shipped yet. Connectors are read-only and project-scoped.
 

@@ -1,3 +1,4 @@
+import { cloudLogSchemas, runtimeSchemas, type RuntimeConfig, type CloudLogConfig } from './runtime-connectors.js';
 import { z } from 'zod';
 import { createJiti } from 'jiti';
 import { resolve, dirname } from 'node:path';
@@ -93,6 +94,14 @@ export function redisUrlForDb(url: string, db: number): string {
 
 const connectorsSchema = z
   .object({
+    'prometheus': runtimeSchemas['prometheus'].optional(),
+    'azure-service-bus': runtimeSchemas['azure-service-bus'].optional(),
+    'kafka': runtimeSchemas['kafka'].optional(),
+    'firestore': runtimeSchemas['firestore'].optional(),
+    'sqlserver': runtimeSchemas['sqlserver'].optional(),
+    'azure-monitor': cloudLogSchemas['azure-monitor'].optional(),
+    cloudwatch: cloudLogSchemas.cloudwatch.optional(),
+    'gcp-logging': cloudLogSchemas['gcp-logging'].optional(),
     elasticsearch: z
       .object({
         indexPattern: z.string().optional(),
@@ -433,6 +442,9 @@ export function resolveAiSettings(config: HorusConfig): ResolvedAiSettings {
  * username/password.
  */
 export const CONNECTOR_SECRET_FIELDS: Record<string, readonly string[]> = {
+  prometheus: ['token'],
+  kafka: ['username', 'password'],
+  sqlserver: ['url'],
   elasticsearch: ['username', 'password'],
   mongodb: ['url'],
   postgres: ['url'],
@@ -528,6 +540,15 @@ export interface ShopifyQuerySpec {
 }
 
 export interface ResolvedConnectors {
+  'prometheus'?: RuntimeConfig['prometheus'];
+  'azure-service-bus'?: RuntimeConfig['azure-service-bus'];
+  'kafka'?: RuntimeConfig['kafka'];
+  'firestore'?: RuntimeConfig['firestore'];
+  'sqlserver'?: RuntimeConfig['sqlserver'];
+
+  'azure-monitor'?: CloudLogConfig['azure-monitor'];
+  cloudwatch?: CloudLogConfig['cloudwatch'];
+  'gcp-logging'?: CloudLogConfig['gcp-logging'];
   elasticsearch?: {
     url: string;
     username?: string;
@@ -699,6 +720,14 @@ export function resolveEnvironment(
   // --- resolve connectors (runtime belongs to the environment) ---
   const c = environment.connectors;
   const resolved: ResolvedConnectors = {};
+  resolved['prometheus'] = c['prometheus'];
+  resolved['azure-service-bus'] = c['azure-service-bus'];
+  resolved['kafka'] = c['kafka'];
+  resolved['firestore'] = c['firestore'];
+  resolved['sqlserver'] = c['sqlserver'];
+  resolved['azure-monitor'] = c['azure-monitor'];
+  resolved.cloudwatch = c.cloudwatch;
+  resolved['gcp-logging'] = c['gcp-logging'];
 
   if (c.elasticsearch !== undefined) {
     const es = c.elasticsearch;

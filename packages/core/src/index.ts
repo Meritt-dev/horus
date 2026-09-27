@@ -8,3 +8,5 @@ export * from './codeowners.js';
 export * from './redact.js';
 export * from './path-classify.js';
 export * from './queue-hygiene.js';
+
+export * from './runtime-connectors.js';

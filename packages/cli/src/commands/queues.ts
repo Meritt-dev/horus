@@ -1,9 +1,9 @@
 import pc from 'picocolors';
-import { loadConfig, resolveEnvironment, filterQueueEdges } from '@horus/core';
+import { loadConfig, resolveEnvironment, filterQueueEdges, redactErrorMessage } from '@horus/core';
 import { openDb } from '@horus/db';
 import { listQueueEdges, isDbUnavailable } from '@horus/db';
 import type { QueueEdge } from '@horus/db';
-import { queueForEnv, queueDatabaseForEnv } from '@horus/connectors';
+import { queueForEnv, queueDatabaseForEnv, additionalQueuesForEnv } from '@horus/connectors';
 import type { QueueCounts } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -151,7 +151,7 @@ export async function runQueues(
         // has a queue-capable Redis connector — otherwise the tip is a dead end.
         console.log(
           pc.dim(
-            '  Tip: run horus queues --live to show real-time Redis/BullMQ depths and failed-job counts.',
+            '  Tip: run horus queues --live to show real-time queue counts and consumer offsets.',
           ),
         );
         if (opts.ai) {
@@ -177,7 +177,7 @@ const NO_QUEUE_CONNECTOR_MSG =
 function hasQueueConnector(config: Awaited<ReturnType<typeof loadConfig>>): boolean {
   try {
     const renv = resolveEnvironment(config);
-    return renv.connectors.redis !== undefined && queueDatabaseForEnv(renv) !== null;
+    return !!(renv.connectors.kafka || renv.connectors['azure-service-bus']) || (renv.connectors.redis !== undefined && queueDatabaseForEnv(renv) !== null);
   } catch {
     return false;
   }
@@ -233,10 +233,11 @@ async function gatherLiveState(
     return { ok: false, error: (err as Error).message };
   }
   const queueProvider = queueForEnv(renv);
-  if (!queueProvider) return { ok: false, error: NO_QUEUE_CONNECTOR_MSG };
+  const providers = await gatherBrokerState(renv,nameFilter);
+  if (!queueProvider) return providers.length ? {ok:providers.every(p=>p.ok),providers} : { ok: false, error: NO_QUEUE_CONNECTOR_MSG };
   try {
     const health = await queueProvider.health();
-    if (!health.ok) return { ok: false, error: health.detail };
+    if (!health.ok) return { ok: false, error: health.detail, ...(providers.length?{providers}:{}) };
     const staticNames = new Set(buildQueueMap(rows).keys());
     let queueNames: string[] | undefined;
     if (nameFilter !== undefined) {
@@ -248,7 +249,8 @@ async function gatherLiveState(
     }
     const state = await queueProvider.analyzeQueues({ queueNames });
     return {
-      ok: true,
+      ok: providers.every(p => p.ok),
+      ...(providers.length?{providers}:{}),
       prefix: state.prefix,
       collectedAt: state.collectedAt,
       queues: state.queues.map((q) => ({ ...q, runtimeOnly: !staticNames.has(q.queueName) })),
@@ -330,6 +332,17 @@ async function runLiveMode(
   }
 
   const queueProvider = queueForEnv(renv);
+  const providers = await gatherBrokerState(renv,nameFilter);
+  for (const p of providers) {
+    console.log(pc.bold(`Live queue state · ${p.id}`));
+    if (!p.ok) console.log(pc.red(`  ${p.error}`));
+    for (const e of p.evidence) console.log(`  ${e.title}\n  ${JSON.stringify(e.payload)}`);
+  }
+  if (!queueProvider && providers.length) {
+    if (aiOpts) console.log(renderInterpretation(await renderAiInterpretation({command:'queues',evidence:providers,promptKind:'evidence-summary',outputContract:QUEUES_AI_CONTRACT,config:aiOpts.config,modelOverride:aiOpts.aiModel,provider:aiOpts._aiProvider})));
+    return;
+  }
+
 
   if (!queueProvider) {
     console.log(pc.bold('Live queue state') + pc.dim('  ·  source: Redis/BullMQ'));
@@ -494,4 +507,11 @@ function formatAge(ms: number): string {
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
   return `${Math.round(ms / 86_400_000)}d`;
+}
+
+async function gatherBrokerState(renv: ReturnType<typeof resolveEnvironment>, name?: string) {
+  return Promise.all(additionalQueuesForEnv(renv).map(async p => {
+    try { const evidence=(await p.collect()).filter(e=>!name || e.links.queueName===name || e.links.queueName?.startsWith(name+'/'));return {id:p.id,ok:true,evidence,error:undefined}; }
+    catch(e){return {id:p.id,ok:false,evidence:[],error:redactErrorMessage(e)};}
+  }));
 }

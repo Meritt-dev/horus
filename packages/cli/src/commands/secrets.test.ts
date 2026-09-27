@@ -132,3 +132,19 @@ describe('horus secrets status', () => {
     expect(runSecretsStatus({ cwd: root })).toBe(0);
   });
 });
+
+it('round-trips SQL Server, Kafka and Prometheus credentials through the existing encrypted store', async () => {
+  seedConfig({});
+  for (const [kind, opts] of [
+    ['sqlserver',{url:'Server=localhost;User Id=reader;Password=sql-private;Database=app',database:'app',tables:'orders'}],
+    ['kafka',{brokers:'localhost:9092',topics:'orders',groups:'worker',username:'reader',password:'kafka-private',ssl:false}],
+    ['prometheus',{url:'https://metrics.example',token:'prom-private',queries:'[{"title":"up","expr":"up"}]'}],
+  ] as const) expect(await runConnect(kind,{...opts,noTest:true,cwd:root})).toBe(0);
+  const disk=readFileSync(localConfigPath(root),'utf8')+readFileSync(localSecretsPath(root),'utf8');
+  const output=JSON.stringify(vi.mocked(console.log).mock.calls);
+  for(const secret of ['sql-private','kafka-private','prom-private']) {expect(disk).not.toContain(secret);expect(output).not.toContain(secret);}
+  const env=resolveEnvironment(await loadConfig(localConfigPath(root)));
+  expect(env.connectors.sqlserver?.url).toContain('sql-private');
+  expect(env.connectors.kafka?.password).toBe('kafka-private');
+  expect(env.connectors.prometheus?.token).toBe('prom-private');
+});

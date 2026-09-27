@@ -1,3 +1,9 @@
+import { PrometheusMetricsProvider } from './prometheus/provider.js';
+import { KafkaQueueProvider, ServiceBusQueueProvider, type QueueEvidenceProvider } from './runtime-queue/provider.js';
+import { DatabaseStateProvider } from './state/database-provider.js';
+import { FirestoreStateClient } from './firestore/client.js';
+import { SqlServerStateClient } from './sqlserver/client.js';
+import { CloudLogsProvider } from './cloud-logs/provider.js';
 /**
  * ConnectorFactory — wires a `HorusConfig` or a `ResolvedEnvironment` into live
  * provider instances.
@@ -154,7 +160,7 @@ export function logsForEnv(renv: ResolvedEnvironment): LogsProvider | null {
  */
 export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null {
   const g = renv.connectors.grafana;
-  if (!g || !g.url) return null;
+  if (!g || !g.url) return renv.connectors.prometheus ? new PrometheusMetricsProvider(renv.connectors.prometheus) : null;
   return new GrafanaMetricsProvider(
     new GrafanaClient({
       baseUrl: g.url,
@@ -448,4 +454,20 @@ export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null
  */
 export function metricsProviderFromConfig(config: HorusConfig): MetricsProvider | null {
   return metricsForEnv(resolveEnvironment(config));
+}
+
+export function cloudLogsForEnv(env: ResolvedEnvironment): CloudLogsProvider[] {
+  return (['azure-monitor', 'cloudwatch', 'gcp-logging'] as const).flatMap(id => env.connectors[id] ? [new CloudLogsProvider(id, env.connectors[id]!)] : []);
+}
+
+export function additionalStateForEnv(renv: ResolvedEnvironment): StateProvider[] {
+  const c=renv.connectors;
+  return [
+    ...(c.firestore ? [new DatabaseStateProvider('firestore',new FirestoreStateClient(c.firestore),{database:c.firestore.database,collections:c.firestore.collections,staleHours:24})] : []),
+    ...(c.sqlserver ? [new DatabaseStateProvider('sqlserver',new SqlServerStateClient(c.sqlserver),{database:c.sqlserver.database,collections:c.sqlserver.tables,staleHours:24})] : []),
+  ];
+}
+export function additionalQueuesForEnv(renv: ResolvedEnvironment): QueueEvidenceProvider[] {
+  const c=renv.connectors;
+  return [...(c.kafka?[new KafkaQueueProvider(c.kafka)]:[]),...(c['azure-service-bus']?[new ServiceBusQueueProvider(c['azure-service-bus'])]:[])];
 }

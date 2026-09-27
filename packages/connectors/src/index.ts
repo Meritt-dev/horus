@@ -85,3 +85,11 @@ export type {
   LensTopFrame,
   LensFailingRequest,
 } from './lens/index.js';
+
+export * from './cloud-logs/provider.js';
+
+export * from './prometheus/provider.js';
+export * from './runtime-queue/provider.js';
+export * from './state/database-provider.js';
+export * from './firestore/client.js';
+export * from './sqlserver/client.js';

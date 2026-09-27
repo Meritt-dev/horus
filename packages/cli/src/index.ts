@@ -249,8 +249,24 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / axiom / shopify / grafana / redis / ai) in .horus/config.json',
+      'Add or update a runtime connector in .horus/config.json (logs, metrics, databases, queues, or ai)',
     )
+    .option('--gcp-project <id>', 'Google Cloud project ID (Logging or Firestore)')
+    .option('--queries <json>', 'Prometheus queries: [{"title":"...","expr":"..."}]')
+    .option('--namespace-id <id>', 'Azure Service Bus namespace ARM ID')
+    .option('--queues <names>', 'Service Bus queue allowlist (comma-separated)')
+    .option('--brokers <addresses>', 'Kafka host:port endpoints (comma-separated)')
+    .option('--topics <names>', 'Kafka topic allowlist (comma-separated)')
+    .option('--groups <names>', 'Kafka consumer group allowlist (comma-separated)')
+    .option('--no-ssl', 'Disable Kafka TLS for a trusted local broker')
+    .option('--mechanism <type>', 'Kafka SASL: plain, scram-sha-256, scram-sha-512')
+    .option('--workspace <id>', 'Azure Log Analytics workspace GUID')
+    .option('--subscription <id>', 'Azure subscription ID')
+    .option('--region <region>', 'AWS region')
+    .option('--log-group <name>', 'CloudWatch log group')
+    .option('--profile <name>', 'Local AWS profile')
+    .option('--filter <filter>', 'Google Cloud Logging base filter')
+    .option('--executable <path>', 'Vendor CLI executable (absolute path for background service)')
     .option('--env <name>', 'target environment (default: first environment in config)')
     .option(
       '--provider <name>',
@@ -333,6 +349,23 @@ Examples:
           authToken?: string;
           org?: string;
           sentryProject?: string;
+          gcpProject?: string;
+          queries?: string;
+          namespaceId?: string;
+          queues?: string;
+          brokers?: string;
+          topics?: string;
+          groups?: string;
+          ssl?: boolean;
+          mechanism?: string;
+          workspace?: string;
+          subscription?: string;
+          region?: string;
+          logGroup?: string;
+          profile?: string;
+          filter?: string;
+          executable?: string;
+
           token?: string;
           dataset?: string;
           store?: string;
@@ -351,6 +384,22 @@ Examples:
       ) => {
         process.exitCode = await runConnect(type, {
           env: opts.env,
+          queries: opts.queries,
+          namespaceId: opts.namespaceId,
+          queues: opts.queues,
+          brokers: opts.brokers,
+          topics: opts.topics,
+          groups: opts.groups,
+          ssl: opts.ssl,
+          mechanism: opts.mechanism,
+          workspace: opts.workspace,
+          subscription: opts.subscription,
+          region: opts.region,
+          logGroup: opts.logGroup,
+          profile: opts.profile,
+          filter: opts.filter,
+          executable: opts.executable,
+
           url: opts.url,
           username: opts.username,
           password: opts.password,
@@ -362,7 +411,7 @@ Examples:
           tables: opts.tables,
           authToken: opts.authToken,
           org: opts.org,
-          project: opts.sentryProject,
+          project: opts.sentryProject ?? opts.gcpProject,
           token: opts.token,
           dataset: opts.dataset,
           store: opts.store,

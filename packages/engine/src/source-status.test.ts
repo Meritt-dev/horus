@@ -284,3 +284,14 @@ describe('buildRuntimeSourceStatus — report shape', () => {
     expect(logs.detail).toBeUndefined();
   });
 });
+
+it('reports native cloud, Prometheus and database failures without requiring legacy connector flags', () => {
+  const report=buildRuntimeSourceStatus([],{
+    cloudLogs:[{id:'cloudwatch',collected:false,failureReason:'auth expired'}],
+    prometheus:true,metricsCollected:false,metricsFailureReason:'connection failed',
+    additionalState:true,stateCollected:false,stateFailureReason:'firestore: request failed',
+    queue:true,queueCollected:false,queueFailureReason:'kafka: connection failed',
+  });
+  expect(report.sources.map(s=>s.status)).toEqual(['failed','failed','failed','failed']);
+  expect(report.sources[0]?.detail).toContain('auth expired');
+});
