@@ -386,6 +386,12 @@ export function generateHypotheses(
       ...(ctx.perSegmentQueueStructureEvIds ?? []),
     ]),
   ];
+  // A segmented metric distribution cannot explain away directly relevant runtime errors.
+  // Ambient errors and informational logs do not contradict benign variance.
+  const directFailures = evidence.filter(e => {
+    const p = e.payload as {level?:string; relevanceClass?:string} | null;
+    return e.kind === 'log' && p?.relevanceClass === 'direct' && ['error','fatal','critical'].includes(p.level ?? '');
+  }).map(e => e.id);
   if (benignSupport.length > 0 || ctx.benignVarianceApplicable === true) {
     hyps.push({
       id: globalThis.crypto.randomUUID(),
@@ -394,7 +400,7 @@ export function generateHypotheses(
         'The anomaly may reflect expected per-segment/per-region variance (or a skewed average), not a failure.',
       confidence: 0.1,
       supportingEvidenceIds: benignSupport,
-      contradictingEvidenceIds: [],
+      contradictingEvidenceIds: directFailures,
       missingEvidence:
         benignSupport.length > 0
           ? []

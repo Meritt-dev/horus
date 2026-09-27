@@ -1,59 +1,7 @@
-/**
- * MongoDB state-evidence provider (HOR-33). Read-only, allowlisted collections.
- * Surfaces application STATE anomalies (stale sync records, failed/disconnected
- * states, stuck schedules) as Evidence — never raw documents. The analysis loop is
- * shared with the Postgres provider via `analyzeStateWith` (see ../state).
- */
-
-import type { Evidence, HealthStatus, ProviderKind } from '@horus/core';
 import { MongoStateClient } from './client.js';
-import {
-  type StateProvider,
-  analyzeStateWith,
-} from '../state/provider.js';
-import { type StateAnalysis, DEFAULT_LEGACY_HOURS, stateToEvidence } from '../state/analyze.js';
-
-export class MongoStateProvider implements StateProvider {
-  readonly id = 'mongodb';
-  readonly kind: ProviderKind = 'state';
-
-  constructor(
-    private readonly client: MongoStateClient,
-    private readonly opts: {
-      database: string;
-      collections: string[];
-      staleHours: number;
-    },
-  ) {}
-
-  async analyzeState(
-    opts: { staleHours?: number; legacyHours?: number } = {},
-  ): Promise<StateAnalysis> {
-    return analyzeStateWith(
-      this.client,
-      {
-        database: this.opts.database,
-        collections: this.opts.collections,
-        staleHours: opts.staleHours ?? this.opts.staleHours,
-        legacyHours: opts.legacyHours ?? DEFAULT_LEGACY_HOURS,
-      },
-      Date.now(),
-    );
-  }
-
-  toEvidence(analysis: StateAnalysis): Evidence[] {
-    return stateToEvidence(analysis, 'mongo.analyzeState', new Date().toISOString());
-  }
-
-  async health(): Promise<HealthStatus> {
-    return this.client.health();
-  }
-
-  async listCollections(): Promise<string[]> {
-    return this.client.listCollections();
-  }
-
-  async close(): Promise<void> {
-    await this.client.close();
+import { DatabaseStateProvider } from '../state/database-provider.js';
+export class MongoStateProvider extends DatabaseStateProvider {
+  constructor(client: MongoStateClient, opts: { database: string; collections: string[]; staleHours: number }) {
+    super('mongodb', client, opts);
   }
 }

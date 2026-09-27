@@ -9,7 +9,7 @@
 
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { logsForEnv, shortTs, extractContextFields } from '@horus/connectors';
+import { logsForEnv, cloudLogsForEnv, shortTs, extractContextFields } from '@horus/connectors';
 import type { LogLevel } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -151,6 +151,25 @@ export async function runLogs(
     }
 
     const logs = logsForEnv(renv);
+    if (logs === null && cloudLogsForEnv(renv).length) {
+      if (opts.groupBy || hasWhere) throw new Error('--group-by and --where require Elasticsearch; use --grep or a configured cloud log filter');
+      const from = sinceToIso(opts.since) ?? new Date(Date.now()-7*86400_000).toISOString();
+      const limit = Math.min(200, Math.max(1,Number(opts.limit ?? 20)));
+      if (!Number.isFinite(limit)) throw new Error('Invalid log limit');
+      const results=[];
+      for (const provider of cloudLogsForEnv(renv)) {
+        const rows = await provider.collect({from,hintTerms:opts.grep ? [opts.grep] : undefined});
+        const minimum = opts.allLevels ? undefined : (opts.level ?? 'error');
+        const severity: Record<string,number>={trace:0,debug:1,info:2,warn:3,warning:3,error:4,fatal:5,critical:5};
+        if (minimum && severity[minimum]===undefined) throw new Error('Unknown severity level');
+        const records = rows.filter(r=>(!minimum || (severity[String(r.fields.level)]??-1)>=severity[minimum]!) && (!service || String(r.fields.service).toLowerCase().includes(service.toLowerCase()))).slice(0,limit);
+        results.push({provider:provider.id,from,boundedSample:true,sampleLimit:200,records});
+      }
+      if(opts.json) console.log(JSON.stringify({project:renv.project,environment:renv.env,providers:results},null,2));
+      else for(const r of results) { console.log(pc.bold(`${r.provider}: ${r.records.length} records (bounded sample)`));for(const row of r.records)console.log(`${row.timestamp ?? ''} [${row.fields.level}] ${row.fields.message}`); }
+      if(opts.ai && !opts.json) console.log(renderInterpretation(await renderAiInterpretation({command:'logs',evidence:results,promptKind:'evidence-summary',outputContract:LOGS_AI_CONTRACT,config:opts.config,modelOverride:opts.aiModel,provider:opts._aiProvider})));
+      return 0;
+    }
     if (logs === null) {
       console.error(
         pc.red(

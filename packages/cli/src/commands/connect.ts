@@ -1,3 +1,5 @@
+import { cloudLogSchemas, runtimeSchemas, type RuntimeKind, type CloudLogKind } from '@horus/core';
+import { PrometheusMetricsProvider, ServiceBusQueueProvider, KafkaQueueProvider, FirestoreStateClient, SqlServerStateClient, CloudLogsProvider } from '@horus/connectors';
 /**
  * `horus connect <type>` — add or update a runtime connector in the current
  * repo's `.horus/config.json` (HOR-41).
@@ -18,6 +20,7 @@
 import { createInterface } from 'node:readline';
 import pc from 'picocolors';
 import {
+  redactErrorMessage,
   findRepoRoot,
   discoverLocalConfig,
   localConfigPath,
@@ -75,6 +78,8 @@ export function parseDbSpec(spec: string): RedisDatabaseSpec {
 }
 
 export interface ConnectOpts {
+  queries?: string; namespaceId?: string; queues?: string; brokers?: string; topics?: string; groups?: string; ssl?: boolean; mechanism?: string;
+  workspace?: string; subscription?: string; region?: string; logGroup?: string; profile?: string; filter?: string; executable?: string;
   env?: string;
   url?: string;
   username?: string;
@@ -129,7 +134,7 @@ export interface ConnectOpts {
   cwd?: string;
 }
 
-const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'shopify', 'grafana', 'redis'] as const;
+const SUPPORTED = ['prometheus', 'azure-service-bus', 'kafka', 'firestore', 'sqlserver', 'azure-monitor', 'cloudwatch', 'gcp-logging', 'elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'shopify', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
@@ -176,6 +181,10 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
     // Build the patch.
     let patch: Record<string, unknown>;
     switch (connectorType) {
+      case 'prometheus': case 'azure-service-bus': case 'kafka': case 'firestore': case 'sqlserver':
+        patch = buildRuntimePatch(connectorType, filled); break;
+      case 'azure-monitor': case 'cloudwatch': case 'gcp-logging':
+        patch = buildCloudLogPatch(connectorType, filled); break;
       case 'elasticsearch':
         patch = buildEsPatch(filled);
         break;
@@ -243,7 +252,7 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       try {
         keyResult = ensureMasterKey();
       } catch (err) {
-        console.error(pc.red((err as Error).message));
+        console.error(pc.red(redactErrorMessage(err)));
         return 1;
       }
       for (const [field, value] of secretPatch) {
@@ -276,7 +285,7 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       console.error(pc.red('Cancelled.'));
       return 1;
     }
-    console.error(pc.red((err as Error).message));
+    console.error(pc.red(redactErrorMessage(err)));
     return 1;
   }
 }
@@ -299,6 +308,23 @@ async function fillInteractive(
   const filled = { ...opts };
 
   switch (type) {
+    case 'prometheus':
+      filled.url ??= await ask('Prometheus URL'); filled.queries ??= await ask('Queries JSON ([{title,expr}])'); break;
+    case 'azure-service-bus':
+      filled.namespaceId ??= await ask('Service Bus namespace ARM ID'); filled.queues ??= await ask('Queues (comma-separated)'); break;
+    case 'kafka':
+      filled.brokers ??= await ask('Brokers (host:port, comma-separated)'); filled.topics ??= await ask('Topics (comma-separated)'); filled.groups ??= await ask('Consumer groups (comma-separated)'); break;
+    case 'firestore':
+      filled.project ??= await ask('Google Cloud project ID'); filled.collections ??= await ask('Collection paths (comma-separated)'); break;
+    case 'sqlserver':
+      filled.url ??= await askPassword('SQL Server connection string'); filled.database ??= await ask('Database'); filled.tables ??= await ask('Tables (comma-separated)'); break;
+    case 'azure-monitor':
+      filled.workspace ??= await ask('Log Analytics workspace GUID'); break;
+    case 'cloudwatch':
+      filled.region ??= await ask('AWS region'); filled.logGroup ??= await ask('CloudWatch log group');
+      filled.profile ??= (await ask('Local AWS profile', '', false)) || undefined; break;
+    case 'gcp-logging':
+      filled.project ??= await ask('Google Cloud project ID'); break;
     case 'elasticsearch':
       filled.url = filled.url ?? (await ask('URL', 'https://elastic.example.com'));
       filled.username =
@@ -503,6 +529,14 @@ async function fillInteractive(
 
 function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
   switch (type) {
+    case 'prometheus': return !opts.url || !opts.queries;
+    case 'azure-service-bus': return !opts.namespaceId || !opts.queues;
+    case 'kafka': return !opts.brokers || !opts.topics || !opts.groups;
+    case 'firestore': return !opts.project || !opts.collections;
+    case 'sqlserver': return !opts.url || !opts.database || !opts.tables;
+    case 'azure-monitor': return !opts.workspace;
+    case 'cloudwatch': return !opts.region || !opts.logGroup;
+    case 'gcp-logging': return !opts.project;
     case 'elasticsearch':
       return !opts.url || (!opts.indexPattern && !opts.indexPatterns?.length);
     case 'mongodb':
@@ -788,6 +822,15 @@ interface ProbeResult {
 async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResult> {
   try {
     switch (type) {
+      case 'prometheus': case 'azure-service-bus': case 'kafka': case 'firestore': case 'sqlserver': {
+        const config=buildRuntimePatch(type,opts);
+        const provider = type === 'prometheus' ? new PrometheusMetricsProvider(config as never) : type === 'azure-service-bus' ? new ServiceBusQueueProvider(config as never) : type === 'kafka' ? new KafkaQueueProvider(config as never) : type === 'firestore' ? new FirestoreStateClient(config as never) : new SqlServerStateClient(config as never);
+        try {const h=await provider.health();return {ok:h.ok,detail:h.detail??''};} finally {if('close' in provider)await provider.close();}
+      }
+      case 'azure-monitor': case 'cloudwatch': case 'gcp-logging': {
+        const h = await new CloudLogsProvider(type, buildCloudLogPatch(type, opts) as never).health();
+        return { ok: h.ok, detail: h.detail ?? '' };
+      }
       case 'elasticsearch': {
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
         const client = new ElasticsearchClient({
@@ -949,7 +992,7 @@ function tcpProbe(host: string, port: number, timeoutMs = 3000): Promise<boolean
 
 function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   const lines: string[] = [];
-  if (opts.url) lines.push(`  url:            ${redactUrl(opts.url)}`);
+  if (opts.url) lines.push(`  url:            ${(CONNECTOR_SECRET_FIELDS[type] ?? []).includes('url') ? '[encrypted connection string]' : redactUrl(opts.url)}`);
   if (opts.username) lines.push(`  username:       ${opts.username}`);
   if (opts.password)
     lines.push(`  password:       ${'•'.repeat(Math.min(opts.password.length, 8))}`);
@@ -1353,4 +1396,13 @@ function redactUrl(raw: string): string {
     // Not a valid URL (e.g. a bare hostname) — return as-is; no userinfo to strip.
     return raw;
   }
+}
+
+function buildCloudLogPatch(type: CloudLogKind, o: ConnectOpts): Record<string, unknown> {
+  return cloudLogSchemas[type].parse({ workspace: o.workspace, subscription: o.subscription, tables: o.tables?.split(',').map(s => s.trim()), region: o.region, logGroup: o.logGroup, profile: o.profile, project: o.project, filter: o.filter, executable: o.executable });
+}
+
+function buildRuntimePatch(type: RuntimeKind, o: ConnectOpts): Record<string, unknown> {
+  const list=(v?:string)=>v?.split(',').map(s=>s.trim()).filter(Boolean);
+  return runtimeSchemas[type].parse({url:o.url,token:o.token,queries:o.queries?JSON.parse(o.queries):undefined,namespaceId:o.namespaceId,queues:list(o.queues),brokers:list(o.brokers),topics:list(o.topics),groups:list(o.groups),ssl:o.ssl,username:o.username,password:o.password,mechanism:o.mechanism,project:o.project,database:o.database,collections:list(o.collections),tables:list(o.tables),schema:o.schema,executable:o.executable});
 }

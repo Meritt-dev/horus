@@ -10,8 +10,11 @@ import type { InvestigationReport, RouteStep } from './types.js';
 
 /** Which connectors are configured for the active project/environment. */
 export interface ConnectorFlags {
+  cloudLogs?: Array<{id: string; collected: boolean; failureReason?: string}>;
   elasticsearch?: boolean;
   grafana?: boolean;
+  prometheus?: boolean;
+  additionalState?: boolean;
   mongodb?: boolean;
   postgres?: boolean;
   /**
@@ -182,7 +185,7 @@ export function hasAnyRuntimeConnector(c: ConnectorFlags): boolean {
       c.sentry ||
       c.lens ||
       c.axiom ||
-      c.grafana ||
+      c.grafana || c.prometheus || c.additionalState || !!c.cloudLogs?.length ||
       c.mongodb ||
       c.postgres ||
       c.redis ||
@@ -277,7 +280,10 @@ export function detectMissingEvidence(
       (connectors.elasticsearch && isUnavailable(connectors, 'elasticsearch')) ||
       (connectors.sentry && isUnavailable(connectors, 'sentry')) ||
       (connectors.axiom && isUnavailable(connectors, 'axiom'));
-    if (!connectors.elasticsearch && !connectors.sentry && !connectors.axiom) {
+    if (connectors.cloudLogs?.length) {
+      logWhy = connectors.cloudLogs.map(p => `${p.id}: ${p.collected ? 'no matching rows in the bounded window' : `collection failed (${p.failureReason ?? 'unknown'})`}`).join('; ');
+      logNextSource = 'Check the selected cloud account, resource scope and log window, then retry';
+    } else if (!connectors.elasticsearch && !connectors.sentry && !connectors.axiom) {
       logWhy = 'No Elasticsearch connector (nor Sentry / Axiom) configured for this environment — no runtime error evidence.';
       logNextSource = 'Add an `elasticsearch`, `sentry`, and/or `axiom` connector to the project/environment';
     } else if (logSourceUnavailable) {
@@ -331,7 +337,7 @@ export function detectMissingEvidence(
     // unavailable → doctor (fix credentials, not re-configure); otherwise the source
     // exists but returned nothing / failed → re-run `logs <service>`.
     const logRouteHint: RouteStep =
-      !connectors.elasticsearch && !connectors.sentry && !connectors.axiom
+      !connectors.elasticsearch && !connectors.sentry && !connectors.axiom && !connectors.cloudLogs?.length
         ? { nextTool: 'connect', args: 'elasticsearch', reason: logNextSource }
         : logSourceUnavailable
           ? { nextTool: 'doctor', args: '', reason: logNextSource }
@@ -348,23 +354,24 @@ export function detectMissingEvidence(
 
   // Only add a metrics gap when metrics are genuinely missing.
   // Successful collection with no anomalies is negative evidence — not a gap.
-  if (!hasMetric && !(connectors.grafana && connectors.metricsCollected) && !sourceImpact) {
+  if (!hasMetric && !((connectors.grafana || connectors.prometheus) && connectors.metricsCollected) && !sourceImpact) {
     const failureDetail = connectors.metricsFailureReason
       ? ` (${connectors.metricsFailureReason})`
       : '';
-    const grafanaUnavailable = Boolean(connectors.grafana) && isUnavailable(connectors, 'grafana');
-    const metricsWhy = !connectors.grafana
+    const grafanaUnavailable = Boolean(connectors.grafana || connectors.prometheus) && isUnavailable(connectors, connectors.prometheus ? 'prometheus' : 'grafana');
+    const metricsLabel = connectors.prometheus ? 'Prometheus' : 'Grafana';
+    const metricsWhy = !(connectors.grafana || connectors.prometheus)
       ? 'No Grafana connector configured — cannot see latency/error-rate trends.'
       : grafanaUnavailable
-        ? 'Grafana configured but unavailable in this run (missing credentials or URL) — cannot see latency/error-rate trends.'
-        : `Grafana metrics collection failed or timed out${failureDetail} — metric trends unavailable for this investigation.`;
-    const metricsNextSource = !connectors.grafana
+        ? `${metricsLabel} configured but unavailable in this run (missing credentials or URL) — cannot see latency/error-rate trends.`
+        : `${metricsLabel} metrics collection failed or timed out${failureDetail} — metric trends unavailable for this investigation.`;
+    const metricsNextSource = !(connectors.grafana || connectors.prometheus)
       ? 'Add a `grafana` connector to the environment'
       : grafanaUnavailable
-        ? 'Provide the Grafana credentials/URL (see `horus doctor`), then retry'
-        : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';
+        ? `Provide the ${metricsLabel} credentials/URL (see horus doctor), then retry`
+        : `Check ${metricsLabel} connectivity, then run horus metrics manually`;
     // No Grafana → `connect grafana`; configured but unavailable → doctor; failed → re-run.
-    const metricsRouteHint: RouteStep = !connectors.grafana
+    const metricsRouteHint: RouteStep = !(connectors.grafana || connectors.prometheus)
       ? { nextTool: 'connect', args: 'grafana', reason: metricsNextSource }
       : grafanaUnavailable
         ? { nextTool: 'doctor', args: '', reason: metricsNextSource }
@@ -434,7 +441,7 @@ export function detectMissingEvidence(
     // The remedy targets the FIRST failed connector, parsed from the provider-prefixed
     // reasons ("mongodb: connection failed; redis: timeout" → connect mongodb).
     const failedConnector =
-      /^(mongodb|postgres|redis|shopify):/.exec(stateReasons[0] ?? '')?.[1] ?? 'mongodb';
+      /^(mongodb|postgres|redis|shopify|firestore|sqlserver):/.exec(stateReasons[0] ?? '')?.[1] ?? 'mongodb';
     gaps.push({
       dimension: 'application state',
       why: `State collection failed${stateDetail} — cannot check for stuck/failed records behind the symptom.`,

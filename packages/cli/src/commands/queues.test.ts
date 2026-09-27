@@ -5,6 +5,7 @@
  * --live guidance (tip gated on a queue-capable Redis connector).
  */
 
+import * as connectors from '@horus/connectors';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { buildInterpretationPrompt } from '@horus/ai';
 import { loadConfig, resolveEnvironment } from '@horus/core';
@@ -200,6 +201,25 @@ describe('runQueues — read-path hygiene and gated --live guidance', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('reports a failed native broker even when BullMQ succeeds', async () => {
+    mockEnv();
+    vi.mocked(listQueueEdges).mockResolvedValue([]);
+    vi.spyOn(connectors, 'queueForEnv').mockReturnValue({
+      health: async () => ({ ok: true, detail: 'ok' }),
+      discoverQueues: async () => [],
+      analyzeQueues: async () => ({ prefix: 'bull', collectedAt: 'now', queues: [] }),
+      close: async () => {},
+    } as never);
+    vi.spyOn(connectors, 'additionalQueuesForEnv').mockReturnValue([{
+      id: 'kafka', kind: 'queue', health: async () => ({ ok: false, detail: 'unavailable' }),
+      collect: async () => { throw new Error('broker unavailable'); },
+    }]);
+    await runQueues(undefined, { json: true, live: true });
+    const result = JSON.parse(logs.join('\n'));
+    expect(result.live.ok).toBe(false);
+    expect(result.live.providers[0].error).toContain('broker unavailable');
   });
 
   it('drops garbage edges and keeps real queues (human view)', async () => {

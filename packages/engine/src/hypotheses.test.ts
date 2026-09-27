@@ -528,3 +528,13 @@ describe('generateHypotheses', () => {
     expect(wsWithMetrics?.verdict).toBe('supported');
   });
 });
+
+it('live EMODA regression: many bimodal series cannot explain away a direct runtime error', () => {
+  const metrics=Array.from({length:12},(_,i)=>makeEvidence('metric',`metric-${i}`));
+  const error={...makeEvidence('log','reserve-error'),payload:{level:'error',relevanceClass:'direct'}};
+  const run=(e:Evidence)=>validateHypotheses(generateHypotheses([...metrics,e],emptyCorrelation,{seedLabel:'reserve',queues:[],bimodalMetricEvIds:metrics.map(m=>m.id)}),[...metrics,e]).find(h=>h.category==='benign-variance')!;
+  expect(run(error).confidence).toBeLessThanOrEqual(0.1);
+  expect(run(error).contradictingEvidenceIds).toEqual(['reserve-error']);
+  expect(run({...error,payload:{level:'error',relevanceClass:'ambient'}}).contradictingEvidenceIds).toEqual([]);
+  expect(run({...error,payload:{level:'info',relevanceClass:'direct'}}).contradictingEvidenceIds).toEqual([]);
+});

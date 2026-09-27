@@ -1,3 +1,4 @@
+import { cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv, type QueueEvidenceProvider, type StructuredLogSource } from '@horus/connectors';
 /**
  * Shared investigation runner (HOR-CLI).
  *
@@ -73,6 +74,9 @@ export interface InvestigationContext {
   /** Native Lens (Horus Cloud) provider — non-null only when logged in + repo cloud-linked (HOR-470). */
   lens: LensProvider | null;
   axiom: AxiomProvider | null;
+  cloudLogs?: StructuredLogSource[];
+  additionalState?: StateProvider[];
+  additionalQueues?: QueueEvidenceProvider[];
   shopify: ShopifyProvider | null;
   queue: QueueRuntimeProvider | null;
   redisState: RedisStateRuntimeProvider | null;
@@ -108,7 +112,7 @@ export async function buildInvestigationContext(
   const log = opts.log ?? ((l: string) => console.error(l));
 
   let code = codeForEnv(renv);
-  if (!code) {
+  if (!code && !Object.values(renv.connectors).some(Boolean)) {
     throw new Error(
       `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
     );
@@ -128,7 +132,7 @@ export async function buildInvestigationContext(
       code = codeForUrl(resolved.hostUrl);
     }
   } else {
-    runtimeOnly = !(await code.health()).ok;
+    runtimeOnly = !code || !(await code.health()).ok;
   }
 
   // HOR-319 (layer-2): if no verified source host is available, degrade to a runtime-only
@@ -180,6 +184,9 @@ export async function buildInvestigationContext(
     sentry,
     lens,
     axiom,
+    cloudLogs: cloudLogsForEnv(renv),
+    additionalState: additionalStateForEnv(renv),
+    additionalQueues: additionalQueuesForEnv(renv),
     shopify,
     queue,
     redisState,
@@ -276,6 +283,9 @@ export async function runOneInvestigation(
       sentry: ctx.sentry,
       lens: ctx.lens,
       axiom: ctx.axiom,
+      cloudLogs: ctx.cloudLogs,
+      additionalState: ctx.additionalState,
+      additionalQueues: ctx.additionalQueues,
       shopify: ctx.shopify,
       queue: ctx.queue,
       redisState: ctx.redisState,
@@ -288,6 +298,8 @@ export async function runOneInvestigation(
       connectors: {
         elasticsearch: !!renv.connectors.elasticsearch,
         grafana: !!renv.connectors.grafana,
+        prometheus: !!renv.connectors.prometheus,
+        additionalState: !!(renv.connectors.firestore || renv.connectors.sqlserver),
         mongodb: !!renv.connectors.mongodb,
         postgres: !!renv.connectors.postgres,
         sentry: !!renv.connectors.sentry,
@@ -297,7 +309,7 @@ export async function runOneInvestigation(
         axiom: !!renv.connectors.axiom,
         shopify: !!renv.connectors.shopify,
         redis: !!renv.connectors.redis,
-        queue: !!ctx.queue,
+        queue: !!ctx.queue || !!ctx.additionalQueues?.length,
       },
       staleIndex,
       // HOR-404: inject the learned reranker only when enabled + proven (loadReranker gates both);
@@ -319,6 +331,7 @@ export async function runOneInvestigation(
  */
 export async function disposeInvestigationContext(ctx: InvestigationContext): Promise<void> {
   await safeClose(() => ctx.dbHandle.sql.end());
+  for (const provider of ctx.additionalState ?? []) await safeClose(() => provider.close());
   if (ctx.mongo) await safeClose(() => ctx.mongo!.close());
   if (ctx.postgres) await safeClose(() => ctx.postgres!.close());
   if (ctx.redisState) await safeClose(() => ctx.redisState!.close());

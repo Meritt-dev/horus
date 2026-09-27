@@ -100,3 +100,27 @@ describe('HOR-319 layer-2 — runtime-only degrade (code: null)', () => {
     expect(report.degraded?.sourceIntelligence).toBe(false);
   });
 });
+
+it('collects native cloud logs, database state and broker snapshots through the canonical runtime-only pipeline', async () => {
+  const { DatabaseStateProvider } = await import('@horus/connectors');
+  const state = new DatabaseStateProvider('sqlserver', {
+    async listCollections() { return ['orders']; },
+    async count() { return 3; },
+    async sampleFields() { return ['status', 'createdAt']; },
+    async maxDate() { return '2026-01-01T00:00:00.000Z'; },
+    async groupBy() { return [{ value: 'failed', count: 3 }]; },
+    async health() { return { ok: true, detail: "ok" }; },
+    async close() {},
+  }, { database: 'test', collections: ['orders'], staleHours: 24 });
+  const report = await investigate({ hint: 'orders failed' }, {
+    code: null, db: makeDb(), additionalState: [state],
+    cloudLogs: [{ id: 'cloudwatch', kind: 'logs', async health() { return { ok: true, detail: "ok" }; },
+      async collect() { return [{ timestamp: new Date().toISOString(), fields: { message: 'orders failed', level: 'error' } }]; } }],
+    additionalQueues: [{ id: 'kafka', kind: 'queue', async health() { return { ok: true, detail: "ok" }; },
+      async collect() { return [{ id: 'snapshot', source: 'queue', kind: 'queue-state', title: 'orders lag', timestamp: new Date().toISOString(), relevance: 0.4, payload: { lag: '2' }, links: { queueName: 'orders' }, provenance: { query: 'offsets', collectedAt: new Date().toISOString() } }]; } }],
+  });
+  expect(report.evidence.some(e => e.kind === 'log' && (e.payload as Record<string, unknown>)?.source === 'cloudwatch')).toBe(true);
+  expect(report.evidence.some(e => e.kind === 'state' && (e.payload as Record<string, unknown>)?.provider === 'sqlserver')).toBe(true);
+  expect(report.evidence.some(e => e.kind === 'queue-state' && (e.payload as Record<string, unknown>)?.lag === '2')).toBe(true);
+  expect(report.sourceStatus?.sources.filter(s => ['logs', 'state', 'queue'].includes(s.source)).every(s => s.status === 'contributed')).toBe(true);
+});

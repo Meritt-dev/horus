@@ -1,3 +1,4 @@
+import type { QueueEvidenceProvider, StructuredLogSource } from '@horus/connectors';
 /**
  * The deterministic investigation pipeline (HOR-5). NO AI/LLM.
  *
@@ -139,6 +140,9 @@ export interface EngineDeps {
    * negative evidence, not a gap; one failing provider never aborts the investigation.
    */
   axiom?: AxiomProvider | null;
+  cloudLogs?: StructuredLogSource[];
+  additionalState?: StateProvider[];
+  additionalQueues?: QueueEvidenceProvider[];
   /**
    * Optional Shopify Admin evidence provider — runs caller-supplied (`input.shopifyQueries`)
    * or config-declared GraphQL queries verbatim and folds each result as `state` (or
@@ -2183,6 +2187,7 @@ export async function investigate(
             ),
             {
               signature: s.key,
+              level: 'error',
               count: s.count,
               firstSeen: s.firstSeen,
               lastSeen: s.lastSeen,
@@ -2750,7 +2755,11 @@ export async function investigate(
   // must never abort the investigation.
   let axiomCollected = false;
   let axiomFailureReason: string | undefined;
-  if (deps.axiom) {
+  const cloudLogStatus: NonNullable<ConnectorFlags['cloudLogs']> = [];
+  for (const logSource of [deps.axiom, ...(deps.cloudLogs ?? [])].filter((p): p is StructuredLogSource => p != null)) {
+    const sourceId = logSource === deps.axiom ? 'axiom' : logSource.id;
+    const sourceStatus = { id: sourceId, collected: false, failureReason: undefined as string | undefined };
+    if (sourceId !== 'axiom') cloudLogStatus.push(sourceStatus);
     try {
       const from = logWindowFrom(input.logsSince ?? input.since);
       const to = new Date().toISOString();
@@ -2761,8 +2770,9 @@ export async function investigate(
         ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(axiomSeedBase)])]
         : [...new Set(tokenize(hint))];
 
-      const records = await deps.axiom.collect({ from, to, hintTerms: axiomTerms });
-      axiomCollected = true;
+      const records = await logSource.collect({ from, to, hintTerms: axiomTerms });
+      sourceStatus.collected = true;
+      if (sourceId === 'axiom') axiomCollected = true;
 
       for (const rec of records.slice(0, 15)) {
         const msg = pickAxiomField(rec.fields, AXIOM_MESSAGE_FIELDS);
@@ -2781,14 +2791,14 @@ export async function investigate(
         const lvl = level ? `[${level}] ` : '';
         const body = msg ?? '(log event)';
         const tag = relevanceClass === 'ambient' ? ' [ambient]' : '';
-        const title = `Axiom log: ${lvl}${body}${tag}`.slice(0, 220);
+        const title = `${sourceId === 'axiom' ? 'Axiom' : sourceId} log: ${lvl}${body}${tag}`.slice(0, 220);
 
         const isError = ['error', 'fatal', 'critical'].includes((level ?? '').toLowerCase());
         const ev = mkEv(
           'log',
           title,
           {
-            source: 'axiom',
+            source: sourceId,
             signature: msg ?? null,
             level: level ?? null,
             service: svc || null,
@@ -2812,8 +2822,8 @@ export async function investigate(
       }
     } catch (axiomErr) {
       // Axiom failure must never break the investigation — continue without it.
-      axiomCollected = false;
-      axiomFailureReason = connectorFailureReason(axiomErr);
+      sourceStatus.failureReason = connectorFailureReason(axiomErr);
+      if (sourceId === 'axiom') { axiomCollected = false; axiomFailureReason = sourceStatus.failureReason; }
     }
   }
 
@@ -2898,9 +2908,10 @@ export async function investigate(
 
   // Any configured state provider (Mongo and/or Postgres) contributes the same
   // state-evidence shape; one provider failing must not abort the others.
-  const stateProviders: Array<{ name: 'mongodb' | 'postgres'; provider: StateProvider }> = [
+  const stateProviders: Array<{ name: string; provider: StateProvider }> = [
     ...(deps.mongo ? [{ name: 'mongodb' as const, provider: deps.mongo }] : []),
     ...(deps.postgres ? [{ name: 'postgres' as const, provider: deps.postgres }] : []),
+    ...(deps.additionalState ?? []).map(provider => ({name:provider.id,provider})),
   ];
   // Undefined when NO state provider (Mongo/Postgres/Redis state) is configured, so old
   // reports and provider-less runs never fire the 'application state' gap; false when at
@@ -2917,7 +2928,7 @@ export async function investigate(
       // collections (e.g. "services", "handlers"). Domain context lives in the hint.
       const stateTerms = [...new Set(tokenize(hint))];
       for (const s of selectStateSignals(analysis, stateTerms)) {
-        const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
+        const ev = mkEv('state', s.title, {...s.payload, provider:name, database:analysis.database}, {}, s.timestamp, s.relevance);
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
         if (s.kind === 'anomaly') {
@@ -3036,6 +3047,17 @@ export async function investigate(
       // queueCollected stays false — gap detector will report the failure + reason.
       queueRuntimeState = null;
       queueFailureReason = connectorFailureReason(queueErr);
+    }
+  }
+
+  for (const provider of deps.additionalQueues ?? []) {
+    try {
+      for (const snapshot of await provider.collect()) {
+        mkEv('queue-state', snapshot.title, snapshot.payload, snapshot.links, snapshot.timestamp, snapshot.relevance);
+      }
+      queueCollected = true;
+    } catch (error) {
+      queueFailureReason = [queueFailureReason, `${provider.id}: ${connectorFailureReason(error)}`].filter(Boolean).join('; ');
     }
   }
 
@@ -4395,7 +4417,7 @@ export async function investigate(
         // The queue connector is derived, not directly configured: it exists iff a
         // BullMQ provider was constructed (queueForEnv returns null without a
         // bullmq/queues Redis DB) — HOR-205.
-        queue: deps.queue != null,
+        queue: deps.queue != null || !!deps.additionalQueues?.length,
         // sentry/axiom/shopify keep the caller's CONFIGURED values (no availability
         // override) — a configured connector whose provider is missing lands in
         // `unavailable` instead of silently flipping to "not configured".
@@ -4403,6 +4425,9 @@ export async function investigate(
         sentryFailureReason,
         lensCollected,
         lensFailureReason,
+        cloudLogs: cloudLogStatus,
+        additionalState: !!deps.additionalState?.length || !!deps.connectors?.additionalState,
+        prometheus: deps.metrics?.id === 'prometheus',
         axiomCollected,
         axiomFailureReason,
         shopifyCollected,
@@ -4430,16 +4455,19 @@ export async function investigate(
         lensCollected,
         lensFailureReason,
         axiom: deps.axiom != null,
+        cloudLogs: cloudLogStatus,
+        additionalState: !!deps.additionalState?.length,
+        prometheus: deps.metrics?.id === 'prometheus',
         axiomCollected,
         axiomFailureReason,
         shopify: deps.shopify != null,
         shopifyCollected,
         shopifyFailureReason,
-        grafana: deps.metrics != null,
+        grafana: deps.metrics != null && deps.metrics.id !== 'prometheus',
         // Without CLI-supplied flags, redis is configured iff a Redis state provider was
         // built — the queue-gap routeHint and state-configured checks depend on it.
         redis: deps.redisState != null,
-        queue: deps.queue != null,
+        queue: deps.queue != null || !!deps.additionalQueues?.length,
         metricsCollected,
         metricsFailureReason,
         logsCollected,

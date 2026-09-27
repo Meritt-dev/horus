@@ -75,21 +75,21 @@ export function buildRuntimeSourceStatus(
   // Axiom is credited here exactly like ES/Sentry so the report header can no longer claim
   // "logs not configured" when configured-and-collected Axiom log evidence is present.
   const logsCount = evidence.filter((e) => e.source === 'logs').length;
-  const logsConfigured = !!(connectors.elasticsearch || connectors.sentry || connectors.axiom);
+  const logsConfigured = !!(connectors.elasticsearch || connectors.sentry || connectors.axiom || connectors.cloudLogs?.length);
   const esFailed = !!connectors.elasticsearch && !connectors.logsCollected;
   const sentryFailed = !!connectors.sentry && !connectors.sentryCollected;
   const axiomFailed = !!connectors.axiom && !connectors.axiomCollected;
-  const logsFailed = logsConfigured && logsCount === 0 && (esFailed || sentryFailed || axiomFailed);
+  const logsFailed = logsConfigured && logsCount === 0 && (esFailed || sentryFailed || axiomFailed || !!connectors.cloudLogs?.some(p => !p.collected));
 
   const metricsCount = evidence.filter((e) => e.source === 'metrics').length;
-  const metricsConfigured = !!connectors.grafana;
+  const metricsConfigured = !!(connectors.grafana || connectors.prometheus);
   const metricsFailed = metricsConfigured && !connectors.metricsCollected;
 
   const stateCount = evidence.filter((e) => e.source === 'state').length;
   // Shopify Admin evidence is application `state` (its default kind), so a configured
   // Shopify credits the state source exactly like Redis/Mongo/Postgres.
   const stateConfigured = !!(
-    connectors.redis ||
+    connectors.additionalState || connectors.redis ||
     connectors.mongodb ||
     connectors.postgres ||
     connectors.shopify
@@ -123,14 +123,14 @@ export function buildRuntimeSourceStatus(
   // configured for it is unavailable.
   const un = new Set(connectors.unavailable ?? []);
   const logsUnavailable =
-    logsConfigured &&
+    logsConfigured && !connectors.cloudLogs?.length &&
     (!connectors.elasticsearch || un.has('elasticsearch')) &&
     (!connectors.sentry || un.has('sentry')) &&
     (!connectors.axiom || un.has('axiom')) &&
     un.size > 0;
-  const metricsUnavailable = metricsConfigured && un.has('grafana');
+  const metricsUnavailable = metricsConfigured && un.has(connectors.prometheus ? 'prometheus' : 'grafana');
   const stateUnavailable =
-    stateConfigured &&
+    stateConfigured && !connectors.additionalState &&
     (!connectors.redis || un.has('redis')) &&
     (!connectors.mongodb || un.has('mongodb')) &&
     (!connectors.postgres || un.has('postgres')) &&
@@ -146,7 +146,7 @@ export function buildRuntimeSourceStatus(
         logsConfigured,
         logsCount,
         logsFailed,
-        connectors.logsCompatibilityError ?? connectors.logsFailureReason,
+        connectors.logsCompatibilityError ?? connectors.logsFailureReason ?? connectors.cloudLogs?.filter(p => !p.collected).map(p => `${p.id}: ${p.failureReason}`).join('; '),
         logsUnavailable,
       ),
       buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed, connectors.metricsFailureReason, metricsUnavailable),

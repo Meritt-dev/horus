@@ -21,7 +21,7 @@
  * pattern still remains afterward, the content is DROPPED rather than sent.
  */
 
-type Replacement = [RegExp, string];
+type Replacement = [RegExp, string | ((match: string, uuid?: string) => string)];
 
 // Conservative, known-bad patterns — safe to apply to log evidence (HOR-91).
 const BASE_PATTERNS: Replacement[] = [
@@ -43,7 +43,12 @@ const BASE_PATTERNS: Replacement[] = [
   // userinfo); ',' and ';' excluded so comma-separated log tokens after a URL
   // never read as credentials.
   [/([a-z][a-z0-9+.-]*:\/\/)[^:@/\s,;]*:[^@/\s,;]+@/gi, '$1[REDACTED]@'],
-  [/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, '[REDACTED-CARD]'],
+  // Numeric UUID segments are incident/operation identities, not card numbers.
+  // Credential rules above still redact a UUID used as a password or token.
+  [
+    /(\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b)|\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/gi,
+    (_match, uuid) => uuid ?? '[REDACTED-CARD]',
+  ],
 ];
 
 // Aggressive PII/credential patterns — only for content that leaves the machine.
@@ -79,7 +84,10 @@ const RESIDUAL_HIGH_RISK: RegExp[] = [
 function apply(patterns: Replacement[], input: string): string {
   let out = input;
   for (const [pattern, replacement] of patterns) {
-    out = out.replace(pattern, replacement);
+    out =
+      typeof replacement === 'string'
+        ? out.replace(pattern, replacement)
+        : out.replace(pattern, replacement);
   }
   return out;
 }

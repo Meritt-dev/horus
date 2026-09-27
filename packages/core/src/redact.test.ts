@@ -17,6 +17,17 @@ describe('redactSecrets (conservative — ES log behavior)', () => {
     expect(redactSecrets('card 4111 1111 1111 1111 end')).toContain('[REDACTED-CARD]');
   });
 
+  it('preserves numeric UUID references while still redacting cards and UUID credentials', () => {
+    const ids = ['30826839-0264-4713-9e98-b7db298805d3', 'abcdefab-abcd-abcd-1234-123456789012'];
+    for (const id of ids) {
+      expect(redactSecrets(`horus:investigation:${id}`)).toBe(`horus:investigation:${id}`);
+      expect(redactContent(id)).toBe(id);
+      expect(redactSecrets(`token=${id}`)).toBe('token=[REDACTED]');
+    }
+    for (const card of ['4111111111111111', '4111-1111-1111-1111', '4111 1111 1111 1111'])
+      expect(redactSecrets(`card-${card}`)).toBe('card-[REDACTED-CARD]');
+  });
+
   it('does NOT touch emails or IPs (stays conservative for log evidence)', () => {
     expect(redactSecrets('contact a@b.com from 10.0.0.1')).toBe('contact a@b.com from 10.0.0.1');
   });

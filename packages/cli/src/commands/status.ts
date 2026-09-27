@@ -1,3 +1,4 @@
+import { PrometheusMetricsProvider, cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv } from '@horus/connectors';
 import pc from 'picocolors';
 import {
   HORUS_VERSION,
@@ -89,12 +90,25 @@ async function checkEnv(
     collect?.push(c);
   };
 
+  let allOk = true;
+  for (const provider of [...cloudLogsForEnv(renv), ...additionalStateForEnv(renv), ...additionalQueuesForEnv(renv)]) {
+    const h = await provider.health().finally(async () => { if ('close' in provider) await provider.close(); });
+    if (!h.ok) allOk = false;
+    record({ name: provider.id, state: h.ok ? 'ok' : 'fail', detail: h.detail ?? '' });
+    log(`  ${mark(h.ok)} ${provider.id}: ${h.detail}`);
+  }
+
+  if (renv.connectors.prometheus) {
+    const h = await new PrometheusMetricsProvider(renv.connectors.prometheus).health();
+    if (!h.ok) allOk = false;
+    record({name:'prometheus',state:h.ok?'ok':'fail',detail:h.detail});
+    log(`  ${mark(h.ok)} prometheus: ${h.detail}`);
+  }
+
   const header =
     `  ${pc.bold(renv.project)} / ${pc.bold(renv.env)}` +
     (renv.readOnly ? pc.dim('  (read-only)') : '');
   log(header);
-
-  let allOk = true;
 
   // Source intelligence — code intelligence, belongs to the project's repositories.
   if (renv.repositories.length === 0) {
