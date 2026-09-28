@@ -382,6 +382,10 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
   };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
+  // A supervised worker owns its detached group. Controller death closes IPC;
+  // stop the group immediately so no orphan can outlive the supervisor deadline.
+  const parentGone = () => process.kill(-process.pid, 'SIGKILL');
+  if (process.connected) process.once('disconnect', parentGone);
   const deadline = Date.now() + config.deadlineSeconds * 1000;
   const timer = setTimeout(stop, config.deadlineSeconds * 1000);
   let context: Awaited<ReturnType<typeof buildInvestigationContext>> | undefined;
@@ -774,6 +778,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     if (context) await disposeInvestigationContext(context);
     process.removeListener('SIGTERM', stop);
     process.removeListener('SIGINT', stop);
+    process.removeListener('disconnect', parentGone);
   }
 }
 

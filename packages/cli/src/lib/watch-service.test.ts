@@ -584,3 +584,43 @@ it('a hard-killed worker cannot leave Claude or its tools running', async () => 
     } catch {}
   }
 });
+
+it('controller death closes worker IPC and terminates its detached group', async () => {
+  const root = temp();
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
+  const settings = join(root, 'settings.json');
+  writeFileSync(settings, JSON.stringify(serviceConfigSchema.parse({
+    claude: '/usr/bin/true', runtime: process.execPath, entry: '/unused',
+    dailyInvestigations: 1, dailyModelCalls: 1,
+    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
+  })));
+  // Hold only this test's lock so the real worker stays at its first DB acquisition.
+  const release = await acquireDbLock(join(root, 'horus.db'), 100);
+  const pidFile = join(root, 'pids.json');
+  const claude = join(root, 'claude.cjs');
+  const worker = join(root, 'worker.mts');
+  const supervisor = join(root, 'supervisor.mts');
+  // Run in one PID/group like the bundled CLI; the tsx CLI wrapper masks controller death.
+  const runtime = resolve('../../node_modules/tsx/dist/loader.mjs');
+  writeFileSync(claude, `const tool=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({worker:Number(process.argv[2]),supervisor:Number(process.argv[3]),claude:process.pid,tool:tool.pid}));setInterval(()=>{},1000);`);
+  writeFileSync(worker, `import {spawn} from 'node:child_process';import {runServiceWorker} from ${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)};spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`);
+  writeFileSync(supervisor, `import {runProcess} from ${JSON.stringify(new URL('./claude-investigation.ts', import.meta.url).href)};await runProcess(process.execPath,['--import',${JSON.stringify(runtime)},${JSON.stringify(worker)}],{cwd:${JSON.stringify(root)},timeoutMs:30000,onMessage:()=>{}});`);
+  const running = runProcess(process.execPath, ['--import', runtime, supervisor], { cwd: root, timeoutMs: 15000 });
+  let pids: {worker: number; supervisor: number; claude: number; tool: number} | undefined;
+  try {
+    await vi.waitFor(() => { pids = JSON.parse(readFileSync(pidFile, 'utf8')); }, { timeout: 10000 });
+    process.kill(pids!.supervisor, 'SIGKILL');
+    await expect(running).rejects.toThrow('Subprocess exited');
+    await vi.waitFor(() => {
+      for (const pid of [pids!.worker, pids!.claude, pids!.tool])
+        expect(() => process.kill(pid, 0)).toThrow();
+    }, { timeout: 3000 });
+  } finally {
+    release();
+    if (pids) {
+      try { process.kill(-pids.worker, 'SIGKILL'); } catch {}
+      try { process.kill(pids.supervisor, 'SIGKILL'); } catch {}
+    }
+    await running.catch(() => {});
+  }
+});

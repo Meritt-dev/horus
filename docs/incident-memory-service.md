@@ -264,6 +264,8 @@ key and require destination deduplication or explicit delivery inspection.
 
 Claude and its tools share the supervised worker's process group, so a hard-killed
 worker cannot leave its model/tool descendants running outside supervisor cleanup.
+If the controller dies, its IPC connection closes and the worker terminates its own
+group. The replacement controller resumes the saved job/report checkpoint.
 
 Notification retries never rerun inference. Daily caps are global across selected
 projects and reset at UTC midnight. Exhaustion defers work visibly and attempts one
