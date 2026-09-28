@@ -1,3 +1,4 @@
+import { syncLinkedMemory, memorySyncContext } from '../lib/cloud/memory-sync.js';
 /**
  * HOR — the `horus memory` command group (spec §7, M1: user control + auditability).
  *
@@ -17,6 +18,7 @@
  */
 
 import pc from 'picocolors';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import type { HorusConfig } from '@horus/core';
 import { loadConfig, resolveEnvironment, findRepoRoot } from '@horus/core';
@@ -40,6 +42,7 @@ import {
   renderMemoryView,
   memoryViewToJSON,
   createLocalMemoryStore,
+  readIncidentDisposition,
   recallMemory,
   detectMemoryEdges,
   deriveSignature,
@@ -64,12 +67,6 @@ import {
 import type { InvestigationReport } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
-import {
-  createCloudMemoryStore,
-  dualWriteMemoryStore,
-  toLinkSyncInput,
-  toAuditSyncInput,
-} from '../lib/cloud/memory-store.js';
 import { CloudOfflineError } from '../lib/cloud/api.js';
 import type { MemoryItemSyncInput, TeamMemoryItem, TeamMemoryPromoteInput } from '../lib/cloud/api.js';
 import { reportCloudError } from './context.js';
@@ -142,36 +139,19 @@ function resolveProject(
  * best-effort mirror (a cloud failure warns, never blocks — spec §3c). Otherwise it is local-only.
  */
 async function withStore<T>(
-  url: string,
+  config: HorusConfig, project: string,
   fn: (store: MemoryStore, db: HorusDb) => Promise<T>,
 ): Promise<T> {
-  const cfg = readCloudConfig(repoRootOrCwd());
-  if (isCloudActive(cfg)) {
-    const session = authedClient();
-    if (session) {
-      const { db, sql } = await openDb(url);
-      try {
-        const local = createLocalMemoryStore(db);
-        const cloud = createCloudMemoryStore(session.client, cfg);
-        // The local db is the source of truth for reads (e.g. the outcome-label join used by
-        // contradiction detection); the cloud is an additive, best-effort mirror.
-        return await fn(
-          dualWriteMemoryStore(local, cloud, (err) => void reportCloudError(err)),
-          db,
-        );
-      } finally {
-        await sql.end();
-      }
-    }
-    console.error(
-      pc.yellow('Linked to Horus Cloud but not logged in — memory stays local only. Run `horus login`.'),
-    );
-  }
-  const { db, sql } = await openDb(url);
+  const { db, sql } = await openDb(config.database.url);
+  const root = resolveEnvironment(config, { project }).path;
   try {
-    return await fn(createLocalMemoryStore(db), db);
+    await syncLinkedMemory(db, root, project, { startup: true });
+    return await fn(createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope }), db);
   } finally {
-    await sql.end();
+    try {
+      const state = await syncLinkedMemory(db, root, project);
+      console.error(`Memory: ${state.state}; ${state.pending} pending${state.error ? ` — ${state.error}` : ''}`);
+    } finally { await sql.end(); }
   }
 }
 
@@ -324,7 +304,7 @@ export async function runMemoryShow(
       // Merge PERSISTED authored items (memory_item) for this repo — clearly sectioned.
       // Recall uses the Source-when-available vector index (M2); a down/absent host degrades
       // to the deterministic Jaccard NoopVectorIndex inside `recallMemory` (best-effort).
-      const store = createLocalMemoryStore(db);
+      const store = createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope });
       const vectorIndex = buildVectorIndex(config, project);
       const stored = await recallMemory(
         store,
@@ -413,7 +393,7 @@ export async function runMemoryAdd(
       repo: project,
     };
 
-    return await withStore(config.database.url, async (store) => {
+    return await withStore(config, project, async (store) => {
       const created = await store.add(item, { actor: { kind: 'user' } });
       if (opts.json) {
         console.log(
@@ -483,6 +463,7 @@ function deriveIncidentKeys(report: unknown): {
 export async function runMemoryConfirm(
   investigationId: string,
   opts: {
+    outcomeFile?: string;
     config?: string;
     repo?: string;
     note?: string;
@@ -503,7 +484,7 @@ export async function runMemoryConfirm(
     const { db, sql } = await openDb(config.database.url);
     try {
       const investigation = await getInvestigation(db, id);
-      if (investigation === null) {
+      if (investigation === null || (investigation.project && investigation.project !== project)) {
         console.error(pc.red(`Investigation not found: ${id}`));
         return 1;
       }
@@ -528,7 +509,7 @@ export async function runMemoryConfirm(
       // a partial/legacy report simply yields no keys (recurrence then needs another signal).
       const { signature, tags } = deriveIncidentKeys(investigation.report);
 
-      const store = createLocalMemoryStore(db);
+      const store = createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope });
       // confirmed-outcome stays PRIVATE — the store refuses to auto-promote it to team (spec §7).
       const item: NewMemoryItem = {
         id: '', // the store mints the real id
@@ -543,6 +524,15 @@ export async function runMemoryConfirm(
         signature,
         tags,
       };
+      if (opts.outcomeFile) {
+        const disposition = readIncidentDisposition(JSON.parse(readFileSync(opts.outcomeFile, 'utf8')));
+        if (!disposition || disposition.certainty !== 'confirmed' || disposition.sourceInvestigation !== id) {
+          throw new Error('Outcome file requires a confirmed disposition, this investigation id, attester, verifiedAt and sourceRefs');
+        }
+        item.claim = `Attested ${disposition.disposition} for ${investigation.title}: ${disposition.actualCause ?? 'Cause not established'}${disposition.resolution ? `; ${disposition.resolution}` : ''}`;
+        item.lastVerifiedAt = new Date(disposition.verifiedAt!);
+        item.payload = { investigationId: id, hint: (investigation.report as InvestigationReport | null)?.input?.hint ?? investigation.title, outcome: disposition };
+      }
       const created = await store.add(item, {
         actor: { kind: 'user' },
         note: opts.note ?? `confirmed from investigation ${id}`,
@@ -561,7 +551,7 @@ export async function runMemoryConfirm(
       // possible outcome signal — Horus pointed at the cause and a human verified it. Record it
       // as a durable label (resolved=yes + the confirmed cause) so it joins `horus feedback` in
       // the one queryable accuracy dataset. `project` is denormalized for accuracy-by-project.
-      await recordOutcomeLabel(db, {
+      if (!opts.outcomeFile) await recordOutcomeLabel(db, {
         investigationId: id,
         resolved: 'yes',
         source: 'confirm',
@@ -593,6 +583,8 @@ export async function runMemoryConfirm(
         repo: project,
         scope: 'repo',
       });
+      const sync = await syncLinkedMemory(db, resolveEnvironment(config, { project }).path, project);
+      console.error(`Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`);
       return 0;
     } finally {
       await sql.end();
@@ -624,7 +616,9 @@ async function setStatusLeaf(
       return 1;
     }
     const config = await loadConfig(opts.config);
-    return await withStore(config.database.url, async (store) => {
+    const project = resolveProject(config, undefined);
+    if (!project) return 1;
+    return await withStore(config, project, async (store) => {
       await store.setStatus(memId, status, { actor: { kind: 'user' }, note: opts.note });
       if (opts.json) {
         console.log(JSON.stringify({ ok: true, id: memId, status }, null, 2));
@@ -687,7 +681,7 @@ export async function runMemoryList(opts: {
     const project = resolveProject(config, opts.repo);
     if (!project) return 1;
 
-    return await withStore(config.database.url, async (store) => {
+    return await withStore(config, project, async (store) => {
       // Default recall hides forgotten/deprecated/contradicted; --all surfaces every status.
       const status: MemoryStatus[] | undefined = opts.all ? ALL_STATUSES : undefined;
       const vectorIndex = buildVectorIndex(config, project);
@@ -751,7 +745,7 @@ export async function runMemoryLink(
     const project = resolveProject(config, opts.repo);
     if (!project) return 1;
 
-    return await withStore(config.database.url, async (store) => {
+    return await withStore(config, project, async (store) => {
       const link = await store.addLink(
         { id: '', fromMemoryId: fromId, rel, toKind: 'memory', toRef: toId },
         { detection: 'manual', audit: { actor: { kind: 'user' }, note: opts.note } },
@@ -802,7 +796,7 @@ export async function runMemoryUnlink(
     const project = resolveProject(config, opts.repo);
     if (!project) return 1;
 
-    return await withStore(config.database.url, async (store) => {
+    return await withStore(config, project, async (store) => {
       const removed = await store.removeLink(
         { fromMemoryId: fromId, rel, toRef: toId },
         { audit: { actor: { kind: 'user' }, note: opts.note } },
@@ -850,7 +844,7 @@ export async function runMemoryDetect(opts: {
 
     const vectorIndex = buildVectorIndex(config, project);
 
-    return await withStore(config.database.url, async (store, db) => {
+    return await withStore(config, project, async (store, db) => {
       // CONTEXT-ONLY join: resolve the LATEST confirmed-outcome verdict for an investigation so the
       // contradiction detector can compare two confirmed outcomes of the same incident family. This
       // reads the eval/outcome store ONLY — it never feeds the confidence/verdict scoring path.
@@ -920,64 +914,9 @@ export async function runMemoryDetect(opts: {
 // memory sync — bulk backfill of LOCAL authored items into the linked cloud project
 // ---------------------------------------------------------------------------
 
-/** Per-request item cap so a backfill never POSTs a multi-MB body (mirrors the cloud zod `.max`). */
-const MEMORY_SYNC_BATCH_MAX = 500;
-
-/** Links/audit per-request cap (mirrors the cloud zod `.max(2000)` on each array). */
-const MEMORY_SYNC_EDGE_BATCH_MAX = 2000;
-
-/** Soft-deleted items are NOT backfilled (spec §3c: read all non-forgotten rows). */
-const SYNCABLE_STATUSES: MemoryStatus[] = ALL_STATUSES.filter((s) => s !== 'forgotten');
-
-/**
- * confirmed-outcome can never be 'team' (spec §5.2) — clamp before anything leaves the device.
- * The server clamps too; this is defense in depth on the CLI side.
- */
-function clampVisibilityForSync(item: MemoryItem): Visibility {
-  if (item.kind === 'confirmed-outcome' || item.source === 'confirmed-outcome') return 'private';
-  return (item.visibility as Visibility | undefined) ?? 'private';
-}
-
-/**
- * Map a LOCAL `MemoryItem` row → the cloud sync wire shape. PRIVACY CHOKE POINT (spec §5): this is
- * an explicit positive allowlist. `payload` (where a vector/embedding could hide) is intentionally
- * NEVER serialized — vectors stay device-local and never cross the trust boundary.
- */
-function toSyncInput(item: MemoryItem): MemoryItemSyncInput {
-  return {
-    clientId: item.id,
-    kind: item.kind,
-    claim: item.claim,
-    scope: item.scope,
-    source: item.source,
-    status: item.status,
-    confidence: item.confidence,
-    visibility: clampVisibilityForSync(item),
-    evidence: item.evidence,
-    lastVerifiedAt: item.lastVerifiedAt ? item.lastVerifiedAt.toISOString() : null,
-    lastVerifiedHash: item.lastVerifiedHash ?? null,
-    clientCreatedAt: item.createdAt ? item.createdAt.toISOString() : null,
-  };
-}
-
-/**
- * `horus memory sync` — push LOCAL authored memory items, their typed links, AND the append-only
- * audit trail to the linked cloud project, through the cloud `/v1` API (never the cloud DB). Mirrors
- * `horus cloud sync` (investigations): idempotent (the server upserts items on the CLI's stable ULID
- * `clientId`, dedupes links on their idempotencyKey, and treats audit as append-only on its
- * clientAuditId), best-effort, `--dry-run`/`--yes` gated, and the LOCAL store is NEVER mutated.
- *
- * Items are pushed FIRST so the server can resolve every link's `fromClientId` and every audit row's
- * `memoryClientId` to a persisted cloud item (against pre-existing rows), then links + audit follow.
- *
- * PRIVACY (non-negotiable, spec §5): the payload is a positive allowlist via {@link toSyncInput} (and
- * the link/audit mappers) — VECTORS NEVER LEAVE THE DEVICE, and confirmed-outcome items are clamped
- * to `private`.
- *
- * `--json` is clean: it emits a single JSON object, suppresses the preview/prompt, and proceeds
- * non-interactively (the operation is idempotent + local-safe). `--dry-run` is still honored.
- */
+/** Inspect/recover the same durable automatic synchronization used by the runner. */
 export async function runMemorySync(opts: {
+  resolve?: string; choice?: 'local' | 'cloud'; restore?: string;
   config?: string;
   cwd?: string;
   repo?: string;
@@ -993,6 +932,7 @@ export async function runMemorySync(opts: {
     return 1;
   };
 
+  if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) return fail('--limit must be a positive integer');
   const root = repoRootOrCwd(opts.cwd);
   const cfg = readCloudConfig(root);
   if (!isCloudActive(cfg) || !cfg.project) {
@@ -1016,180 +956,18 @@ export async function runMemorySync(opts: {
   const project = resolveProject(config, opts.repo);
   if (!project) return 1;
 
-  // Source: all non-forgotten local items for this repo, plus their links + audit. The local store
-  // is the source of truth for all three and is read-only here.
-  let items: MemoryItem[];
-  let links: MemoryLink[];
-  let auditRows: MemoryAudit[];
   const { db, sql } = await openDb(config.database.url);
   try {
-    const store = createLocalMemoryStore(db);
-    // HOR-464: push LOCAL-authored rows ONLY. A pulled team item is an `origin='cloud'` disposable
-    // cache row owned by the server — re-pushing it through the private mirror would fork the truth.
-    items = await store.query({
-      repo: project,
-      origin: 'local',
-      status: SYNCABLE_STATUSES,
-      limit: opts.limit ?? 5000,
-    });
-    // Gather the links + audit for exactly these items (forgotten items are excluded above, so
-    // their trail is not backfilled — spec §3c). Both are keyed by the same local ULIDs the cloud
-    // resolves against, so re-running stays idempotent (links dedupe; audit is append-only).
-    // Outgoing only: each edge is emitted once by its FROM item (a symmetric `recurs-with` is stored
-    // canonically, so the owner side carries it) — `direction:'both'` would double-count the pair.
-    const linkLists = await Promise.all(items.map((it) => store.links(it.id, { direction: "out" })));
-    const auditLists = await Promise.all(items.map((it) => store.history(it.id)));
-    links = linkLists.flat();
-    auditRows = auditLists.flat();
-  } finally {
-    await sql.end();
-  }
-
-  const inputs = items.map(toSyncInput);
-  const linkInputs = links.map(toLinkSyncInput);
-  const auditInputs = auditRows.map(toAuditSyncInput);
-  const target = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
-
-  if (inputs.length === 0) {
-    if (json)
-      console.log(
-        JSON.stringify(
-          { ok: true, target, synced: 0, failed: 0, total: 0, links: { synced: 0, total: 0 }, audit: { synced: 0, total: 0 } },
-          null,
-          2,
-        ),
-      );
-    else console.log(pc.dim('No local memory items to sync.'));
-    return 0;
-  }
-
-  // Preview (human mode only — keeps --json clean).
-  if (!json) {
-    console.log(
-      pc.bold(
-        `Will sync ${inputs.length} memory item(s), ${linkInputs.length} link(s), ` +
-          `${auditInputs.length} audit row(s) to ${target} ${pc.dim('(cloud)')}:`,
-      ),
-    );
-    for (const it of items.slice(0, 20)) {
-      console.log(`  ${pc.dim(it.id.slice(0, 8))}  ${pc.dim(`[${it.kind}]`)} ${it.claim.slice(0, 70)}`);
+    if (opts.dryRun) {
+      const items = await createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope }).query({ repo: project, origin: 'local', status: ALL_STATUSES });
+      console.log(JSON.stringify({ dryRun: true, eligible: items.length, target: cfg.project.id }));
+      return 0;
     }
-    if (items.length > 20) console.log(pc.dim(`  …and ${items.length - 20} more`));
-  }
-
-  if (opts.dryRun) {
-    if (json)
-      console.log(
-        JSON.stringify(
-          { ok: true, dryRun: true, target, total: inputs.length, links: linkInputs.length, audit: auditInputs.length },
-          null,
-          2,
-        ),
-      );
-    else console.log(pc.dim('Dry run — nothing uploaded. Re-run without --dry-run to sync.'));
-    return 0;
-  }
-
-  // Confirm unless --yes (human mode only). Non-interactive without --yes is a safe stop.
-  if (!opts.yes && !json) {
-    if (!process.stdin.isTTY) {
-      console.error(
-        pc.yellow(`Re-run with ${pc.bold('--yes')} to sync, or ${pc.bold('--dry-run')} to preview only.`),
-      );
-      return 1;
-    }
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const answer = (await rl.question(`Sync ${inputs.length} memory item(s) to ${target}? (y/N) `))
-        .trim()
-        .toLowerCase();
-      if (answer !== 'y' && answer !== 'yes') {
-        console.log(pc.dim('Aborted. Nothing synced.'));
-        return 0;
-      }
-    } finally {
-      rl.close();
-    }
-  }
-
-  // Push in batches (best-effort): a failed batch is counted, never fatal. Re-running is safe — the
-  // server upserts items on (organization_id, client_id), dedupes links on (organization_id,
-  // idempotency_key), and appends audit on (organization_id, client_audit_id).
-  let synced = 0;
-  let syncedLinks = 0;
-  let syncedAudit = 0;
-  let failed = 0;
-
-  // 1) Items FIRST — so links/audit can resolve their client ids against persisted cloud rows.
-  for (let i = 0; i < inputs.length; i += MEMORY_SYNC_BATCH_MAX) {
-    const batch = inputs.slice(i, i + MEMORY_SYNC_BATCH_MAX);
-    try {
-      const res = await session.client.syncMemoryItems(cfg.project.id, { items: batch });
-      synced += res.items?.length ?? batch.length;
-      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} item(s)`);
-    } catch (err) {
-      failed += batch.length;
-      if (json) reportCloudError(err);
-      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
-    }
-  }
-
-  // 2) Links.
-  for (let i = 0; i < linkInputs.length; i += MEMORY_SYNC_EDGE_BATCH_MAX) {
-    const batch = linkInputs.slice(i, i + MEMORY_SYNC_EDGE_BATCH_MAX);
-    try {
-      const res = await session.client.syncMemoryItems(cfg.project.id, { links: batch });
-      syncedLinks += res.links?.total ?? batch.length;
-      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} link(s)`);
-    } catch (err) {
-      failed += batch.length;
-      if (json) reportCloudError(err);
-      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
-    }
-  }
-
-  // 3) Audit (append-only).
-  for (let i = 0; i < auditInputs.length; i += MEMORY_SYNC_EDGE_BATCH_MAX) {
-    const batch = auditInputs.slice(i, i + MEMORY_SYNC_EDGE_BATCH_MAX);
-    try {
-      const res = await session.client.syncMemoryItems(cfg.project.id, { audit: batch });
-      syncedAudit += res.audit?.total ?? batch.length;
-      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} audit row(s)`);
-    } catch (err) {
-      failed += batch.length;
-      if (json) reportCloudError(err);
-      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
-    }
-  }
-
-  if (json) {
-    console.log(
-      JSON.stringify(
-        {
-          ok: failed === 0,
-          target,
-          synced,
-          failed,
-          total: inputs.length,
-          links: { synced: syncedLinks, total: linkInputs.length },
-          audit: { synced: syncedAudit, total: auditInputs.length },
-        },
-        null,
-        2,
-      ),
-    );
-  } else {
-    console.log('');
-    console.log(
-      `${pc.bold('Memory sync complete:')} ${pc.green(`${synced} item(s)`)}, ` +
-        `${pc.green(`${syncedLinks} link(s)`)}, ${pc.green(`${syncedAudit} audit row(s)`)}, ` +
-        (failed ? pc.red(`${failed} failed`) : '0 failed') + '.',
-    );
-    console.log(
-      pc.dim('Local data was not modified. Re-running is safe — items/links dedupe by client id, audit is append-only. Vectors never sync.'),
-    );
-  }
-  return failed > 0 ? 1 : 0;
+    const state = await syncLinkedMemory(db, root, project, { resolve: opts.resolve, choice: opts.choice, restore: opts.restore, ...(opts.limit !== undefined ? { limit: opts.limit } : {}) });
+    console.log(json ? JSON.stringify(state, null, 2) :
+      `Memory: ${state.state}; ${state.synced}/${state.eligible} synced, ${state.pending} pending, ${state.excluded} excluded, ${state.failed} failed${state.error ? ` — ${state.error}` : ''}`);
+    return state.failed || state.error ? 1 : 0;
+  } finally { await sql.end(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,7 +1036,7 @@ export async function runMemoryPromote(
 
   const { db, sql } = await openDb(config.database.url);
   try {
-    const store = createLocalMemoryStore(db);
+    const store = createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope });
     const row = await store.get(memId);
     if (row === null) return fail(`Memory item not found: ${memId}`);
 
@@ -1385,7 +1163,7 @@ export async function runMemoryPull(opts: {
 
   const { db, sql } = await openDb(config.database.url);
   try {
-    const store = createLocalMemoryStore(db);
+    const store = createLocalMemoryStore(db, { syncScope: memorySyncContext(resolveEnvironment(config, { project }).path, project)?.scope });
     const vectorIndex = buildVectorIndex(config, project);
 
     // 1. FULL pull (since='0') — paginate on nextCursor until hasMore is false. Include tombstones so

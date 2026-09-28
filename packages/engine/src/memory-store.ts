@@ -384,6 +384,15 @@ export function tokenize(text: string): string[] {
   return out;
 }
 
+/** Symptom overlap excludes boilerplate error words; shared by recall and recurrence. */
+export function incidentHintOverlap(left: string, right: string) {
+  const words = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9_]+/g) ?? [])
+    .filter(w => w.length > 2 && !['the', 'and', 'for', 'error', 'failed', 'failure', 'incident', 'investigation', 'with', 'from'].includes(w)));
+  const a = words(left); const b = words(right);
+  const shared = [...a].filter(w => b.has(w));
+  return { shared, overlap: shared.length / Math.max(1, new Set([...a, ...b]).size) };
+}
+
 /**
  * Scope specificity rank — a deterministic tie-breaker so that, among equally-overlapping claims,
  * the narrowest (most-applicable) scope ranks first: symbol > module > repo > global.

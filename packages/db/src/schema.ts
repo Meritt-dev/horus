@@ -15,6 +15,7 @@ import {
   integer,
   timestamp,
   primaryKey,
+  unique,
   index,
 } from 'drizzle-orm/pg-core';
 
@@ -221,6 +222,8 @@ export const memoryItem = pgTable(
     // by `memory sync` (which pushes `origin='local'` only). `cloudId` is the server team-memory id,
     // `authorName` the promoting teammate (DISPLAY-ONLY — never feeds rank), `pulledAt` the last
     // refresh time (staleness).
+    syncScope: text('sync_scope'),
+    syncGeneration: integer('sync_generation').notNull().default(1),
     origin: text('origin').notNull().default('local'), // local|cloud
     cloudId: text('cloud_id'), // server team_memory id (provenance/join)
     authorName: text('author_name'), // promoting teammate's display name (attribution, display-only)
@@ -243,6 +246,23 @@ export const memoryItem = pgTable(
     index('memory_item_origin_idx').on(t.repo, t.origin),
   ],
 );
+
+export const memorySyncState = pgTable('memory_sync_state', {
+  scope: text('scope').primaryKey(), repo: text('repo').notNull(), teamCursor: text('team_cursor').notNull().default('0'), cursor: text('cursor').notNull().default('0'),
+  lastPull: timestamp('last_pull', { withTimezone: true }), lastPush: timestamp('last_push', { withTimezone: true }), error: text('error'),
+});
+export const memorySyncReplica = pgTable('memory_sync_replica', {
+  scope: text('scope').notNull().references(() => memorySyncState.scope),
+  memoryId: text('memory_id').notNull().references(() => memoryItem.id, { onDelete: 'cascade' }),
+  revision: text('revision').notNull().default('0'), generation: integer('generation').notNull().default(0),
+}, t => [primaryKey({ columns: [t.scope, t.memoryId] })]);
+export const memorySyncOutbox = pgTable('memory_sync_outbox', {
+  id: text('id').primaryKey(), scope: text('scope').notNull().references(() => memorySyncState.scope),
+  memoryId: text('memory_id').notNull().references(() => memoryItem.id, { onDelete: 'cascade' }),
+  generation: integer('generation').notNull(), request: jsonb('request').notNull(),
+  attempts: integer('attempts').notNull().default(0), nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+  error: text('error'), conflict: jsonb('conflict'), createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * Normalized memory edges (traversal-friendly; powers `memory show` + packets).
@@ -352,3 +372,13 @@ export type MemoryAudit = typeof memoryAudit.$inferSelect;
 export type NewMemoryAudit = typeof memoryAudit.$inferInsert;
 export type OutcomeLabel = typeof outcomeLabel.$inferSelect;
 export type NewOutcomeLabel = typeof outcomeLabel.$inferInsert;
+
+/** Watcher cursors and stage checkpoints share the existing local database owner. */
+export const watchState = pgTable('watch_state', { key: text('key').primaryKey(), value: jsonb('value').notNull() });
+export const watchJob = pgTable('watch_job', {
+  id: uuid('id').primaryKey(), route: text('route').notNull(), episode: text('episode').notNull(),
+  data: jsonb('data').notNull(), updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [unique('watch_job_route_episode_key').on(t.route, t.episode)]);
+export const watchEvent = pgTable('watch_event', {
+  route: text('route').notNull(), eventId: text('event_id').notNull(), jobId: uuid('job_id').notNull().references(() => watchJob.id),
+}, t => [primaryKey({ columns: [t.route, t.eventId] })]);

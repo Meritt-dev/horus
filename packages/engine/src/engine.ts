@@ -1,4 +1,6 @@
-import type { QueueEvidenceProvider, StructuredLogSource } from '@horus/connectors';
+import type { QueueEvidenceProvider } from '@horus/connectors';
+import type { StructuredLogSource } from '@horus/connectors';
+import { recallStartupIncidents } from './memory-recall.js';
 /**
  * The deterministic investigation pipeline (HOR-5). NO AI/LLM.
  *
@@ -96,6 +98,8 @@ import type { BoundedGitChange, ConfigChangeFile } from './git-collector.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
+  memoryScope?: string;
+  onStartupRecall?: (items: import('./memory-recall.js').StartupIncident[]) => void;
   /**
    * Source-intelligence provider. Optional (HOR-319 layer-2): when null/absent the
    * engine runs a degraded, RUNTIME-ONLY investigation — no seed resolution, no
@@ -1535,6 +1539,35 @@ export async function investigate(
     return ev;
   }
 
+  const startupRecall = deps.store && !/^(0|false|off)$/i.test(process.env.HORUS_STARTUP_RECALL ?? '')
+    ? await recallStartupIncidents(deps.store, input, { syncScope: deps.memoryScope }).catch(() => []) : [];
+  // The same scope/status boundary applies to the older recurrence corroboration path.
+  const scopedMemories = deps.memoryScope && deps.store && input.repo ?
+    await deps.store.query({ repo: input.repo }).catch(() => []) : null;
+  const allowedPriorIds = scopedMemories ? new Set(scopedMemories.filter(item =>
+    !['forgotten', 'deprecated', 'contradicted'].includes(item.status) &&
+    (item.syncScope === null || item.syncScope === deps.memoryScope)).flatMap(item => {
+      const payload = (item.payload ?? {}) as Record<string, unknown>;
+      return [payload.investigationId, ...(Array.isArray(payload.investigationIds) ? payload.investigationIds : [])]
+        .filter((id): id is string => typeof id === 'string');
+    })) : null;
+  deps.onStartupRecall?.(startupRecall);
+  const recallTrace: NonNullable<InvestigationReport['recallTrace']> = [];
+  // Check relevant history before broad collection; only returned LIVE evidence joins the report.
+  for (const candidate of startupRecall) {
+    const check = candidate.checks[0]!;
+    try {
+      const records = deps.logs ? await deps.logs.queryEvidence({ service: input.service,
+        from: logWindowFrom(input.logsSince ?? input.since), limit: 10,
+        eventCode: candidate.outcome?.applicability.errorCode,
+        text: candidate.outcome?.applicability.errorCode ?? input.hint, broadText: true }, collectedAt) : [];
+      const checked = records.map(ev => mkEv(ev.kind, ev.title, ev.payload, ev.links ?? {}, ev.timestamp, ev.relevance));
+      recallTrace.push({ memoryId: candidate.memoryId, check, stage: deps.logs ? 'before-broad-collection' : 'provider-unavailable', evidenceIds: checked.map(e => e.id) });
+    } catch (error) {
+      recallTrace.push({ memoryId: candidate.memoryId, check, stage: 'check-failed', evidenceIds: [], error: connectorFailureReason(error) });
+    }
+  }
+
   // b. RESOLVE seeds — rank candidates so we prefer architectural entry points
   // (resolver/controller/service/route) over tiny helpers/scripts (HOR-39).
   // Pass hint tokens so domain-specific symbols (e.g. ShopifyWebhookController)
@@ -1729,6 +1762,7 @@ export async function investigate(
   // evidence instead (HOR-319 layer-2).
   if (!top && !degradedNoSource) {
     const report: InvestigationReport = {
+    startupRecall, recallTrace,
       id: globalThis.crypto.randomUUID(),
       input,
       ...(investigationSubject(input) !== undefined
@@ -4117,6 +4151,7 @@ export async function investigate(
   try {
     const priors = await listInvestigationsWithReports(deps.db, 50, { project: input.repo });
     for (const row of priors) {
+      if (allowedPriorIds && !allowedPriorIds.has(row.id)) continue;
       const rep = row.report as InvestigationReport | null | undefined;
       if (!rep || !Array.isArray(rep.evidence) || rep.evidence.length === 0) continue;
       // Only learn from credible priors — a low-confidence prior isn't a real "incident".
@@ -4360,6 +4395,7 @@ export async function investigate(
   }
 
   const report: InvestigationReport = {
+    startupRecall, recallTrace,
     id: globalThis.crypto.randomUUID(),
     input,
     ...(investigationSubject(input) !== undefined
@@ -4538,6 +4574,14 @@ export async function investigate(
   });
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 
+  for (const candidate of startupRecall) {
+    const invalidators = candidate.outcome?.invalidatingConditions ?? [];
+    candidate.contradictingEvidenceIds = evidence.filter(ev => invalidators.some(condition =>
+      condition.length > 8 && JSON.stringify({ title: ev.title, payload: ev.payload }).toLowerCase().includes(condition.toLowerCase())
+    )).map(ev => ev.id);
+    if (candidate.contradictingEvidenceIds.length) candidate.validation = 'contradicted';
+  }
+
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
   const persisted = await persist(db, input, report);
   const persistedId = persisted?.id ?? null;
@@ -4550,7 +4594,8 @@ export async function investigate(
   //    Past incidents are CONTEXT ONLY; they must never override report.confidence.
   if (persistedId !== null) {
     const tags = deriveTags(report);
-    report.similarIncidents = await recallSimilar(db, tags, persistedId, input.repo ?? null);
+    report.similarIncidents = (await recallSimilar(db, tags, persistedId, input.repo ?? null))
+      .filter(item => !allowedPriorIds || (item.investigationId !== null && allowedPriorIds.has(item.investigationId)));
     await storeIncidentMemory(db, persistedId, report);
 
     // HOR-432 — auto-capture a recurrence-CONSOLIDATING memory from THIS investigation. Default ON
@@ -4569,7 +4614,8 @@ export async function investigate(
         // in the scoring path); falls back to a fresh Date only when the DB did not echo createdAt.
         const reportTime = persisted?.createdAt ?? new Date();
         await captureInvestigationMemory(store, persistedId, report, reportTime, audit);
-      } catch {
+      } catch (error) {
+        report.memoryCaptureError = connectorFailureReason(error);
         // Non-blocking — auto-memory must never prevent investigation delivery (spec §7/§8).
       }
     }
@@ -4647,9 +4693,14 @@ async function persist(
   report: InvestigationReport,
 ): Promise<{ id: string; createdAt: Date | null } | null> {
   try {
-    const inserted = await db
+    report.createdAt ??= new Date().toISOString();
+    const write = async (tx: HorusDb) => {
+    const inserted = await tx
       .insert(investigationsTable)
       .values({
+        id: input.reportId ?? report.id,
+        createdAt: new Date(report.createdAt!),
+        report: { ...report, id: input.reportId ?? report.id, persisted: true },
         title: input.hint.trim() || 'Investigation',
         incidentInput: input,
         status: 'open',
@@ -4665,7 +4716,7 @@ async function persist(
     const investigationId = row.id;
 
     if (report.evidence.length > 0) {
-      await db.insert(evidenceTable).values(
+      await tx.insert(evidenceTable).values(
         report.evidence.map((e) => ({
           id: e.id,
           investigationId,
@@ -4682,7 +4733,7 @@ async function persist(
     }
 
     if (report.findings.length > 0) {
-      await db.insert(findingsTable).values(
+      await tx.insert(findingsTable).values(
         report.findings.map((f) => ({
           investigationId,
           kind: f.kind,
@@ -4695,7 +4746,7 @@ async function persist(
     }
 
     if (report.hypotheses.length > 0) {
-      await db.insert(hypothesesTable).values(
+      await tx.insert(hypothesesTable).values(
         report.hypotheses.map((hyp, i) => ({
           investigationId,
           rank: i + 1,
@@ -4708,6 +4759,8 @@ async function persist(
     }
 
     return { id: investigationId, createdAt: row.createdAt ?? null };
+    };
+    return input.reportId ? await db.transaction(tx => write(tx as unknown as HorusDb)) : await write(db);
   } catch {
     return null;
   }

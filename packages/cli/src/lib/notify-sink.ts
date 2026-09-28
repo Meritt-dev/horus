@@ -7,11 +7,33 @@
  * This is a CLI/notify-layer concern ONLY. The deterministic investigation engine never sees it;
  * it consumes a finished report. Dispatch is BEST-EFFORT and never throws: a failed send is
  * returned as a typed failure so the watch loop can log it and carry on (the watcher's whole
- * contract is "never crash"). No daemon — `watch` stays a poller; inbound push lives cloud-side.
+ * contract is "never crash"). The durable watcher checkpoints these results; inbound push lives cloud-side.
  */
 import { createHmac } from 'node:crypto';
-import type { NotifyConfig } from '@horus/core';
+import { redactSecrets, type NotifyConfig } from '@horus/core';
+import type { validateClaudeResult } from './claude-investigation.js';
 import type { InvestigationReport } from '@horus/engine';
+
+/** Bounded evidence and historical context for the unattended result notification. */
+export function notificationCause(
+  report: InvestigationReport,
+  ai?: ReturnType<typeof validateClaudeResult>['result'],
+  aiFailed = false,
+): string {
+  const short = (value: string) => redactSecrets(value).replace(/\s+/g, ' ').slice(0, 240);
+  const evidence = report.evidence
+    .filter(e => !ai || ai.evidenceIds.includes(e.id))
+    .slice(0, 3).map(e => `${short(e.id)}: ${short(e.title)}`);
+  const history = (report.startupRecall ?? []).slice(0, 3).map(m =>
+    `${short(m.memoryId)} (${m.outcome?.certainty ?? 'inferred'}, ${m.validation}): ${short(m.claim)}`);
+  return [
+    `${aiFailed ? 'Engine-only (AI failed). ' : ''}${short(ai ? ai.likelyCause ?? 'Cause uncertain' : report.suspectedCauses[0]?.title ?? 'Cause uncertain')}.`,
+    short(ai?.uncertainty ?? 'Current cause remains unconfirmed.'),
+    `Current evidence: ${evidence.join('; ') || 'none cited'}.`,
+    ...(history.length ? [`Historical context (not current proof): ${history.join('; ')}.`] : []),
+    `Next: ${short(ai?.nextChecks[0] ?? 'Review current evidence and missing signals')}`,
+  ].filter(Boolean).join(' ');
+}
 
 /** A finished headline ready to dispatch (the shape `headlineFor` already produces + the id). */
 export interface NotifyHeadline {
@@ -19,6 +41,8 @@ export interface NotifyHeadline {
   hint: string;
   cause: string;
   confidence: number;
+  notificationKey?: string;
+  reportUrl?: string;
 }
 
 /** Outcome of one sink dispatch — never thrown, always returned, so the loop logs and continues. */
@@ -32,11 +56,12 @@ export interface NotifyResult {
 export function buildWebhookPayload(h: NotifyHeadline): Record<string, unknown> {
   const pct = `${Math.round(h.confidence * 100)}%`;
   return {
-    text: `🔭 Horus: ${h.hint} → ${h.cause} (${pct})`,
+    text: `🔭 Horus: ${h.hint} → ${h.cause} (${pct})${h.reportUrl ? `\n${h.reportUrl}` : ''}`,
     investigationId: h.investigationId,
     hint: h.hint,
     cause: h.cause,
     confidence: h.confidence,
+    notificationKey: h.notificationKey, reportUrl: h.reportUrl,
   };
 }
 
@@ -60,6 +85,7 @@ async function postWebhook(
 ): Promise<NotifyResult> {
   const body = JSON.stringify(buildWebhookPayload(h));
   const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (h.notificationKey) headers['idempotency-key'] = h.notificationKey;
   if (secret !== undefined) headers['x-horus-signature'] = signPayload(body, secret);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -81,7 +107,7 @@ async function postWebhook(
  * this module stays free of cloud-client wiring and is unit-testable in isolation.
  */
 export async function dispatchNotify(
-  report: Pick<InvestigationReport, 'id' | 'confidence'> & { hint: string; cause: string },
+  report: Pick<InvestigationReport, 'id' | 'confidence'> & { hint: string; cause: string; notificationKey?: string; reportUrl?: string },
   notify: NotifyConfig | undefined,
   opts: { timeoutMs?: number; cloudPush?: () => Promise<void> } = {},
 ): Promise<NotifyResult[]> {
@@ -91,6 +117,7 @@ export async function dispatchNotify(
     hint: report.hint,
     cause: report.cause,
     confidence: report.confidence,
+    notificationKey: report.notificationKey, reportUrl: report.reportUrl,
   };
   if (!shouldNotify(report.confidence, notify)) return [];
   const timeoutMs = opts.timeoutMs ?? 5000;

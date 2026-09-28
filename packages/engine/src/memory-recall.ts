@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { incidentHintOverlap } from './memory-store.js';
 import type { CodeProvider } from '@horus/connectors';
 import type { MemoryItem } from '@horus/db';
 import type { MemoryStore, MemoryQuery, MemoryStatus, MemoryVectorIndex } from './memory-store.js';
@@ -341,4 +342,92 @@ export async function recallMemory(
 
   recalled.sort(compareRecalled);
   return recalled.slice(0, limit);
+}
+
+/** Structured trigger context is available before hypotheses exist. */
+export interface IncidentContext {
+  fingerprint?: string; errorCode?: string; workflow?: string; operation?: string;
+  incidentId?: string; eventId?: string; occurredAt?: string; source?: string; sourceUrl?: string;
+}
+export interface IncidentDisposition {
+  disposition: 'confirmed-incident' | 'expected-behavior' | 'duplicate-alert' | 'monitoring-error' | 'unknown';
+  certainty: 'confirmed' | 'inferred'; actualCause?: string; resolution?: string;
+  sourceInvestigation: string; sourceRefs: string[]; attester?: string; verifiedAt?: string;
+  applicability: Pick<IncidentContext, 'fingerprint' | 'errorCode' | 'workflow' | 'operation'> &
+    { service?: string; environment?: string; conditions?: string[] };
+  invalidatingConditions: string[]; checks: string[];
+}
+export interface StartupIncident {
+  memoryId: string; claim: string; incidentId?: string; reportRefs: Record<string, string>;
+  matchingFields: string[]; lastVerifiedAt: string | null; environment: string;
+  outcome: IncidentDisposition | null; checks: string[]; relevance: number;
+  validation: 'unverified' | 'contradicted'; contradictingEvidenceIds: string[];
+}
+
+/** Reject malformed or unproven attestations; strip unknown nested fields before sync/prompt use. */
+export function readIncidentDisposition(value: unknown): IncidentDisposition | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(s => typeof s === 'string');
+  if (!['confirmed-incident', 'expected-behavior', 'duplicate-alert', 'monitoring-error', 'unknown'].includes(String(v.disposition)) ||
+      !['confirmed', 'inferred'].includes(String(v.certainty)) || typeof v.sourceInvestigation !== 'string' ||
+      !strings(v.sourceRefs) || !strings(v.invalidatingConditions) || !strings(v.checks) ||
+      !v.applicability || typeof v.applicability !== 'object') return null;
+  if (v.certainty === 'confirmed' && (typeof v.attester !== 'string' || !v.attester.trim() ||
+      typeof v.verifiedAt !== 'string' || !Number.isFinite(Date.parse(v.verifiedAt)) || !v.sourceRefs.length)) return null;
+  const applicability: IncidentDisposition['applicability'] = {};
+  const a = v.applicability as Record<string, unknown>;
+  for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation', 'service', 'environment'] as const)
+    if (typeof a[key] === 'string') applicability[key] = a[key];
+  if (strings(a.conditions)) applicability.conditions = a.conditions;
+  return { disposition: v.disposition as IncidentDisposition['disposition'], certainty: v.certainty as IncidentDisposition['certainty'],
+    sourceInvestigation: v.sourceInvestigation, sourceRefs: v.sourceRefs, invalidatingConditions: v.invalidatingConditions,
+    checks: v.checks, applicability,
+    ...(typeof v.actualCause === 'string' ? { actualCause: v.actualCause } : {}),
+    ...(typeof v.resolution === 'string' ? { resolution: v.resolution } : {}),
+    ...(typeof v.attester === 'string' ? { attester: v.attester } : {}),
+    ...(typeof v.verifiedAt === 'string' ? { verifiedAt: v.verifiedAt } : {}) };
+}
+
+/** Bounded, deterministic startup retrieval. No hypothesis/category from the current run is used. */
+export async function recallStartupIncidents(
+  store: MemoryStore,
+  input: import('./types.js').InvestigationInput,
+  opts: { syncScope?: string; now?: Date } = {},
+): Promise<StartupIncident[]> {
+  if (!input.repo?.trim()) return [];
+  const pool = await store.query({ repo: input.repo, kind: ['investigation', 'confirmed-outcome', 'incident-pattern'], limit: 200 });
+  const now = opts.now ?? new Date();
+  const ranked: StartupIncident[] = [];
+  for (const item of pool) {
+    if (item.repo !== input.repo || HIDDEN_STATUSES.includes(item.status as MemoryStatus) ||
+        (opts.syncScope !== undefined && item.syncScope !== null && item.syncScope !== opts.syncScope) || item.createdAt > now) continue;
+    const payload = (item.payload ?? {}) as Record<string, unknown>;
+    const outcome = readIncidentDisposition(payload.outcome);
+    if (typeof payload.lastSeenAt === 'string' && Date.parse(payload.lastSeenAt) > now.getTime() ||
+        outcome?.verifiedAt && Date.parse(outcome.verifiedAt) > now.getTime()) continue;
+    const applicability = outcome?.applicability ?? {};
+    if (applicability.environment && input.environment && applicability.environment !== input.environment) continue;
+    if (applicability.service && input.service && applicability.service !== input.service) continue;
+    const fields: string[] = []; let mismatch = false;
+    for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation'] as const) {
+      const expected = applicability[key]; const actual = input.incident?.[key];
+      if (expected && actual) { if (expected !== actual) mismatch = true; else fields.push(key); }
+    }
+    if (mismatch) continue;
+    const { shared, overlap } = incidentHintOverlap(input.hint, typeof payload.hint === 'string' ? payload.hint : item.claim);
+    // ponytail: conservative lexical fallback; replace only after chronological replay improves it.
+    if (!fields.length && (shared.length < 2 || overlap < 0.45)) continue;
+    if (shared.length) fields.push(`hint:${shared.join(',')}`);
+    const refs = payload.reportRefs && typeof payload.reportRefs === 'object' ? payload.reportRefs as Record<string, string> : {};
+    ranked.push({ memoryId: item.id, claim: item.claim, incidentId: typeof payload.investigationId === 'string' ? payload.investigationId : undefined,
+      reportRefs: refs, matchingFields: fields, lastVerifiedAt: outcome?.verifiedAt ?? item.lastVerifiedAt?.toISOString() ?? null,
+      environment: applicability.environment ?? 'unknown (legacy)', outcome,
+      checks: outcome?.checks.length ? outcome.checks : [`Check current evidence for ${typeof payload.hint === 'string' ? payload.hint : item.claim}`],
+      relevance: fields.filter(f => !f.startsWith('hint:')).length + overlap,
+      validation: 'unverified', contradictingEvidenceIds: [] });
+  }
+  ranked.sort((a, b) => b.relevance - a.relevance || a.memoryId.localeCompare(b.memoryId));
+  const seen = new Set<string>();
+  return ranked.filter(c => { const key = c.incidentId ?? c.claim.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 3);
 }

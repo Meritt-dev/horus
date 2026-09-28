@@ -46,6 +46,8 @@ export interface SentryNamedResource {
 /** A grouped Sentry issue, trimmed to the fields Horus turns into evidence. */
 export interface SentryIssue {
   id: string;
+  status?: string;
+  lastStatusChange?: string;
   /** Group title, e.g. "TypeError: Cannot read property 'x' of undefined". */
   title: string;
   /** culprit — the function/transaction where the error surfaced. */
@@ -89,7 +91,7 @@ export class SentryClient {
     this.http = opts.http ?? {};
   }
 
-  private async request(path: string): Promise<unknown> {
+  private async response(path: string): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const res = await fetchWithRetry(
       url,
@@ -106,8 +108,10 @@ export class SentryClient {
       const text = await res.text().catch(() => '');
       throw new Error(`Sentry GET ${path} -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
-    return res.json();
+    return res;
   }
+
+  private async request(path: string): Promise<unknown> { return (await this.response(path)).json(); }
 
   /**
    * Build the project-issues query path. The time window is expressed as either a
@@ -156,6 +160,23 @@ export class SentryClient {
     const raw = await this.request(this.issuesPath(opts));
     if (!Array.isArray(raw)) return [];
     return (raw as Array<Record<string, unknown>>).map(parseIssue);
+  }
+
+  async issue(issueId: string): Promise<SentryIssue> {
+    const raw = await this.request(`/api/0/issues/${encodeURIComponent(issueId)}/`);
+    if (!raw || typeof raw !== 'object') throw new Error('Invalid Sentry issue response');
+    return parseIssue(raw as Record<string, unknown>);
+  }
+
+  /** Durable watcher page; cursor is opaque and cannot redirect authenticated requests. */
+  async watchIssues(from: string, to: string, environment: string, cursor?: string) {
+    const path = this.issuesPath({ start: from, end: to, limit: 100,
+      query: `lastSeen:>=${from} lastSeen:<=${to} environment:${JSON.stringify(environment)}` });
+    const res = await this.response(`${path}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    const raw: unknown = await res.json();
+    if (!Array.isArray(raw)) throw new Error('Invalid Sentry issues response');
+    const next = (res.headers.get('link') ?? '').split(',').find(v => v.includes('rel="next"') && v.includes('results="true"'));
+    return { issues: raw.map(parseIssue), nextCursor: next?.match(/cursor="([^"]+)"/)?.[1] };
   }
 
   /**
@@ -234,6 +255,8 @@ export function parseIssue(raw: Record<string, unknown>): SentryIssue {
     count: toNumber(raw['count']),
     userCount: toNumber(raw['userCount']),
   };
+  if (typeof raw['status'] === 'string') issue.status = raw['status'];
+  if (typeof raw['lastStatusChange'] === 'string') issue.lastStatusChange = raw['lastStatusChange'];
   if (typeof raw['culprit'] === 'string') issue.culprit = raw['culprit'];
   if (typeof raw['level'] === 'string') issue.level = raw['level'];
   if (typeof raw['lastSeen'] === 'string') issue.lastSeen = raw['lastSeen'];

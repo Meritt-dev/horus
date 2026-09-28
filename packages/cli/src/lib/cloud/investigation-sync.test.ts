@@ -12,6 +12,7 @@ vi.mock("@horus/db", async (importOriginal) => {
 
 import {
   uploadInvestigationToCloud,
+  redactCloudValue,
   fetchInvestigationReportFromCloud,
   listCloudInvestigations,
   buildEvidenceItems,
@@ -570,5 +571,18 @@ describe("toInvestigationOutcome", () => {
   it("drops a row that fails the validate-on-read firewall (bad resolved/source)", () => {
     expect(toInvestigationOutcome(labelRow({ resolved: "maybe" as never }))).toBeUndefined();
     expect(toInvestigationOutcome(labelRow({ source: "telemetry" as never }))).toBeUndefined();
+  });
+});
+
+it("preserves durable UUID identity and references during recursive export redaction", () => {
+  const id = "30826839-0264-4713-9e98-b7db298805d3";
+  expect(redactCloudValue({
+    operation: { id, baseRevision: "0" },
+    items: [{ clientId: id, record: { sourceRefs: [`horus:investigation:${id}`], token: id,
+      note: "card 4111-1111-1111-1111", embeddings: [0.5] } }],
+  })).toEqual({
+    operation: { id, baseRevision: "0" },
+    items: [{ clientId: id, record: { sourceRefs: [`horus:investigation:${id}`], token: "[REDACTED]",
+      note: "card [REDACTED-CARD]" } }],
   });
 });

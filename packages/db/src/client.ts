@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import postgres from 'postgres';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { mkdirSync, existsSync, openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs';
+import { mkdirSync, existsSync, openSync, writeSync, closeSync, unlinkSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import { assertLocalDatabaseUrl } from './guard.js';
@@ -92,14 +92,14 @@ function unavailableDbHandle(): DbHandle {
  * still accepted for call-site compatibility while the `database` config block is
  * deprecated, but it is never consulted.
  *
- * Wrapped in try/catch: if pglite can't initialize (its WASM/FS assets aren't shipped next
- * to the bundle), returns a no-op handle so the command degrades to display-only instead
- * of crashing. This is the single chokepoint CLI commands use so the driver is consistent.
+ * Only missing bundled assets permit display-only fallback. Database corruption,
+ * permissions and contention propagate; none may silently disable persistence.
  */
 export async function openDb(_url?: string, _opts?: { max?: number }): Promise<DbHandle> {
   try {
     return await createLocalDb();
-  } catch {
+  } catch (error) {
+    if (!isDbUnavailable(error)) throw error;
     return unavailableDbHandle();
   }
 }
@@ -281,42 +281,34 @@ export async function importFromPostgres(
   return counts;
 }
 
-/**
- * Acquire a best-effort exclusive cross-process lock on the embedded DB directory so concurrent
- * CLI runs serialise their pglite writes. Returns a release function. Resilient: a stale lock
- * left by a crashed run is reclaimed after STALE_MS, and after TIMEOUT_MS we proceed UNLOCKED
- * rather than hang — so the lock can only improve the concurrent case, never make it worse.
- */
-async function acquireDbLock(dataDir: string): Promise<() => void> {
+/** Exclusive process ownership. A live PID never expires; contention fails closed. */
+export async function acquireDbLock(dataDir: string, timeoutMs = 5000): Promise<() => void> {
   const lockPath = `${dataDir}.lock`;
-  const STALE_MS = 60_000;
-  const TIMEOUT_MS = 30_000;
-  const start = Date.now();
-  const noop = (): void => {};
+  const deadline = Date.now() + timeoutMs;
+  const owner = `${process.pid} ${Date.now()}`;
   for (;;) {
     try {
-      const fd = openSync(lockPath, 'wx'); // O_CREAT | O_EXCL — throws EEXIST if already held
-      writeSync(fd, `${process.pid} ${Date.now()}`);
-      closeSync(fd);
-      return () => {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          /* already removed */
-        }
-      };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return noop; // unusable path — proceed unlocked
+      const fd = openSync(lockPath, 'wx', 0o600);
+      try { writeSync(fd, owner); } finally { closeSync(fd); }
+      return () => { if (readFileSync(lockPath, 'utf8') === owner) unlinkSync(lockPath); };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      // Serialize stale-owner cleanup, then re-read: never remove a replacement owner's lock.
+      let reaper: number | undefined;
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs > STALE_MS) {
-          unlinkSync(lockPath); // reclaim a stale lock from a crashed run
-          continue;
+        reaper = openSync(`${lockPath}.reap`, 'wx', 0o600);
+        const pid = Number(readFileSync(lockPath, 'utf8').split(' ')[0]);
+        if (Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 0); }
+          catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') unlinkSync(lockPath); }
         }
-      } catch {
-        continue; // lock vanished between checks — retry immediately
+      } catch (e) {
+        if (!['ENOENT', 'EEXIST'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
+      } finally {
+        if (reaper !== undefined) { closeSync(reaper); unlinkSync(`${lockPath}.reap`); }
       }
-      if (Date.now() - start > TIMEOUT_MS) return noop; // give up waiting — better than hanging
-      await new Promise((r) => setTimeout(r, 100));
+      if (Date.now() >= deadline) throw new Error(`HORUS_DB_BUSY: another process owns ${lockPath}; retry after it exits. Never remove a live owner's lock.`);
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 }

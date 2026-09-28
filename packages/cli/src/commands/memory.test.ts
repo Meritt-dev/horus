@@ -436,6 +436,17 @@ describe('runMemoryAdd', () => {
 });
 
 describe('runMemoryConfirm — confirmed-outcome flywheel', () => {
+  it('an explicit disposition records its actual cause without relabeling Horus accuracy', async () => {
+    const config = writeSingleProjectConfig();
+    const outcomeFile = join(dirs.at(-1)!, 'disposition.json');
+    writeFileSync(outcomeFile, JSON.stringify({ disposition: 'expected-behavior', certainty: 'confirmed', actualCause: 'Intentional stock reservation refusal', sourceInvestigation: 'inv-1', sourceRefs: ['runtime-check:1'], attester: 'Operator', verifiedAt: '2026-09-27T01:00:00Z', applicability: { environment: 'production', errorCode: 'STOCK' }, checks: ['Check current stock'], invalidatingConditions: [] }));
+    db.getInvestigation.mockResolvedValueOnce({ id: 'inv-1', title: 'Stock refusal', project: 'my-api', report: { summary: 'Unconfirmed outage', confidence: 0.2 } });
+    expect(await runMemoryConfirm('inv-1', { config, outcomeFile })).toBe(0);
+    expect(store.add.mock.calls[0]![0].claim).toContain('Intentional stock reservation refusal');
+    expect(store.add.mock.calls[0]![0].claim).not.toContain('Unconfirmed outage');
+    expect(db.recordOutcomeLabel).not.toHaveBeenCalled();
+  });
+
   it('errors when the investigation is not found', async () => {
     db.getInvestigation.mockResolvedValueOnce(null);
     const config = writeSingleProjectConfig();

@@ -47,6 +47,9 @@ export class SentryProvider implements Provider {
     private readonly opts: SentryProviderOpts,
   ) {}
 
+  watchIssue(issueId: string) { return this.client.issue(issueId); }
+  watchIssues(from: string, to: string, environment: string, cursor?: string) { return this.client.watchIssues(from, to, environment, cursor); }
+
   /**
    * Collect recent issues and resolve each one's top in-app frame. Frame fetches
    * stay best-effort (`frame: null`), but a failing issue LIST throws so the
