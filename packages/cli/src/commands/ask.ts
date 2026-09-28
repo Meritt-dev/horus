@@ -79,14 +79,17 @@ async function lookupLocalInvestigation(id: string, configPath?: string): Promis
   const { db, sql } = await openDb();
   try {
     const row = await getInvestigation(db, id);
-    if (!row) {
+    const importedScope = (row?.incidentInput as { _horusCloudScope?: unknown } | undefined)
+      ?._horusCloudScope;
+    if (!row || importedScope !== undefined) {
       try {
         const env = resolveEnvironment(await loadConfig(configPath), {});
         const ctx = memorySyncContext(env.path, env.project, AbortSignal.timeout(15_000));
         const restored = ctx ? await restoreMemoryReport(db, ctx, id) : null;
         if (restored) return { kind: 'found', report: restored };
+        if (ctx && row) return { kind: 'not-found' };
       } catch { /* ordinary Cloud fallback below reports unavailable references */ }
-      return { kind: 'not-found' };
+      if (!row) return { kind: 'not-found' };
     }
     if (!row.report) return { kind: 'no-report' };
     return { kind: 'found', report: migrateReport(row.report) as InvestigationReport };

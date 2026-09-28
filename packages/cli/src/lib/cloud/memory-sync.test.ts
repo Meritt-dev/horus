@@ -6,12 +6,13 @@ import {
   createLocalDb,
   memoryItem,
   investigations,
+  incidentMemory,
   memorySyncOutbox,
   eq,
   type DbHandle,
 } from '@horus/db';
 import { createLocalMemoryStore } from '@horus/engine';
-import { synchronizeMemory, type MemorySyncContext } from './memory-sync.js';
+import { synchronizeMemory, restoreMemoryReport, type MemorySyncContext } from './memory-sync.js';
 import type { CloudClient, MemoryItemRecord, MemorySyncResult } from './api.js';
 
 const paths: string[] = [];
@@ -28,6 +29,54 @@ const open = async () => {
   return h;
 };
 const audit = { actor: { kind: 'user' as const } };
+it('refreshes restored report annotations on demand without overwriting local reports or duplicating history', async () => {
+  const h = await open();
+  const remote = cloud();
+  const id = 'c2de50b7-267f-4b93-85c8-ef0b906c7b3e';
+  let report = {
+    id, input: { repo: 'first-machine', hint: 'incident' },
+    evidence: [{ id: 'ev1' }], hypotheses: [], seeds: [],
+    timeline: { boundaryCrossings: [] }, summary: 'engine report', confidence: 0.3,
+    createdAt: '2026-09-21T00:00:00.000Z',
+  } as unknown as import('@horus/engine').InvestigationReport;
+  const get = vi.fn(async () => ({}));
+  const evidence = vi.fn(async () => [{
+    source: 'cli', createdAt: new Date().toISOString(),
+    payload: { kind: 'horus:report', report },
+  }]);
+  Object.assign(remote.ctx.client, { getInvestigation: get, listEvidence: evidence });
+  await h.db.insert(memoryItem).values({
+    id: 'memory-with-report', kind: 'investigation', source: 'investigation',
+    scope: 'repo', claim: 'incident', repo: remote.ctx.repo, confidence: 0.3,
+    syncScope: remote.ctx.scope, payload: { reportRefs: { [id]: 'cloud-report' } },
+  });
+  expect((await restoreMemoryReport(h.db, remote.ctx, id))?.aiJudgment).toBeUndefined();
+  report = { ...report, aiJudgment: {
+    what: 'completed interpretation', why: 'uncertain', whereNext: ['check state'],
+    citations: [{ evidenceId: 'ev1' }], confidence: 0.3,
+    provider: 'local Claude Code / claude-opus-5-5', generatedAt: new Date().toISOString(),
+  } };
+  const refreshed = await restoreMemoryReport(h.db, remote.ctx, id);
+  expect(refreshed?.aiJudgment?.citations).toEqual([{ evidenceId: 'ev1' }]);
+  expect(refreshed?.input.repo).toBe(remote.ctx.repo);
+  expect(refreshed?.input).not.toHaveProperty('_horusCloudScope');
+  expect(await h.db.select().from(incidentMemory)).toHaveLength(1);
+  expect((await h.db.select().from(investigations))[0]?.createdAt.toISOString())
+    .toBe('2026-09-21T00:00:00.000Z');
+  get.mockRejectedValueOnce(new Error('offline'));
+  expect((await restoreMemoryReport(h.db, remote.ctx, id))?.aiJudgment).toEqual(report.aiJudgment);
+  const calls = get.mock.calls.length;
+  expect(await restoreMemoryReport(h.db, { ...remote.ctx, scope: 'other-account' }, id)).toBeNull();
+  expect(get).toHaveBeenCalledTimes(calls);
+  const localId = '09a2d40d-c226-47d3-b0c6-a8e685f04e4d';
+  await h.db.insert(investigations).values({
+    id: localId, title: 'local draft', project: remote.ctx.repo,
+    incidentInput: {}, report: { ...report, summary: 'unsynced local work' },
+  });
+  expect((await restoreMemoryReport(h.db, remote.ctx, localId))?.summary)
+    .toBe('unsynced local work');
+  expect(get).toHaveBeenCalledTimes(calls);
+}, 30_000);
 function cloud() {
   let revision = 0;
   let unavailable = false;

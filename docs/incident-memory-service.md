@@ -65,6 +65,9 @@ retained in Cloud history. A forgotten record requires explicit restoration.
 Backfill scans saved investigations and resumes on subsequent passes; a short CLI
 invocation may leave visible pending work. Raw vectors and unnamed payload fields
 are excluded. Cloud report references resolve to actual saved reports on demand.
+Imported report copies refresh on demand, so a report restored before its AI stage
+finishes picks up the completed interpretation. The last saved copy remains usable
+offline; locally authored reports are not overwritten by this refresh.
 The `backfill` status counts eligible/indexed/pending/excluded saved reports separately
 from the memory synchronization counts.
 

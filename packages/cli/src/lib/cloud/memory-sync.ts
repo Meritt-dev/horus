@@ -430,9 +430,14 @@ export async function restoreMemoryReport(
     .select()
     .from(investigations)
     .where(eq(investigations.id, localId));
-  if (existing?.project === ctx.repo && existing.report)
-    return existing.report as InvestigationReport;
-  if (existing) return null;
+  const cached = existing?.project === ctx.repo && existing.report
+    ? existing.report as InvestigationReport : null;
+  const replicaScope = (existing?.incidentInput as { _horusCloudScope?: unknown } | undefined)
+    ?._horusCloudScope;
+  if (existing && (!cached || (replicaScope !== undefined && replicaScope !== ctx.scope)))
+    return null;
+  // Locally authored reports remain authoritative; only imported copies refresh.
+  if (cached && replicaScope === undefined) return cached;
   const memories = await db
     .select()
     .from(memoryItem)
@@ -445,14 +450,20 @@ export async function restoreMemoryReport(
       break;
     }
   }
-  if (!cloudId) return null;
-  const report = await fetchInvestigationReportFromCloud(ctx.client, ctx.config, cloudId);
+  if (!cloudId) return cached;
+  let report: InvestigationReport | null;
+  try {
+    report = await fetchInvestigationReportFromCloud(ctx.client, ctx.config, cloudId);
+  } catch (error) {
+    if (cached) return cached;
+    throw error;
+  }
   if (
     !report?.input?.hint ||
     !Array.isArray(report.evidence) ||
     !Array.isArray(report.hypotheses)
   )
-    return null;
+    return cached;
   const restored = {
     ...report,
     id: localId,
@@ -465,16 +476,23 @@ export async function restoreMemoryReport(
       .values({
         id: localId,
         title: report.input.hint,
-        incidentInput: restored.input,
+        incidentInput: { ...restored.input, _horusCloudScope: ctx.scope },
         project: ctx.repo,
         ...(report.createdAt ? { createdAt: new Date(report.createdAt) } : {}),
         status: 'completed',
         summary: report.summary,
         report: restored,
       })
-      .onConflictDoNothing()
+      .onConflictDoUpdate({
+        target: investigations.id,
+        set: {
+          title: report.input.hint,
+          incidentInput: { ...restored.input, _horusCloudScope: ctx.scope },
+          report: restored, summary: report.summary, updatedAt: new Date(),
+        },
+      })
       .returning();
-    if (inserted.length)
+    if (!existing && inserted.length)
       await storeIncidentMemory(tx as unknown as HorusDb, localId, restored);
   });
   const feedback = memories.flatMap(
