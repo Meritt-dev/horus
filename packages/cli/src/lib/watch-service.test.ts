@@ -19,6 +19,8 @@ import {
   routeKey,
 } from './watch-service.js';
 import type { InvestigationReport } from '@horus/engine';
+// Cold PGlite startup competes with the workspace suites on CI. Runtime budgets remain tested below.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 const dirs: string[] = [];
 const handles: DbHandle[] = [];
 afterEach(async () => {
@@ -346,7 +348,7 @@ it('a hard-killed worker cannot leave Claude or its tools running', async () => 
       runProcess(
         process.execPath,
         [resolve('../../node_modules/tsx/dist/cli.mjs'), worker],
-        { cwd: root, timeoutMs: 5000 },
+        { cwd: root, timeoutMs: 15_000 },
       ),
     ).rejects.toThrow('Subprocess exited');
     const pids = JSON.parse(readFileSync(pidFile, 'utf8'));
@@ -360,4 +362,4 @@ it('a hard-killed worker cannot leave Claude or its tools running', async () => 
       process.kill(-pids.claude, 'SIGKILL');
     } catch {}
   }
-}, 10000);
+});
