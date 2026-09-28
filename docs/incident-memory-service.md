@@ -301,6 +301,29 @@ Measure startup recall, sync latency, queue delay, failures, and duplicates. Sho
 local tests are not a substitute for that gate. Do not enable all production projects
 or claim always-on coverage while the only executor is a sleeping laptop.
 
+For an Elasticsearch fallback pilot, measure the preceding seven complete UTC days
+before selecting daily caps:
+
+```sh
+HORUS_LIVE_CONFIG=/absolute/project/.horus/config.json \
+HORUS_LIVE_ENV=production \
+pnpm exec tsx scripts/measure-watcher-volume.ts > /private/path/watcher-volume.json
+```
+
+This opt-in script reads bounded error-log windows using the configured connector
+and replays them through the existing episode store in a disposable local database.
+It prints daily event/episode counts and a peak, verifies duplicate replay, then
+removes the temporary database. It performs no investigations, model calls,
+notifications or Cloud writes. Set `HORUS_VOLUME_END` to an ISO timestamp to repeat
+the same historical window. Query/event caps or incomplete Elasticsearch results
+fail the measurement rather than presenting a partial count as complete.
+
+Use the observed peak to choose a provisional investigation cap; choose model-call
+headroom separately for retries and validate it during the soak. Indexed ES volume
+does not establish PagerDuty volume, model cost, upstream retention or 72-hour
+service reliability. The watcher also rejects timed-out, early-terminated or
+failed-shard responses without advancing its cursor, so a later poll can retry.
+
 For a private exported history, replay without opening the user's database:
 
 ```sh

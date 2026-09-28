@@ -54,7 +54,22 @@ export class ElasticsearchClient {
       const text = await res.text().catch(() => '');
       throw new Error(`Elasticsearch ${method} ${path} -> ${res.status}: ${redactUpstreamBody(text)}`);
     }
-    return res.json();
+    const result = await res.json() as {
+      timed_out?: boolean;
+      terminated_early?: boolean;
+      _shards?: { failed?: number };
+    } | null;
+    // HTTP 200 may contain partial hits/counts. Never let a watcher acknowledge that window.
+    if (
+      result?.timed_out === true ||
+      result?.terminated_early === true ||
+      (result?._shards?.failed ?? 0) > 0
+    ) {
+      throw new Error(
+        'Elasticsearch returned incomplete results (timeout, early termination, or failed shards); retry the query',
+      );
+    }
+    return result;
   }
 
   async search(index: string, body: unknown, signal?: AbortSignal): Promise<unknown> {

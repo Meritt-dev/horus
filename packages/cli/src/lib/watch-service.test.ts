@@ -8,6 +8,7 @@ import {
   jobs,
   readWatchState,
   saveJob,
+  writeWatchState,
   type IncidentEvent,
 } from './watch-store.js';
 import { CLAUDE_ARGS, runProcess, validateClaudeResult } from './claude-investigation.js';
@@ -17,7 +18,10 @@ import {
   elasticEvent,
   runWatchService,
   routeKey,
+  pollProject,
 } from './watch-service.js';
+import { writeAuth } from './cloud/auth-store.js';
+import { writeCloudConfig } from './cloud/context-store.js';
 import type { InvestigationReport } from '@horus/engine';
 // Cold PGlite startup competes with the workspace suites on CI. Runtime budgets remain tested below.
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
@@ -27,6 +31,7 @@ afterEach(async () => {
   for (const h of handles.splice(0)) await h.sql.end();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 const temp = () => {
   const p = mkdtempSync(join(tmpdir(), 'horus-worker-'));
@@ -47,6 +52,106 @@ const event = (extra: Partial<IncidentEvent> = {}): IncidentEvent => ({
   workflow: 'dispatch',
   ...extra,
 });
+it('retains the ES cursor and jobs after partial HTTP 200 results, then recovers once', async () => {
+  const root = temp();
+  vi.stubEnv('HORUS_HOME', join(root, 'profile'));
+  vi.stubEnv('HORUS_DB_DIR', join(root, 'db'));
+  writeAuth({
+    apiBaseUrl: 'https://cloud.invalid',
+    token: 'fixture',
+    account: { userId: 'u', email: 'test@example.invalid' },
+  });
+  writeCloudConfig(root, {
+    context: 'cloud',
+    workspace: { id: 'w', slug: 'w' },
+    project: { id: 'p', slug: 'p' },
+  });
+  const config = join(root, 'horus.config.mjs');
+  writeFileSync(
+    config,
+    'export default ' +
+      JSON.stringify({
+        projects: [
+          {
+            name: 'p',
+            repositories: [{ name: 'repo', path: root }],
+            environments: [
+              {
+                name: 'production',
+                connectors: {
+                  elasticsearch: { url: 'https://es.invalid', indexPattern: 'logs' },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+  );
+  const limits = serviceConfigSchema.parse({
+    claude: '/usr/bin/true',
+    runtime: process.execPath,
+    entry: '/unused',
+    dailyInvestigations: 1,
+    dailyModelCalls: 1,
+    projects: [
+      {
+        root,
+        config,
+        project: 'p',
+        environment: 'production',
+        source: 'elasticsearch',
+        notifications: 'off',
+      },
+    ],
+  });
+  const p = limits.projects[0]!;
+  const cursor = new Date(Date.now() - 3600_000).toISOString();
+  const key = `cursor:${routeKey(p)}`;
+  let h = await createLocalDb();
+  await writeWatchState(h.db, key, cursor);
+  await h.sql.end();
+  let partial = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL) => {
+      if (String(url).startsWith('https://cloud.invalid/')) return new Response('{}');
+      expect(String(url)).toBe('https://es.invalid/logs/_search');
+      return new Response(
+        JSON.stringify({
+          timed_out: partial,
+          _shards: { failed: partial ? 1 : 0 },
+          hits: {
+            hits: [
+              {
+                _id: 'event-1',
+                _index: 'logs',
+                _source: {
+                  time: new Date(Date.now() - 60_000).toISOString(),
+                  level: 50,
+                  message: 'Dispatch failed',
+                },
+              },
+            ],
+          },
+        }),
+      );
+    }),
+  );
+  await expect(pollProject(p, 'worker', limits)).rejects.toThrow('incomplete results');
+  h = await createLocalDb();
+  expect(await readWatchState(h.db, key)).toBe(cursor);
+  expect(await jobs(h.db)).toHaveLength(0);
+  await h.sql.end();
+  partial = false;
+  await pollProject(p, 'worker', limits);
+  await pollProject(p, 'worker', limits);
+  h = await createLocalDb();
+  handles.push(h);
+  expect(Date.parse((await readWatchState<string>(h.db, key))!)).toBeGreaterThan(
+    Date.parse(cursor),
+  );
+  expect(await jobs(h.db)).toHaveLength(1);
+}, 60_000);
 it('pause works during DB ownership, persists across service starts, and preserves queued work', async () => {
   const root = temp();
   for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR'])
