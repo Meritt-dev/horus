@@ -225,7 +225,12 @@ jobs:
       - name: Update Homebrew formula
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: bash ./scripts/homebrew/update-formula.sh "$RELEASE_VERSION"
+          RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+        # Packaging fixes follow the dispatched workflow; application code stays
+        # pinned to the release tag when resuming an existing release.
+        run: |
+          git restore --source "$RELEASE_WORKFLOW_SHA" -- scripts/homebrew/update-formula.sh
+          bash ./scripts/homebrew/update-formula.sh "$RELEASE_VERSION"
 
       - name: Push Homebrew formula to tap
         env:
