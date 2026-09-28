@@ -283,93 +283,41 @@ with all Horus processes stopped. PID age alone never grants database access.
 
 ## Verification and rollout
 
-Reproduce isolated
-contracts with an explicitly disposable, migrated local Cloud database whose name
-ends `_test`:
+Run unit and end-to-end suites only in hosted CI, never on the local machine.
+The existing Horus workflow checks the workspace and built CLI. Its hosted macOS
+job runs `scripts/test-service-launchd.ts` with an isolated profile, disabled
+notifications and no live provider/model calls: install, pause/resume, crash
+restart, retained state, status, stop and removal.
 
-```sh
-HORUS_CLOUD_TEST_DATABASE_URL=postgres://.../horus_prd_test pnpm exec tsx scripts/test-memory-integration.ts
-HORUS_CLOUD_TEST_DATABASE_URL=postgres://.../horus_prd_test pnpm exec tsx scripts/test-service-integration.ts
-HORUS_CLOUD_TEST_DATABASE_URL=postgres://.../horus_prd_test pnpm exec tsx scripts/test-watcher-inputs.ts
-pnpm exec tsx scripts/test-service-launchd.ts
-```
+Cloud's existing verify job migrates disposable PostgreSQL and runs the three
+canonical paired contracts sequentially: `test-memory-integration.ts`,
+`test-service-integration.ts` and `test-watcher-inputs.ts`. The companion Horus
+revision is pinned explicitly. Trusted-header authentication is disabled.
+The Cloud browser job uses a temporary Clerk test user, real JWT verification and
+a disposable API/database; cleanup deletes only that run's tagged user.
+Inspect its Playwright step because the browser workflow is non-blocking.
 
-Tests create isolated Horus profiles and localhost destinations. Do not run Cloud
-suites that truncate the same database concurrently. The native launchd smoke test
-creates/removes a named test profile, verifies pause/resume without a process restart,
-and uses an unconfigured provider so no live source is contacted.
+| PRD requirement | Existing verification | Remaining release evidence |
+| --- | --- | --- |
+| 01 M1 / A1–A3: startup recall and current evidence | Startup recall/engine checks; chronological historical replay before the CI-only instruction | Human-attested relevance and unrelated no-match holdout |
+| 01 M2: dispositions vs accuracy | Outcome schema, provenance and memory contracts | Confirmed EMODA outcomes, rather than inferred labels |
+| 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Physical second machine and production storage/migrations |
+| 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
+| 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
+| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
+| 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
+| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
+| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check | Production rates, healthy-path latency and week-long cost calibration |
 
-For the real local-user authentication path, `scripts/test-live-project.ts` supports
-`HORUS_LIVE_LAUNCHD=1`, an absolute `HORUS_LIVE_CONFIG`, `HORUS_CLAUDE_BIN`,
-and a migrated `HORUS_CLOUD_TEST_DATABASE_URL` on localhost. Set `HORUS_LIVE_GREP`
-to a known real Elasticsearch error and `HORUS_LIVE_ENV` to the selected environment. It runs one captured real incident through launchd,
-authenticated Opus, a disposable local Cloud server, and clean-profile restoration;
-notifications are disabled and the named LaunchAgent is removed afterward.
+The local end-to-end pilot was stopped when local tests were prohibited. Its final
+runtime phase covered about 38 minutes, not the required 72 hours. Historical
+private-history replay and real authenticated Opus evidence remain valid for their
+recorded scope; they do not establish human-attested accuracy or current production
+readiness. Do not restart local verification scripts under the CI-only instruction.
 
-Before release: confirm live provider rules/subscriptions and destination policies,
-run captured event replays, obtain the PRD 01 EMODA human attestations/holdout, then
-perform a 72-hour selected-project soak including restart, process kill, sleep/wake,
-network loss, duplicate delivery, budget exhaustion, and manual CLI contention.
-Measure startup recall, sync latency, queue delay, failures, and duplicates. Short
-local tests are not a substitute for that gate. Do not enable all production projects
-or claim always-on coverage while the only executor is a sleeping laptop.
-
-For an Elasticsearch fallback pilot, measure the preceding seven complete UTC days
-before selecting daily caps:
-
-```sh
-HORUS_LIVE_CONFIG=/absolute/project/.horus/config.json \
-HORUS_LIVE_ENV=production \
-pnpm exec tsx scripts/measure-watcher-volume.ts > /private/path/watcher-volume.json
-```
-
-This opt-in script reads bounded error-log windows using the configured connector
-and replays them through the existing episode store in a disposable local database.
-It prints daily event/episode counts and a peak, verifies duplicate replay, then
-removes the temporary database. It performs no investigations, model calls,
-notifications or Cloud writes. Set `HORUS_VOLUME_END` to an ISO timestamp to repeat
-the same historical window. Query/event caps or incomplete Elasticsearch results
-fail the measurement rather than presenting a partial count as complete.
-
-Use the observed peak to choose a provisional investigation cap; choose model-call
-headroom separately for retries and validate it during the soak. Indexed ES volume
-does not establish PagerDuty volume, model cost, upstream retention or 72-hour
-service reliability. The watcher also rejects timed-out, early-terminated or
-failed-shard responses without advancing its cursor, so a later poll can retry.
-
-For a private exported history, replay without opening the user's database:
-
-```sh
-HORUS_RECALL_HISTORY=/absolute/path/private-history.json \
-HORUS_RECALL_PILOT=/absolute/path/reviewed-pilot-dispositions.json \
-pnpm exec tsx scripts/test-recall-history.ts
-```
-
-The export must have a `reports` array containing saved investigation rows. The
-optional pilot file requires its source reports. The script uses and removes a fresh
-PGlite profile; it does not install annotations into live memory. Counts and local
-recall timings are diagnostic, not the PRD's held-out accuracy or end-to-end latency
-gates. Preserve a backup and verify source-history integrity before attempting
-backfill; corrupt or unreadable reports require recovery rather than silent exclusion.
-
-To include full report upload, clean-profile restoration and latency measurements,
-run the existing memory integration script with the same `HORUS_RECALL_HISTORY`.
-Large real reports require local object storage as well as the disposable Postgres
-instance. The local check used LocalStack 4.14.0 S3, a private test bucket, dummy
-credentials, and these process-scoped settings:
-
-```sh
-AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-STORAGE_PROVIDER=s3 STORAGE_BUCKET=horus-prd-memory-test \
-STORAGE_REGION=us-east-1 STORAGE_ENDPOINT=http://127.0.0.1:55456 \
-STORAGE_FORCE_PATH_STYLE=true \
-HORUS_CLOUD_TEST_DATABASE_URL=postgres://horus:horus_test@localhost:55439/horus_prd_test \
-HORUS_RECALL_HISTORY=/absolute/path/private-history.json \
-pnpm exec tsx scripts/test-memory-integration.ts
-```
-
-Provision that bucket on the isolated local endpoint first. The script rejects a
-remote storage endpoint for historical replay, deletes only its own Cloud tenant,
-and removes its temporary profiles. Stop/remove the owned test storage container
-when finished to discard its private report objects. Never substitute production
-credentials or a production database for this test.
+Before release, verify production rules/subscriptions and destination policies,
+private report storage and migrations, then complete the labeled recall holdout
+and 72-hour selected-project soak including physical lifecycle and network loss.
+No production automator activation is declared while these gates remain open.
+Azure/AWS/Grafana triggers, managed execution, Linux packaging and PRD 03 remain
+later scope. Cloud ingestion does not imply always-on investigation execution.
