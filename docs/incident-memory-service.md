@@ -221,6 +221,10 @@ existing authenticated API client or your API tooling:
 Verification follows [PagerDuty's native v3 signature contract](https://docs.pagerduty.com/developer/verifying-webhook-signatures).
 Unknown event types are ignored; a wrong service or invalid signature is rejected.
 The generic signed webhook remains compatible but is not a native provider adapter.
+PagerDuty grouping follows its native incident identity. Verify upstream deduplication
+keeps different orders separate and sends initial errors, retries and exhaustion to
+the same incident. The incident webhook cannot recover order/workflow fields that
+the producer omitted or split an incident that already combines several orders.
 
 The outbound CLI uses the existing investigation-request routes, extended with
 90-second leases, 25-second heartbeats, claim tokens, worker identity, attempts, and
@@ -309,11 +313,16 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check | Production rates, healthy-path latency and week-long cost calibration |
 
-The local end-to-end pilot was stopped when local tests were prohibited. Its final
-runtime phase covered about 38 minutes, not the required 72 hours. Historical
+The local end-to-end pilot was stopped when local tests were prohibited. Its prior
+runtime phase covered about 38 minutes, not the required 72 hours. The user clarified
+that normal real-project service operation is allowed. The retained read-only Maison
+Safqa Elasticsearch watcher resumed on September 28 at 17:02 UTC, with a new 72-hour
+window ending October 1 at 17:02 UTC. It uses separate local Cloud storage,
+notifications off and unchanged budgets; no local test or fault-injection scripts
+run during this window. Physical lifecycle coverage remains unverified. Historical
 private-history replay and real authenticated Opus evidence remain valid for their
 recorded scope; they do not establish human-attested accuracy or current production
-readiness. Do not restart local verification scripts under the CI-only instruction.
+readiness. Automated verification scripts remain in hosted CI.
 
 Before release, verify production rules/subscriptions and destination policies,
 private report storage and migrations, then complete the labeled recall holdout

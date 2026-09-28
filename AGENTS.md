@@ -19,7 +19,7 @@ The goal is simple:
 
 Never run unit or end-to-end tests locally. Run them only in hosted CI.
 Integration, replay, and service lifecycle verification scripts also run only in
-hosted CI; do not restart the local verification pilot.
+hosted CI. Normal real-project background service operation is allowed.
 
 ---
 
