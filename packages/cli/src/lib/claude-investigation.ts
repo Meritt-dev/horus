@@ -134,6 +134,23 @@ export function runProcess(
         /* no descendants */
       }
       options.signal?.removeEventListener('abort', cancel);
+      if (code !== 0) {
+        try {
+          const result = z
+            .object({
+              type: z.literal('result'),
+              is_error: z.literal(true),
+              errors: z.array(z.string()).optional(),
+              result: z.string().optional(),
+            })
+            .parse(JSON.parse(output));
+          error = redactCloudValue(
+            [...(result.errors ?? []), result.result].filter(Boolean).join('; '),
+          ).slice(-8192) || error;
+        } catch {
+          /* Non-JSON processes retain their stderr diagnostic. */
+        }
+      }
       if (failure || code !== 0)
         reject(failure ?? new Error(`Subprocess exited ${code}: ${error}`));
       else resolve(output);

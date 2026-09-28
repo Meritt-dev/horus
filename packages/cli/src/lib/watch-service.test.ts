@@ -381,6 +381,13 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
       withoutRecall,
     ),
   ).toThrow(/unknown evidence or memory/);
+  writeFileSync(
+    file,
+    `console.log(JSON.stringify({type:'result',is_error:true,errors:['Not logged in; run claude auth login']}));process.exit(1);`,
+  );
+  await expect(
+    runProcess(process.execPath, [file], { cwd: root, timeoutMs: 2000 }),
+  ).rejects.toThrow('run claude auth login');
 });
 it('launchd uses argument array and explicit auth paths; no shell or API key requirement', () => {
   const c = serviceConfigSchema.parse({
