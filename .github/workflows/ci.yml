@@ -47,6 +47,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build installed CLI artifact
+        run: pnpm --filter @merittdev/horus build
       - name: Verify isolated launchd restart and durable state
         run: pnpm exec tsx scripts/test-service-launchd.ts
 

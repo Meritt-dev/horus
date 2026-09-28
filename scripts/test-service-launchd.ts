@@ -22,8 +22,7 @@ try {
     JSON.stringify({
       claude: '/usr/bin/true',
       runtime: process.execPath,
-      runtimeArgs: [resolve('node_modules/tsx/dist/cli.mjs')],
-      entry: resolve('apps/horus/src/index.ts'),
+      entry: resolve('apps/horus/dist/index.cjs'),
       dailyInvestigations: 1,
       dailyModelCalls: 1,
       intervalSeconds: 10,
