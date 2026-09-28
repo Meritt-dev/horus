@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, acquireDbLock, type DbHandle } from '@horus/db';
@@ -11,7 +11,12 @@ import {
   writeWatchState,
   type IncidentEvent,
 } from './watch-store.js';
-import { CLAUDE_ARGS, runProcess, validateClaudeResult } from './claude-investigation.js';
+import {
+  CLAUDE_ARGS,
+  runProcess,
+  validateClaudeResult,
+  interpretIncident,
+} from './claude-investigation.js';
 import { launchdPlist, runService } from '../commands/service.js';
 import {
   serviceConfigSchema,
@@ -353,6 +358,29 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
     validateClaudeResult(envelope({ ...result, evidenceIds: ['invented'] }), report),
   ).toThrow(/unknown evidence/);
   expect(() => validateClaudeResult('invalid', report)).toThrow();
+  // A real Opus run cited a similar investigation's report ID as a memory ID.
+  const withoutRecall = {
+    ...report,
+    startupRecall: [],
+    similarIncidents: [{ investigationId: 'previous-report' }],
+  } as unknown as InvestigationReport;
+  const noHistory = { ...result, historicalMemoryIds: [] };
+  writeFileSync(
+    file,
+    `#!${process.execPath}\nlet s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(received)},s);console.log(${JSON.stringify(envelope(noHistory))})});`,
+  );
+  chmodSync(file, 0o700);
+  await interpretIncident(file, root, event(), withoutRecall, 2000);
+  const prompt = readFileSync(received, 'utf8');
+  const allowed = JSON.parse(prompt.split('ALLOWED_CITATIONS:\n')[1]!.split('\nDATA:\n')[0]!);
+  expect(allowed).toEqual({ evidenceIds: ['ev1'], historicalMemoryIds: [] });
+  expect(prompt).toContain('report reference, not a memoryId');
+  expect(() =>
+    validateClaudeResult(
+      envelope({ ...noHistory, historicalMemoryIds: ['previous-report'] }),
+      withoutRecall,
+    ),
+  ).toThrow(/unknown evidence or memory/);
 });
 it('launchd uses argument array and explicit auth paths; no shell or API key requirement', () => {
   const c = serviceConfigSchema.parse({
