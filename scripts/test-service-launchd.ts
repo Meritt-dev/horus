@@ -53,7 +53,9 @@ try {
   for (const action of ['resume', 'pause']) {
     await runService(action, { settings, profile, path: dir, env: 'test' });
     let applied = false;
-    for (let i = 0; i < 40; i++) {
+    // Hosted Macs can spend a full cycle opening cold PGlite; this is a
+    // bounded lifecycle check, not the production latency measurement.
+    for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 500));
       const next = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
       if (next.projects[0].enabled === (action === 'resume')) {
@@ -62,14 +64,14 @@ try {
         break;
       }
     }
-    assert(applied, `${action} was not applied within 20 seconds`);
+    assert(applied, `${action} was not applied within 60 seconds`);
   }
   let h = await createLocalDb();
   await writeWatchState(h.db, 'restart:marker', { cursor: 'durable' });
   await h.sql.end();
   process.kill(state.pid, 'SIGKILL');
   let restarted = false;
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const next = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
     if (next.pid !== state.pid) {
@@ -77,7 +79,7 @@ try {
       break;
     }
   }
-  assert(restarted, 'launchd did not restart killed service within 45 seconds');
+  assert(restarted, 'launchd did not restart killed service within 60 seconds');
   h = await createLocalDb();
   assert.deepEqual(await readWatchState(h.db, 'restart:marker'), { cursor: 'durable' });
   await h.sql.end();
