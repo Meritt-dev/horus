@@ -90,6 +90,18 @@ const SENSITIVE_RESPONSE = {
 // ---------------------------------------------------------------------------
 
 describe('queryEvidence — success', () => {
+  it('finds a native code stored separately from the message through broad search', async () => {
+    const client = makeClient();
+    client.search = async (_index, body) => {
+      const query = (body as { query: { bool: { must: Array<{ multi_match: { fields: string[]; query: string } }> } } }).query.bool;
+      expect(query.must[0]!.multi_match.query).toBe('AUTH001');
+      expect(query.must[0]!.multi_match.fields).toContain('event_code');
+      return ANALYSIS_RESPONSE; // message is "Token expired", not "AUTH001".
+    };
+    const evidence = await makeProvider(client).queryEvidence({ text: 'AUTH001', broadText: true });
+    expect(evidence.some(e => e.title.includes('AUTH001'))).toBe(true);
+  });
+
   it('returns Evidence[] from a mocked analysis response', async () => {
     // analyzeErrors makes 2 calls (current + baseline); provide both
     const client = makeClient(ANALYSIS_RESPONSE, EMPTY_RESPONSE);

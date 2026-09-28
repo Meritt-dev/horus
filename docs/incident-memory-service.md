@@ -42,6 +42,11 @@ confidence. Missing environments remain visibly unknown. Accuracy feedback is
 separate from a confirmed incident disposition. Startup output includes the matching
 fields, last verification date (or “never”), report references, historical outcome,
 and first check.
+Broad Elasticsearch checks search the configured native event-code field as well
+as message/context fields. Supplier error codes are not assumed to be logger codes.
+Recorded provider/event identity survives sync and suppresses repeated reports for
+the same event in the shortlist. Legacy records without that identity retain their
+existing report-based grouping.
 Set `HORUS_STARTUP_RECALL=0` to disable startup recall while keeping stored history.
 
 The local dirty generation and frozen outbox survive process exit and a lost HTTP
@@ -228,6 +233,9 @@ A stale token cannot heartbeat or complete. Cloud completion retries are idempot
 No heartbeat for two minutes means offline; an expired claim is awaiting recovery,
 not evidence of active execution. Five exhausted claims remain inspectable and
 require explicit retry. Queue/report identity survives a replacement claim.
+Source backoff retains its error and retry time while the worker continues Cloud
+heartbeats. Three failed polls show a degraded worker; an exhausted daily budget
+takes precedence. A changed account/project cannot heartbeat the previous route.
 
 ## Notifications, limits, and recovery
 

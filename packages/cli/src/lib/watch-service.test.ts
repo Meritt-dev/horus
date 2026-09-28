@@ -27,6 +27,7 @@ import {
 } from './watch-service.js';
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
+import { memorySyncContext } from './cloud/memory-sync.js';
 import type { InvestigationReport } from '@horus/engine';
 // Cold PGlite startup competes with the workspace suites on CI. Runtime budgets remain tested below.
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
@@ -156,6 +157,44 @@ it('retains the ES cursor and jobs after partial HTTP 200 results, then recovers
     Date.parse(cursor),
   );
   expect(await jobs(h.db)).toHaveLength(1);
+}, 60_000);
+it('keeps Cloud liveness during source backoff without clearing failure, budget or account scope', async () => {
+  const root = temp();
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
+  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'u', email: 'test@example.invalid' } });
+  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'p', slug: 'p' } });
+  const settings = join(root, 'settings.json');
+  const config = serviceConfigSchema.parse({
+    claude: '/usr/bin/true', runtime: process.execPath, entry: '/unused',
+    dailyInvestigations: 1, dailyModelCalls: 1,
+    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
+  });
+  writeFileSync(settings, JSON.stringify(config));
+  const route = routeKey(config.projects[0]!);
+  const health = { failures: 3, error: 'source unavailable', retryAt: Date.now() + 3600_000 };
+  let h = await createLocalDb();
+  await writeWatchState(h.db, `health:${route}`, health);
+  await writeWatchState(h.db, `scope:${route}`, memorySyncContext(root, 'p')!.scope);
+  await h.sql.end();
+  const beats: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL, options?: RequestInit) => {
+    if (String(url).endsWith('/alert-workers') && options?.method === 'POST') {
+      expect((options.headers as Record<string, string>).authorization).toBe('Bearer fixture');
+      beats.push(JSON.parse(String(options.body)).state);
+    }
+    return new Response(JSON.stringify({ items: [], hasMore: false, nextRevision: '0' }));
+  }));
+  await runWatchService(settings, true);
+  expect(beats).toEqual(['degraded']);
+  h = await createLocalDb();
+  expect(await readWatchState(h.db, `health:${route}`)).toEqual(health);
+  await writeWatchState(h.db, `budget:${new Date().toISOString().slice(0, 10)}`, { investigations: 1, modelCalls: 0 });
+  await h.sql.end();
+  await runWatchService(settings, true);
+  expect(beats).toEqual(['degraded', 'budget-exhausted']);
+  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'other', email: 'other@example.invalid' } });
+  await runWatchService(settings, true);
+  expect(beats).toHaveLength(2);
 }, 60_000);
 it('pause works during DB ownership, persists across service starts, and preserves queued work', async () => {
   const root = temp();

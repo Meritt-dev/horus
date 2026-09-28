@@ -801,10 +801,28 @@ export async function runWatchService(settings: string, once = false): Promise<v
         const route = routeKey(p);
         try {
           const health = await withDb((db) =>
-            readWatchState<{ retryAt?: number }>(db, `health:${route}`),
+            readWatchState<{ retryAt?: number; failures?: number }>(db, `health:${route}`),
           );
           if (!health?.retryAt || health.retryAt <= Date.now())
             await pollProject(p, workerId, config);
+          else {
+            // Source backoff must not make a live worker appear offline in Cloud.
+            const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
+            const { scope, usage } = await withDb(async db => ({
+              scope: await readWatchState<string>(db, `scope:${route}`),
+              usage: await readWatchState<{ investigations: number; modelCalls: number }>(
+                db, `budget:${new Date().toISOString().slice(0, 10)}`,
+              ),
+            }));
+            if (cloud && scope === cloud.scope)
+              await cloud.client.workerHeartbeat(cloud.config.workspace!.id, {
+                projectId: cloud.config.project!.id,
+                environment: p.environment,
+                workerId,
+                state: usage && (usage.investigations >= config.dailyInvestigations || usage.modelCalls >= config.dailyModelCalls)
+                  ? 'budget-exhausted' : (health.failures ?? 0) >= 3 ? 'degraded' : 'idle',
+              }).catch(error => log(`Cloud heartbeat: ${redactErrorMessage(error)}`));
+          }
         } catch (error) {
           await withDb(async (db) => {
             const health = await readWatchState<{

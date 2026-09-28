@@ -353,7 +353,7 @@ export interface IncidentDisposition {
   disposition: 'confirmed-incident' | 'expected-behavior' | 'duplicate-alert' | 'monitoring-error' | 'unknown';
   certainty: 'confirmed' | 'inferred'; actualCause?: string; resolution?: string;
   sourceInvestigation: string; sourceRefs: string[]; attester?: string; verifiedAt?: string;
-  applicability: Pick<IncidentContext, 'fingerprint' | 'errorCode' | 'workflow' | 'operation'> &
+  applicability: Pick<IncidentContext, 'fingerprint' | 'errorCode' | 'workflow' | 'operation' | 'source' | 'eventId'> &
     { service?: string; environment?: string; conditions?: string[] };
   invalidatingConditions: string[]; checks: string[];
 }
@@ -377,7 +377,7 @@ export function readIncidentDisposition(value: unknown): IncidentDisposition | n
       typeof v.verifiedAt !== 'string' || !Number.isFinite(Date.parse(v.verifiedAt)) || !v.sourceRefs.length)) return null;
   const applicability: IncidentDisposition['applicability'] = {};
   const a = v.applicability as Record<string, unknown>;
-  for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation', 'service', 'environment'] as const)
+  for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation', 'service', 'environment', 'source', 'eventId'] as const)
     if (typeof a[key] === 'string') applicability[key] = a[key];
   if (strings(a.conditions)) applicability.conditions = a.conditions;
   return { disposition: v.disposition as IncidentDisposition['disposition'], certainty: v.certainty as IncidentDisposition['certainty'],
@@ -429,5 +429,12 @@ export async function recallStartupIncidents(
   }
   ranked.sort((a, b) => b.relevance - a.relevance || a.memoryId.localeCompare(b.memoryId));
   const seen = new Set<string>();
-  return ranked.filter(c => { const key = c.incidentId ?? c.claim.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 3);
+  return ranked.filter(c => {
+    const origin = c.outcome?.applicability;
+    const keys = [c.incidentId ?? c.claim.toLowerCase()];
+    if (origin?.source && origin.eventId) keys.push(JSON.stringify([origin.source, origin.eventId]));
+    if (keys.some(key => seen.has(key))) return false;
+    keys.forEach(key => seen.add(key));
+    return true;
+  }).slice(0, 3);
 }

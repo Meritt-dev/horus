@@ -181,7 +181,11 @@ it('two independent profiles restore an editable private replica and propagate u
       createdAt: new Date('2025-01-01'),
       signature: 'reserve',
       tags: ['emoda', 'etimedout'],
-      payload: { recurrenceCount: 9, embedding: [1, 2, 3] },
+      payload: { recurrenceCount: 9, embedding: [1, 2, 3], outcome: {
+        disposition: 'unknown', certainty: 'inferred', sourceInvestigation: 'incident', sourceRefs: [],
+        applicability: { source: 'elasticsearch', eventId: 'logs:event-a' },
+        invalidatingConditions: [], checks: [],
+      } },
     },
     audit,
   );
@@ -200,7 +204,7 @@ it('two independent profiles restore an editable private replica and propagate u
     repo: otherCtx.repo,
     origin: 'local',
     confidence: 0.3,
-    payload: { recurrenceCount: 9 },
+    payload: { recurrenceCount: 9, outcome: { applicability: { source: 'elasticsearch', eventId: 'logs:event-a' } } },
   });
   expect(await second.links(created.id)).toHaveLength(1);
   await second.update(created.id, { claim: 'Corrected after upstream check' }, { audit });

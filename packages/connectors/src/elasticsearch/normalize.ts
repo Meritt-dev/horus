@@ -341,7 +341,7 @@ export function buildTextMust(
 ): unknown[] {
   if (q.text === undefined) return [{ match_all: {} }];
   if (q.broadText === true) {
-    const fields = [mapping.messageField];
+    const fields = [mapping.messageField, mapping.eventCodeField];
     if (mapping.messageFallbackField !== undefined) fields.push(mapping.messageFallbackField);
     fields.push('detail', 'context.*');
     return [{ multi_match: { query: q.text, fields, type: 'phrase', lenient: true } }];

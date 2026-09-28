@@ -18,7 +18,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 const audit = { actor: { kind: 'user' as const } };
-async function seed(id: string, hint: string, errorCode: string, environment?: string) {
+async function seed(id: string, hint: string, errorCode: string, environment?: string, origin?: { source: string; eventId: string }) {
   return createLocalMemoryStore(handle.db).add(
     {
       id,
@@ -36,7 +36,7 @@ async function seed(id: string, hint: string, errorCode: string, environment?: s
           certainty: 'inferred',
           sourceInvestigation: id,
           sourceRefs: [],
-          applicability: { errorCode, environment },
+          applicability: { errorCode, environment, ...origin },
           checks: ['Check reservation state and idempotency key'],
           invalidatingConditions: ['reservation already exists upstream'],
         },
@@ -72,11 +72,25 @@ it('separates stock/reserve families, labels unknown environments and rejects un
   await store.setStatus('reserve', 'forgotten', audit);
   expect(await recallStartupIncidents(store, q)).toEqual([]);
 });
+it('repeated reports for the same provider event cannot crowd out another occurrence', async () => {
+  const hint = 'EMODA reserve ETIMEDOUT 503';
+  const origin = { source: 'elasticsearch', eventId: 'logs:event-a' };
+  await seed('a-first', hint, 'ETIMEDOUT', 'production', origin);
+  await seed('b-repeat', hint, 'ETIMEDOUT', 'production', origin);
+  await seed('c-other', hint, 'ETIMEDOUT', 'production', { ...origin, eventId: 'logs:event-b' });
+  const candidates = await recallStartupIncidents(createLocalMemoryStore(handle.db), {
+    repo: 'shop', hint, environment: 'production', incident: { errorCode: 'ETIMEDOUT' },
+  });
+  expect(candidates.map(c => c.memoryId)).toEqual(['a-first', 'c-other']);
+});
 it('runs a prior check before broad collection and current contradiction never confirms a historical explanation', async () => {
   await seed('reserve', 'EMODA reserve ETIMEDOUT 503', 'ETIMEDOUT', 'production');
   const order: string[] = [];
   const logs = {
-    queryEvidence: vi.fn(async () => {
+    queryEvidence: vi.fn(async (query: import('@horus/connectors').LogQuery) => {
+      // A supplier error code is not necessarily the logger's native event_code.
+      expect(query).toMatchObject({ text: 'ETIMEDOUT', broadText: true });
+      expect(query).not.toHaveProperty('eventCode');
       order.push('prior-check');
       return [
         {
