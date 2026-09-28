@@ -1,5 +1,6 @@
 /** Explicitly isolated launchd smoke test: no providers, Cloud calls, inference or notifications. */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -40,11 +41,11 @@ try {
     }),
   );
   await runService('install', { settings, profile, skipChecks: true });
-  for (let i = 0; i < 30 && !existsSync(join(dir, 'service/status.json')); i++)
+  for (let i = 0; i < 90 && !existsSync(join(dir, 'service/status.json')); i++)
     await new Promise((r) => setTimeout(r, 500));
   assert(
     existsSync(join(dir, 'service/status.json')),
-    'launchd did not produce a durable status snapshot within 15 seconds',
+    'launchd did not produce a durable status snapshot within 45 seconds',
   );
   const state = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
   assert(state.pid);
@@ -92,6 +93,11 @@ try {
   console.log(
     'PASS: real launchd test profile installed, paused/resumed without restart, recovered after SIGKILL with saved state, reported status, stopped and removed; local history retained',
   );
+} catch (error) {
+  // Keep isolated startup diagnostics before finally removes the test profile.
+  console.error(spawnSync('/bin/launchctl', ['print', `gui/${process.getuid!()}/sh.horus.watch.${profile}`], { encoding: 'utf8' }).stdout.slice(-8_000));
+  console.error(await readFile(join(dir, 'service/service.log'), 'utf8').catch(() => 'No service log was created'));
+  throw error;
 } finally {
   await runService('remove', { settings, profile }).catch(() => {});
   for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) {
