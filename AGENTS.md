@@ -15,6 +15,14 @@ The goal is simple:
 
 ---
 
+# Test execution
+
+Never run unit or end-to-end tests locally. Run them only in hosted CI.
+Integration, replay, and service lifecycle verification scripts also run only in
+hosted CI; do not restart the local verification pilot.
+
+---
+
 # Core Principles
 
 ## 1. Reality over documentation
