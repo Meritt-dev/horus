@@ -120,9 +120,25 @@ jobs:
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
 
       - name: Build platform archives (Homebrew)
+        if: steps.check.outputs.exists == 'false'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: bash ./scripts/homebrew/build-archives.sh "$RELEASE_VERSION" apps/horus/dist/index.cjs
+
+      # tar/gzip and wheel timestamps are not reproducible. A resumed tap update
+      # must use the checksums of the archives users will actually download.
+      - name: Verify existing platform archives
+        if: steps.check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p .homebrew-archives
+          gh release download "$RELEASE_TAG" --pattern '*.tar.gz*' --dir .homebrew-archives
+          cd .homebrew-archives
+          for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
+            sha256sum --check "horus-${RELEASE_TAG}-${platform}.tar.gz.sha256"
+          done
 
       - name: Prepare install.sh artifact
         env:
