@@ -196,6 +196,48 @@ it('keeps Cloud liveness during source backoff without clearing failure, budget 
   await runWatchService(settings, true);
   expect(beats).toHaveLength(2);
 }, 60_000);
+it('supervisor crashes count only attempts the worker has not already journaled', async () => {
+  const root = temp();
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
+  const worker = join(root, 'worker.mts');
+  writeFileSync(worker, `
+    import {createLocalDb} from ${JSON.stringify(new URL('../../../db/src/index.ts', import.meta.url).href)};
+    import {jobs,saveJob} from ${JSON.stringify(new URL('./watch-store.ts', import.meta.url).href)};
+    const h=await createLocalDb();const job=(await jobs(h.db))[0];
+    job.attempts.ai=(job.attempts.ai??0)+1;await saveJob(h.db,job);
+    await h.sql.end();process.exit(1);
+  `);
+  const settings = join(root, 'settings.json');
+  const config = serviceConfigSchema.parse({
+    claude: '/usr/bin/true', runtime: process.execPath,
+    runtimeArgs: [resolve('../../node_modules/tsx/dist/cli.mjs')], entry: worker,
+    deadlineSeconds: 10, dailyInvestigations: 1, dailyModelCalls: 1,
+    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
+  });
+  writeFileSync(settings, JSON.stringify(config));
+  const route = routeKey(config.projects[0]!);
+  let h = await createLocalDb();
+  await writeWatchState(h.db, `health:${route}`, { retryAt: Date.now() + 3600_000 });
+  await acceptEvents(h.db, route, [event()]);
+  const job = (await jobs(h.db))[0]!;
+  job.stage = 'ai';
+  await saveJob(h.db, job);
+  await h.sql.end();
+  await runWatchService(settings, true);
+  h = await createLocalDb();
+  const failed = (await jobs(h.db))[0]!;
+  expect(failed.attempts.ai).toBe(1);
+  expect(failed.status).toBe('retry-wait');
+  expect(failed.reportId).toBe(job.reportId);
+  failed.nextAttemptAt = 0;
+  await saveJob(h.db, failed);
+  await h.sql.end();
+  writeFileSync(worker, 'process.exit(1);');
+  await runWatchService(settings, true);
+  h = await createLocalDb();
+  handles.push(h);
+  expect((await jobs(h.db))[0]!.attempts.ai).toBe(2);
+}, 60_000);
 it('pause works during DB ownership, persists across service starts, and preserves queued work', async () => {
   const root = temp();
   for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR'])

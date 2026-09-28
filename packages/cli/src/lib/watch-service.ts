@@ -931,7 +931,9 @@ export async function runWatchService(settings: string, once = false): Promise<v
             if (current.status === 'done') return;
             current.pid = undefined;
             current.error = redactErrorMessage(error);
-            current.attempts[current.stage] = (current.attempts[current.stage] ?? 0) + 1;
+            // The child journals a stage attempt before work; only count an unrecorded crash here.
+            if ((current.attempts[current.stage] ?? 0) === (job.attempts[current.stage] ?? 0))
+              current.attempts[current.stage] = (current.attempts[current.stage] ?? 0) + 1;
             current.status =
               current.attempts[current.stage]! >= 5 ? 'terminal-failed' : 'retry-wait';
             current.nextAttemptAt = Date.now() + 60_000;
