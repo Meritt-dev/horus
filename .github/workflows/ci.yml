@@ -34,6 +34,21 @@ jobs:
       - name: CLI smoke test
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
 
+  # Run the existing isolated service lifecycle check on a hosted Mac, never locally.
+  launchd:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify isolated launchd restart and durable state
+        run: pnpm exec tsx scripts/test-service-launchd.ts
+
   # The source-intelligence backend (HOR-450 step B: this IS the canonical
   # codebase — the standalone repo is archived, no PyPI). Own Python toolchain,
   # run independently of the Node build above. See packages/source-py/VENDORED.md.
