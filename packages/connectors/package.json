@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@horus/core": "workspace:*",
-    "ioredis": "^5.3.2",
+    "ioredis": "^6.0.0",
     "kafkajs": "^2.2.4",
     "mongodb": "^7.3.0",
     "mssql": "^12.7.2",
