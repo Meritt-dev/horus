@@ -7,7 +7,8 @@ and Jev ranking are outside this change.
 
 ## Deploy the paired versions
 
-Deploy Horus Cloud with migrations `0034_memory_revisions` and `0035_alert_leases`
+Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
+and `0036_pagerduty_details`
 before activating this CLI. Use the repository's existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
 and `0014_watch_jobs` apply automatically when the embedded database opens.
