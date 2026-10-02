@@ -342,7 +342,7 @@ An actual shutdown/reboot caused a ten-hour observation gap; LaunchAgents recove
 same history after login. This is elapsed-window and reboot-recovery evidence, rather
 than 72 hours of continuous online availability. The subsequent cancellation-diagnostic
 fix is outside this recorded window. Physical sleep/wake, second-machine restoration,
-production subscriptions/delivery and human-attested recall quality remain unverified.
+production subscriptions/delivery and independently reviewed recall quality remain unverified.
 No local automated test or fault-injection scripts ran during the window.
 
 Before release, verify production rules/subscriptions and destination policies,
@@ -368,3 +368,11 @@ future/self references and non-earlier recalled records are rejected. The result
 reports both sample sizes, rates, misses and false matches, and exits unsuccessfully
 unless both strata exist and meet the proposed 90%/95% targets. Unlabeled replay
 remains diagnostic only. Pilot outcome annotations are added after scoring.
+
+The push CI job also runs this replay when the repository secret
+`HORUS_RECALL_REVIEW_BUNDLE` contains base64-encoded gzip JSON with `history` and
+`review` objects in those formats. Use a minimal report projection, never raw
+customer logs or connector credentials. CI deletes its temporary files on exit;
+pull-request runs do not decode the private dataset. Missing data leaves the
+quality gate unverified. Small or operation-only samples remain exploratory,
+even when their measured rates exceed the targets.
