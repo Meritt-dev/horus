@@ -678,6 +678,7 @@ it('reuses an explicit Cloud episode through native child resolutions and starts
     }),
   ]);
   const [active] = await jobs(h.db);
+  if (!active) throw new Error('The active Cloud episode was not queued');
   expect(active.status).toBe('pending');
   expect(active.stage).toBe('engine');
   expect(active.resolvedAt).toBeUndefined();

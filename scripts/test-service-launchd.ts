@@ -105,5 +105,6 @@ try {
     if (saved[key]) process.env[key] = saved[key];
     else delete process.env[key];
   }
-  await rm(dir, { recursive: true, force: true });
+  // launchd can finish its final file writes after bootout returns.
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
