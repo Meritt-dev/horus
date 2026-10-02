@@ -174,13 +174,13 @@ export async function acceptEvents(
         job.latestEvent = event;
         if (event.state === 'resolved') job.resolvedAt = event.occurredAt;
         else {
-          job.resolvedAt = undefined;
           // A resolved-only episode has no report; its first active event still needs the engine.
-          if (!job.attempts.engine && ['cancelled', 'done'].includes(job.status)) {
+          if (job.resolvedAt && !job.attempts.engine && ['cancelled', 'done'].includes(job.status)) {
             job.stage = 'engine';
             job.status = 'pending';
             job.nextAttemptAt = 0;
           }
+          job.resolvedAt = undefined;
         }
         // Severity changes update the saved incident and re-deliver it without re-running inference.
         if (event.severity !== previousSeverity && job.status === 'done') {
