@@ -222,10 +222,28 @@ existing authenticated API client or your API tooling:
 Verification follows [PagerDuty's native v3 signature contract](https://docs.pagerduty.com/developer/verifying-webhook-signatures).
 Unknown event types are ignored; a wrong service or invalid signature is rejected.
 The generic signed webhook remains compatible but is not a native provider adapter.
-PagerDuty grouping follows its native incident identity. Verify upstream deduplication
-keeps different orders separate and sends initial errors, retries and exhaustion to
-the same incident. The incident webhook cannot recover order/workflow fields that
-the producer omitted or split an incident that already combines several orders.
+PagerDuty's v3 incident webhook omits alert custom details. Maison Safqa's verified
+producer creates separate native incidents for initial EMODA dispatch errors,
+workflow retries and exhaustion. Configure the source's write-only `apiToken` with
+a **read-only PagerDuty REST key** and `apiRegion: "eu"` for the Meritt EU account
+(`"us"` otherwise), using the existing create/PATCH source endpoint. The API reads
+only the routed incident and its first trigger log entry on fixed regional hosts;
+it refuses redirects, bounds responses and shares a ten-second deadline. Credentials
+and raw trigger/stack payloads never enter the normalized queue or source reads.
+
+Confirmed order number and supplier failure context group those native incidents
+into one EMODA dispatch episode. Changing failure context, a new initial occurrence
+or native reopening starts a separate episode. Retries/exhaustion without a new
+initial event may join the matching order/failure episode within 24 hours; later
+orphan retries start a new occurrence. Native child resolutions update that
+child, and a later retry retains the same explicit Cloud episode and saved report.
+Source REST failures expose `lastError` and reject acknowledgement so PagerDuty can
+retry; successful reads clear the error. Without a REST key, legacy native incident
+identity remains available, but cross-incident order grouping is not verified.
+Unrelated producer shapes retain native identity; never treat all EMODA alerts as
+false positives. The mapper cannot split a native incident already combining orders.
+Migration `0036_pagerduty_details` adds the write-only details credential and source
+health fields to the existing source table.
 
 The outbound CLI uses the existing investigation-request routes, extended with
 90-second leases, 25-second heartbeats, claim tokens, worker identity, attempts, and

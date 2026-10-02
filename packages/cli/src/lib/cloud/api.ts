@@ -481,7 +481,7 @@ export class CloudClient {
     private readonly signal?: AbortSignal,
   ) {}
 
-  listAlertSources(workspaceId: string): Promise<Array<{ provider: string; projectId: string | null; environment: string | null; enabled: boolean; serviceId: string | null }>> {
+  listAlertSources(workspaceId: string): Promise<Array<{ provider: string; projectId: string | null; environment: string | null; enabled: boolean; serviceId: string | null; hasApiToken?: boolean; apiRegion?: string; lastError?: string | null }>> {
     return this.request('GET', `/v1/workspaces/${workspaceId}/alert-sources`);
   }
   listAlertRequests(workspaceId: string, projectId: string, environment: string): Promise<Array<{ id: string; localReportId: string; hint: string; payload: Record<string, unknown>; projectId: string; environment: string }>> {

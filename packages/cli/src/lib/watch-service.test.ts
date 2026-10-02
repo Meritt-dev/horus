@@ -654,3 +654,57 @@ it('controller death closes worker IPC and terminates its detached group', async
     await running.catch(() => {});
   }
 });
+
+it('reuses an explicit Cloud episode through native child resolutions and starts an uninvestigated episode when active', async () => {
+  const root = temp();
+  vi.stubEnv('HORUS_DB_DIR', join(root, 'db'));
+  const h = await createLocalDb();
+  handles.push(h);
+  const initial = event({
+    source: 'pagerduty',
+    episode: 'cloud-episode-a',
+    eventId: 'resolved-first',
+    state: 'resolved',
+  });
+  await acceptEvents(h.db, 'route', [initial]);
+  expect((await jobs(h.db))[0]?.status).toBe('cancelled');
+  await acceptEvents(h.db, 'route', [
+    event({
+      ...initial,
+      eventId: 'retry-1',
+      incidentId: 'native-retry',
+      state: 'active',
+      occurredAt: '2026-09-27T01:05:00Z',
+    }),
+  ]);
+  const [active] = await jobs(h.db);
+  expect(active.status).toBe('pending');
+  expect(active.stage).toBe('engine');
+  expect(active.resolvedAt).toBeUndefined();
+  active.status = 'done';
+  active.stage = 'done';
+  active.attempts.engine = 1;
+  await saveJob(h.db, active);
+  await acceptEvents(h.db, 'route', [
+    event({
+      ...initial,
+      eventId: 'retry-2',
+      incidentId: 'different-native-id',
+      state: 'active',
+      occurredAt: '2026-09-27T01:20:00Z',
+    }),
+  ]);
+  expect(await jobs(h.db)).toHaveLength(1);
+  expect((await jobs(h.db))[0]?.reportId).toBe(active.reportId);
+  expect((await jobs(h.db))[0]?.stage).toBe('done');
+  await acceptEvents(h.db, 'route', [
+    event({
+      ...initial,
+      episode: 'cloud-episode-b',
+      eventId: 'new-occurrence',
+      state: 'active',
+      occurredAt: '2026-09-28T01:00:00Z',
+    }),
+  ]);
+  expect(await jobs(h.db)).toHaveLength(2);
+});

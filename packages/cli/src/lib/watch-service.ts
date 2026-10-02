@@ -245,23 +245,43 @@ export async function pollProject(
   if (active.filter((j) => !['done', 'cancelled'].includes(j.status)).length >= 500)
     throw new Error('Queue cap 500 reached; cursor retained, backlog deferred');
   if (p.source === 'pagerduty') {
+    const sources = await ctx.client.listAlertSources(ctx.config.workspace!.id);
+    const failing = sources.find(
+      (s) =>
+        s.provider === 'pagerduty' &&
+        s.enabled &&
+        s.projectId === ctx.config.project!.id &&
+        s.environment === p.environment &&
+        s.lastError,
+    );
+    const ingressError = failing
+      ? new Error(`PagerDuty ingress degraded: ${failing.lastError}`)
+      : undefined;
     // Claim only what this single executor can start now. Other requests remain durable in Cloud.
-    if (active.some((j) => !['done', 'cancelled', 'terminal-failed'].includes(j.status)))
+    if (
+      active.some((j) => !['done', 'cancelled', 'terminal-failed'].includes(j.status))
+    ) {
+      if (ingressError) throw ingressError;
       return;
+    }
     const requests = await ctx.client.listAlertRequests(
       ctx.config.workspace!.id,
       ctx.config.project!.id,
       p.environment,
     );
-    await withDb((db) =>
-      writeWatchState(db, `health:${route}`, {
-        lastSuccess: new Date().toISOString(),
-        failures: 0,
-        cloudPending: requests.length,
-      }),
-    );
+    if (!ingressError)
+      await withDb((db) =>
+        writeWatchState(db, `health:${route}`, {
+          lastSuccess: new Date().toISOString(),
+          failures: 0,
+          cloudPending: requests.length,
+        }),
+      );
     const request = requests[0];
-    if (!request) return;
+    if (!request) {
+      if (ingressError) throw ingressError;
+      return;
+    }
     const event = incidentEventSchema.parse({
       ...request.payload,
       hint: request.hint,
@@ -286,6 +306,7 @@ export async function pollProject(
         workerId,
       }),
     );
+    if (ingressError) throw ingressError; // Queue draining is independent of failed ingress enrichment.
     return;
   }
   const source =

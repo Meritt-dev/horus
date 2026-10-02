@@ -2,12 +2,13 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHmac } from 'node:crypto';
-import { runWatchService } from '../packages/cli/src/lib/watch-service.js';
+import { runWatchService, pollProject, serviceConfigSchema, routeKey } from '../packages/cli/src/lib/watch-service.js';
 import {
   jobs,
   saveJob,
   readWatchState,
   acceptEvents,
+  incidentEventSchema,
 } from '../packages/cli/src/lib/watch-store.js';
 import { writeAuth } from '../packages/cli/src/lib/cloud/auth-store.js';
 import { writeCloudConfig } from '../packages/cli/src/lib/cloud/context-store.js';
@@ -397,6 +398,171 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:'test-sessio
   assert.equal(cancelled.attempts.engine, undefined);
   assert.equal((await h.db.select().from(investigations)).length, 2);
   await h.sql.end();
+  // Exercise the actual routed API and local episode contract with separate native incidents.
+  const nativeFetch = globalThis.fetch;
+  const reason = 'One or more items do not have enough stock.';
+  const details: Record<string, unknown> = {
+    'order-initial': {
+      context: { orderNumber: 4085, brandType: 'EMODA' },
+      metadata: { operation: 'EMODACreateOrder' },
+      message: reason,
+    },
+    'order-retry': {
+      context: { workflow: 'SUPPLIER_DISPATCH_RETRY' },
+      message: `Supplier dispatch retry attempt 1/3 failed for order #4085 (aggregate:EMODA): ${reason}`,
+    },
+    'order-exhausted': {
+      context: { orderNumber: 4085, brandType: 'EMODA', lastError: reason },
+      metadata: { operation: 'supplierDispatchRetryExhausted' },
+    },
+  };
+  let apiUnauthorized = false;
+  globalThis.fetch = async (input, init) => {
+    const u = new URL(
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+    );
+    if (u.origin !== 'https://api.eu.pagerduty.com') return nativeFetch(input, init);
+    if (apiUnauthorized) return new Response('', { status: 401 });
+    const id = u.pathname.split('/').at(-1)!;
+    return new Response(
+      JSON.stringify(
+        u.pathname.startsWith('/incidents/')
+          ? {
+              incident: { id, service: { id: 'safqa' }, first_trigger_log_entry: { id } },
+            }
+          : { log_entry: { channel: { details: details[id] } } },
+      ),
+    );
+  };
+  try {
+    const groupedSource = await http(
+      `/v1/workspaces/${tenant.workspaceId}/alert-sources`,
+      {
+        name: 'Native order details',
+        provider: 'pagerduty',
+        serviceId: 'safqa',
+        projectId: tenant.projectId,
+        environment: 'production',
+        apiToken: 'fixture-read-only',
+        apiRegion: 'eu',
+        signingSecret: 'native-order-subscription-secret',
+      },
+    );
+    process.env.HORUS_DB_DIR = join(dir, 'order-grouping-db');
+    let groupedId: string | undefined;
+    let localReportId: string | undefined;
+    let groupedClaim: { localReportId: string; claimToken: string } | undefined;
+    for (const [i, [id, at, state]] of [
+      ['order-initial', '01:00', 'triggered'],
+      ['order-initial', '01:01', 'resolved'],
+      ['order-retry', '01:05', 'triggered'],
+      ['order-retry', '01:06', 'resolved'],
+      ['order-exhausted', '02:20', 'triggered'],
+    ].entries()) {
+      const body = JSON.stringify({
+        event: {
+          id: `native-order-${i}`,
+          event_type: state === 'resolved' ? 'incident.resolved' : 'incident.triggered',
+          occurred_at: `2026-09-27T${at}:00Z`,
+          data: {
+            id,
+            incident_key: id,
+            title: id,
+            status: state,
+            urgency: 'high',
+            html_url: `https://example.pagerduty.com/incidents/${id}`,
+            created_at: `2026-09-27T${id === 'order-initial' ? '01:00' : id === 'order-retry' ? '01:05' : '02:20'}:00Z`,
+            service: { id: 'safqa' },
+          },
+        },
+      });
+      const response = await fetch(`${base}/v1/alerts/${groupedSource.id}/pagerduty`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-pagerduty-signature': `v1=${createHmac('sha256', groupedSource.signingSecret).update(body).digest('hex')}`,
+        },
+        body,
+      });
+      const accepted = (await response.json()) as { id: string };
+      assert.equal(response.status, 202, JSON.stringify(accepted));
+      groupedId ??= accepted.id;
+      assert.equal(accepted.id, groupedId);
+      const [request] = await db
+        .select()
+        .from(investigationRequests)
+        .where(eq(investigationRequests.id, groupedId));
+      groupedClaim ??= await http(
+        `/v1/workspaces/${tenant.workspaceId}/investigation-requests/${groupedId}/claim`,
+        {
+          projectId: tenant.projectId,
+          environment: 'production',
+          workerId: 'grouping-worker',
+        },
+      );
+      localReportId ??= groupedClaim!.localReportId;
+      assert.equal(request.localReportId, localReportId);
+      h = await createLocalDb();
+      const incident = incidentEventSchema.parse({
+        ...request.payload,
+        hint: request.hint,
+        state: request.payload.state === 'resolved' ? 'resolved' : 'active',
+      });
+      await acceptEvents(h.db, 'native-order-route', [incident], undefined, {
+        requestId: groupedId!,
+        reportId: groupedClaim!.localReportId,
+        claimToken: groupedClaim!.claimToken,
+        workerId: 'grouping-worker',
+      });
+      const acceptedJobs = await jobs(h.db);
+      assert.equal(acceptedJobs.length, 1);
+      assert.equal(acceptedJobs[0]!.reportId, localReportId);
+      if (i === 0) {
+        acceptedJobs[0]!.attempts.engine = 1;
+        acceptedJobs[0]!.stage = 'done';
+        acceptedJobs[0]!.status = 'done';
+        await saveJob(h.db, acceptedJobs[0]!);
+      } else
+        assert.notEqual(
+          acceptedJobs[0]!.stage,
+          'engine',
+          'An unchanged explicit episode must reuse its saved checkpoint',
+        );
+      await h.sql.end();
+    }
+    // A failed details credential is visible without preventing claims of previously queued work.
+    apiUnauthorized = true;
+    const bad = JSON.parse(raw);
+    bad.event.id = 'details-auth-failure';
+    const body = JSON.stringify(bad);
+    const failedIngress = await fetch(`${base}/v1/alerts/${groupedSource.id}/pagerduty`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-pagerduty-signature': `v1=${createHmac('sha256', groupedSource.signingSecret).update(body).digest('hex')}`,
+      },
+      body,
+    });
+    assert.equal(failedIngress.status, 500);
+    await db
+      .update(investigationRequests)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(investigationRequests.id, groupedId!));
+    process.env.HORUS_DB_DIR = join(dir, 'ingress-degraded-db');
+    const liveLimits = serviceConfigSchema.parse(
+      JSON.parse(await readFile(settings, 'utf8')),
+    );
+    const project = liveLimits.projects[0]!;
+    await assert.rejects(
+      pollProject(project, 'degraded-source-worker', liveLimits),
+      /PagerDuty ingress degraded.*401/,
+    );
+    h = await createLocalDb();
+    assert.equal((await jobs(h.db, routeKey(project)))[0]?.cloudRequest?.id, groupedId);
+    await h.sql.end();
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
   console.log(
     'PASS: native PagerDuty -> authenticated lease -> real worker process -> saved engine -> exact Claude argv via fake executable -> Cloud report/memory -> idempotent notification retry; an in-flight same-timestamp PagerDuty update survives completion with one report/model call; durable AI checkpoint recovery and acknowledged severity updates without repeated inference; budget deferral and three invalid-AI retries preserve engine-only fallback',
   );
