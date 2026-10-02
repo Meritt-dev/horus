@@ -178,6 +178,8 @@ export function validateFieldMapping(m: ElasticsearchFieldMapping): void {
 // ---------------------------------------------------------------------------
 
 export interface LogRecord {
+  /** Native Elasticsearch document identity, separate from user-authored _source fields. */
+  documentId?: string;
   timestamp: string;
   level: LogLevel;
   levelValue: number;
@@ -601,6 +603,7 @@ export function normalizeHit(
   const index = typeof h['_index'] === 'string' ? h['_index'] : '';
 
   return {
+    ...(typeof h['_id'] === 'string' ? { documentId: h['_id'] } : {}),
     timestamp,
     level,
     levelValue,

@@ -193,11 +193,14 @@ try {
     let all = await jobs(h.db);
     assert.equal(all.length, kind === 'sentry' ? 1 : 2);
     assert(!JSON.stringify(all).includes('never-export-this'));
-    if (kind === 'elasticsearch')
+    if (kind === 'elasticsearch') {
+      assert.equal(all.find((j) => j.event.orderId === 'a')?.event.eventId, 'logs:initial');
+      assert.equal(all.find((j) => j.event.orderId === 'b')?.event.eventId, 'logs:different');
       assert.equal(
         all.find((j) => j.event.orderId === 'a')?.latestEvent?.severity,
         'critical',
       );
+    }
     else assert.equal(await readWatchState(h.db, `cursor:${routeKey(p)}`), undefined);
     await h.sql.end();
     if (kind === 'sentry') {

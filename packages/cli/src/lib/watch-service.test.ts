@@ -28,6 +28,7 @@ import {
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
 import { memorySyncContext } from './cloud/memory-sync.js';
+import { normalizeHit } from '@horus/connectors';
 import type { InvestigationReport } from '@horus/engine';
 // Cold PGlite startup competes with the workspace suites on CI. Runtime budgets remain tested below.
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
@@ -523,6 +524,18 @@ it('launchd uses argument array and explicit auth paths; no shell or API key req
   expect(xml).toContain('a &amp; b.json');
   expect(xml).toContain('<key>HOME</key>');
   expect(xml).not.toContain('/bin/sh');
+});
+it('preserves native ES document identity independently of coincident payloads or source-supplied IDs', () => {
+  const hit = { _index: 'logs', _id: 'native-a', _source: {
+    time: '2026-09-27T01:00:00Z', level: 50, message: 'Fetch products error',
+    event_code: 'EMODA_011_04', _id: 'source-spoof',
+  } };
+  const a = elasticEvent(normalizeHit(hit), 'production');
+  const b = elasticEvent(normalizeHit({ ...hit, _id: 'native-b' }), 'production');
+  expect(a.eventId).toBe('logs:native-a');
+  expect(b.eventId).toBe('logs:native-b');
+  expect(a.fingerprint).toBe(b.fingerprint);
+  expect(JSON.stringify(a)).not.toContain('source-spoof');
 });
 it('normalizes actual ES fields without exporting raw payloads and groups workflow retries by order', () => {
   const record = {

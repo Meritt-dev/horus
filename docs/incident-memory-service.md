@@ -55,6 +55,8 @@ messages, different recorded statuses or actual errors, operation/workflow
 conflicts and confirmed outcomes retain strict matching. Recurrence consolidation
 keeps its existing identity guards. Cloud preserves the native source, event ID
 and logger code when restoring this context on another profile.
+Polling retains Elasticsearch's native `_index`/`_id` identity separately from
+untrusted source fields; a content digest is used only when no document ID exists.
 Set `HORUS_STARTUP_RECALL=0` to disable startup recall while keeping stored history.
 
 The local dirty generation and frozen outbox survive process exit and a lost HTTP

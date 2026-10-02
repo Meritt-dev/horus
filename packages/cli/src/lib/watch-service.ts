@@ -163,13 +163,13 @@ export function elasticEvent(record: LogRecord, environment: string): IncidentEv
   const workflow = string(
     field('workflow', 'workflowName', 'workflow_name', 'operation'),
   );
-  const nativeId = record.raw['_id'];
+  const nativeId = record.documentId;
   return incidentEventSchema.parse({
     source: 'elasticsearch',
     eventId:
       typeof nativeId === 'string'
         ? `${record.index}:${nativeId}`
-        : digest([record.index, record.timestamp, record.message, c]),
+        : digest([record.index, record.timestamp, record.eventCode, record.message, c]),
     incidentId:
       orderId ??
       record.traceId ??
