@@ -198,7 +198,8 @@ uses the existing report annotation; deterministic scoring remains authoritative
 The engine saves before Claude starts. AI, upload, notification, and Cloud completion
 checkpoint separately. The validated Claude result is saved before report annotation;
 recovery reuses its session/result instead of repeating inference. Three invalid/model failures produce a labeled engine-only
-report. Deadlines/cancellation terminate subprocess groups and descendants. A missing
+report. Deadlines/cancellation terminate subprocess groups and descendants, and retain
+the deadline, shutdown or claim-loss reason in status instead of generic cancellation. A missing
 or stale source index is reported; the service does not run indexing per incident.
 
 ## PagerDuty and the Cloud queue
@@ -313,16 +314,17 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check | Production rates, healthy-path latency and week-long cost calibration |
 
-The local end-to-end pilot was stopped when local tests were prohibited. Its prior
-runtime phase covered about 38 minutes, not the required 72 hours. The user clarified
-that normal real-project service operation is allowed. The retained read-only Maison
-Safqa Elasticsearch watcher resumed on September 28 at 17:02 UTC, with a new 72-hour
-window ending October 1 at 17:02 UTC. It uses separate local Cloud storage,
-notifications off and unchanged budgets; no local test or fault-injection scripts
-run during this window. Physical lifecycle coverage remains unverified. Historical
-private-history replay and real authenticated Opus evidence remain valid for their
-recorded scope; they do not establish human-attested accuracy or current production
-readiness. Automated verification scripts remain in hosted CI.
+The read-only Maison Safqa Elasticsearch pilot completed its September 28–October 1
+72-hour elapsed window using frozen runtime `08db520`, isolated local Cloud storage,
+notifications off and unchanged budgets. It completed 60 additional jobs, ending with
+90 distinct report IDs, no remaining jobs and no pending memory sync. Of the 90 reports,
+87 retained validated Opus interpretations and three used labeled engine-only fallback.
+An actual shutdown/reboot caused a ten-hour observation gap; LaunchAgents recovered the
+same history after login. This is elapsed-window and reboot-recovery evidence, rather
+than 72 hours of continuous online availability. The subsequent cancellation-diagnostic
+fix is outside this recorded window. Physical sleep/wake, second-machine restoration,
+production subscriptions/delivery and human-attested recall quality remain unverified.
+No local automated test or fault-injection scripts ran during the window.
 
 Before release, verify production rules/subscriptions and destination policies,
 private report storage and migrations, then complete the labeled recall holdout

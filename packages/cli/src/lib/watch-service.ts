@@ -376,18 +376,22 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
   delete process.env.ANTHROPIC_AUTH_TOKEN;
   const controller = new AbortController();
   let termination: ReturnType<typeof setTimeout> | undefined;
-  const stop = () => {
-    controller.abort();
+  const stop = (reason: unknown) => {
+    controller.abort(reason);
     termination ??= setTimeout(() => process.exit(124), 2000);
   };
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
+  const stopBySignal = () => stop(new Error('Worker interrupted by signal'));
+  process.once('SIGTERM', stopBySignal);
+  process.once('SIGINT', stopBySignal);
   // A supervised worker owns its detached group. Controller death closes IPC;
   // stop the group immediately so no orphan can outlive the supervisor deadline.
   const parentGone = () => process.kill(-process.pid, 'SIGKILL');
   if (process.connected) process.once('disconnect', parentGone);
   const deadline = Date.now() + config.deadlineSeconds * 1000;
-  const timer = setTimeout(stop, config.deadlineSeconds * 1000);
+  const timer = setTimeout(
+    () => stop(new Error('Investigation deadline exceeded')),
+    config.deadlineSeconds * 1000,
+  );
   let context: Awaited<ReturnType<typeof buildInvestigationContext>> | undefined;
   let job: WatchJobData | undefined;
   let previousAttempts: WatchJobData['attempts'] = {};
@@ -476,7 +480,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       `budget:${day}`,
     )) ?? { investigations: 0, modelCalls: 0 };
     const save = async () => {
-      if (controller.signal.aborted) throw new Error('Job cancelled or claim lost');
+      controller.signal.throwIfAborted();
       await saveJob(db, job!);
       // The supervisor alone writes status.json; IPC avoids a second PGlite reader or file writer.
       if (process.connected)
@@ -776,8 +780,8 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     if (termination) clearTimeout(termination);
     if (heartbeat) clearInterval(heartbeat);
     if (context) await disposeInvestigationContext(context);
-    process.removeListener('SIGTERM', stop);
-    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stopBySignal);
+    process.removeListener('SIGINT', stopBySignal);
     process.removeListener('disconnect', parentGone);
   }
 }
@@ -789,7 +793,7 @@ export async function runWatchService(settings: string, once = false): Promise<v
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const release = await acquireDbLock(join(home, 'worker'), 100);
   const controller = new AbortController();
-  const stop = () => controller.abort();
+  const stop = () => controller.abort(new Error('Service interrupted by signal'));
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
   try {

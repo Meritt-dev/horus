@@ -68,8 +68,10 @@ export function runProcess(
   },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    const abortError = () =>
+      options.signal?.reason instanceof Error ? options.signal.reason : new Error('Cancelled');
     if (options.signal?.aborted) {
-      reject(new Error('Cancelled'));
+      reject(abortError());
       return;
     }
     const child = spawn(executable, args, {
@@ -86,8 +88,8 @@ export function runProcess(
     let error = '';
     let failure: Error | undefined;
     let killer: ReturnType<typeof setTimeout> | undefined;
-    const stop = (reason: string) => {
-      failure ??= new Error(reason);
+    const stop = (reason: Error) => {
+      failure ??= reason;
       try {
         if (options.inheritProcessGroup) child.kill('SIGTERM');
         else if (child.pid) process.kill(-child.pid, 'SIGTERM');
@@ -103,16 +105,16 @@ export function runProcess(
         }
       }, 1500);
     };
-    const cancel = () => stop('Cancelled');
+    const cancel = () => stop(abortError());
     const timer = setTimeout(
-      () => stop('Subprocess deadline exceeded'),
+      () => stop(new Error('Subprocess deadline exceeded')),
       options.timeoutMs,
     );
     options.signal?.addEventListener('abort', cancel, { once: true });
     child.stdout!.on('data', (b) => {
       if (output.length + b.length > 2_000_000) {
         child.stdout!.pause();
-        stop('Subprocess output limit exceeded');
+        stop(new Error('Subprocess output limit exceeded'));
       } else output += b.toString();
     });
     child.stderr!.on('data', (b) => {

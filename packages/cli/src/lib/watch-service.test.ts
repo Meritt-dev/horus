@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, acquireDbLock, type DbHandle } from '@horus/db';
@@ -469,6 +469,36 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
   await expect(
     runProcess(process.execPath, [file], { cwd: root, timeoutMs: 2000 }),
   ).rejects.toThrow('run claude auth login');
+});
+it('preserves the caller abort reason before spawn and while killing a running child', async () => {
+  const root = temp();
+  const file = join(root, 'waiting.cjs');
+  const pidFile = join(root, 'pid');
+  const reason = new Error('Investigation deadline exceeded');
+  writeFileSync(file, `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`);
+  await expect(runProcess(process.execPath, [file], {
+    cwd: root, timeoutMs: 5000, signal: AbortSignal.abort(reason),
+  })).rejects.toBe(reason);
+  expect(existsSync(pidFile)).toBe(false);
+
+  const controller = new AbortController();
+  const running = runProcess(process.execPath, [file], {
+    cwd: root, timeoutMs: 10000, signal: controller.signal,
+  });
+  const rejected = expect(running).rejects.toBe(reason);
+  try {
+    const deadline = Date.now() + 5000;
+    while (!existsSync(pidFile) && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(existsSync(pidFile)).toBe(true);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    controller.abort(reason);
+    await rejected;
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    controller.abort(reason);
+    await running.catch(() => {});
+  }
 });
 it('launchd uses argument array and explicit auth paths; no shell or API key requirement', () => {
   const c = serviceConfigSchema.parse({
