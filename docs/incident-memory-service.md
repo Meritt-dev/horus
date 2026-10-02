@@ -239,7 +239,7 @@ initial event may join the matching order/failure episode within 24 hours; later
 orphan retries start a new occurrence. Native child resolutions update that
 child, and a later retry retains the same explicit Cloud episode and saved report.
 Source REST failures expose `lastError` and reject acknowledgement so PagerDuty can
-retry; successful reads clear the error. Without a REST key, legacy native incident
+retry; successful transactional acceptance clears the error. Without a REST key, legacy native incident
 identity remains available, but cross-incident order grouping is not verified.
 Unrelated producer shapes retain native identity; never treat all EMODA alerts as
 false positives. The mapper cannot split a native incident already combining orders.
@@ -351,3 +351,20 @@ and 72-hour selected-project soak including physical lifecycle and network loss.
 No production automator activation is declared while these gates remain open.
 Azure/AWS/Grafana triggers, managed execution, Linux packaging and PRD 03 remain
 later scope. Cloud ingestion does not imply always-on investigation execution.
+
+For the chronological recall gate, run the existing history replay only in hosted CI:
+
+```sh
+HORUS_RECALL_HISTORY=/private/readable-history.json \
+HORUS_RECALL_LABELS=/private/recall-review.json \
+pnpm exec tsx scripts/test-recall-history.ts
+```
+
+The review contains `reviewer`, `version`, and `cases`. Each case names an exported
+report `id`, an exhaustive `relevantReportIds` list (empty for an unrelated case),
+a `rationale`, and `sourceRefs`. Review relevance independently of retrieval output
+and headline-accuracy labels. Relevant reports must precede the query report;
+future/self references and non-earlier recalled records are rejected. The result
+reports both sample sizes, rates, misses and false matches, and exits unsuccessfully
+unless both strata exist and meet the proposed 90%/95% targets. Unlabeled replay
+remains diagnostic only. Pilot outcome annotations are added after scoring.
