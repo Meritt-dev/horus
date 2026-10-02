@@ -533,12 +533,15 @@ it('normalizes actual ES fields without exporting raw payloads and groups workfl
     index: 'logs',
     eventCode: 'DISPATCH_RETRY',
     service: 'safqa',
-    context: { order_id: '42', workflow: 'supplierDispatch', password: 'secret' },
+    context: { order_id: '42', workflow: 'supplierDispatch', operation: 'reserve', password: 'secret' },
     raw: { large: 'do not retain' },
   } as import('@horus/connectors').LogRecord;
   const e = elasticEvent(record, 'production');
   expect(e.orderId).toBe('42');
   expect(e.workflow).toBe('supplierDispatch');
+  expect(e.operation).toBe('reserve');
+  expect(e.eventCode).toBe('DISPATCH_RETRY');
+  expect(e.errorCode).toBeUndefined();
   expect(e.severity).toBe('critical');
   expect(JSON.stringify(e)).not.toContain('password');
   expect(JSON.stringify(e)).not.toContain('do not retain');
@@ -560,6 +563,7 @@ it('retains real supplier failure identity without conflating stock and indeterm
   } as import('@horus/connectors').LogRecord;
   const reserve = elasticEvent(record, 'production');
   expect(reserve.errorCode).toBe('ETIMEDOUT');
+  expect(reserve.eventCode).toBe('EMODA_017D');
   expect(reserve.hint).toContain('HTTP 503; ETIMEDOUT; indeterminate');
   expect(reserve.correlationId).toBe('request-a');
   const stock = elasticEvent(

@@ -20,6 +20,7 @@ export const incidentEventSchema = z.object({
   workflow: z.string().optional(),
   correlationId: z.string().optional(),
   errorCode: z.string().optional(),
+  eventCode: z.string().max(255).optional(),
   operation: z.string().optional(),
 });
 export type IncidentEvent = z.infer<typeof incidentEventSchema>;

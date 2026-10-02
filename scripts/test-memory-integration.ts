@@ -97,7 +97,8 @@ try {
       hint: 'EMODA reserve ETIMEDOUT 503',
       repo: ctx.repo,
       environment: 'production',
-      incident: { errorCode: 'ETIMEDOUT' },
+      incident: { errorCode: 'ETIMEDOUT', eventCode: 'EMODA_017D',
+        fingerprint: 'EMODA_017D:ETIMEDOUT:indeterminate:503', source: 'elasticsearch', eventId: 'logs:reserve-a' },
     },
     { code: null, db: a.db, store: createLocalMemoryStore(a.db) },
   );
@@ -139,6 +140,10 @@ try {
   );
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0]!.outcome?.certainty, 'inferred');
+  assert.equal(candidates[0]!.outcome?.applicability.source, 'elasticsearch');
+  assert.equal(candidates[0]!.outcome?.applicability.eventId, 'logs:reserve-a');
+  assert.equal(candidates[0]!.outcome?.applicability.eventCode, 'EMODA_017D');
+  assert.equal(candidates[0]!.outcome?.applicability.errorCode, 'ETIMEDOUT');
   assert(Object.keys(candidates[0]!.reportRefs).includes(report.id));
   assert(await restoreMemoryReport(b.db, second, report.id));
   assert.equal(

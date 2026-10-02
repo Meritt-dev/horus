@@ -346,14 +346,14 @@ export async function recallMemory(
 
 /** Structured trigger context is available before hypotheses exist. */
 export interface IncidentContext {
-  fingerprint?: string; errorCode?: string; workflow?: string; operation?: string;
+  fingerprint?: string; eventCode?: string; errorCode?: string; workflow?: string; operation?: string;
   incidentId?: string; eventId?: string; occurredAt?: string; source?: string; sourceUrl?: string;
 }
 export interface IncidentDisposition {
   disposition: 'confirmed-incident' | 'expected-behavior' | 'duplicate-alert' | 'monitoring-error' | 'unknown';
   certainty: 'confirmed' | 'inferred'; actualCause?: string; resolution?: string;
   sourceInvestigation: string; sourceRefs: string[]; attester?: string; verifiedAt?: string;
-  applicability: Pick<IncidentContext, 'fingerprint' | 'errorCode' | 'workflow' | 'operation' | 'source' | 'eventId'> &
+  applicability: Pick<IncidentContext, 'fingerprint' | 'eventCode' | 'errorCode' | 'workflow' | 'operation' | 'source' | 'eventId'> &
     { service?: string; environment?: string; conditions?: string[] };
   invalidatingConditions: string[]; checks: string[];
 }
@@ -377,7 +377,7 @@ export function readIncidentDisposition(value: unknown): IncidentDisposition | n
       typeof v.verifiedAt !== 'string' || !Number.isFinite(Date.parse(v.verifiedAt)) || !v.sourceRefs.length)) return null;
   const applicability: IncidentDisposition['applicability'] = {};
   const a = v.applicability as Record<string, unknown>;
-  for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation', 'service', 'environment', 'source', 'eventId'] as const)
+  for (const key of ['fingerprint', 'eventCode', 'errorCode', 'workflow', 'operation', 'service', 'environment', 'source', 'eventId'] as const)
     if (typeof a[key] === 'string') applicability[key] = a[key];
   if (strings(a.conditions)) applicability.conditions = a.conditions;
   return { disposition: v.disposition as IncidentDisposition['disposition'], certainty: v.certainty as IncidentDisposition['certainty'],
@@ -387,6 +387,20 @@ export function readIncidentDisposition(value: unknown): IncidentDisposition | n
     ...(typeof v.resolution === 'string' ? { resolution: v.resolution } : {}),
     ...(typeof v.attester === 'string' ? { attester: v.attester } : {}),
     ...(typeof v.verifiedAt === 'string' ? { verifiedAt: v.verifiedAt } : {}) };
+}
+
+/** Recognize only the watcher's native-code-only fingerprint, including its legacy errorCode fallback. */
+function loggerOnlyMessage(incident: IncidentContext, hint: string): string | undefined {
+  const native = incident.eventCode ?? incident.errorCode;
+  if (incident.source !== 'elasticsearch' || !incident.eventId || !native ||
+      (incident.eventCode && incident.errorCode) || !hint.startsWith(`${native} `)) return;
+  const tail = incident.fingerprint?.startsWith(native) ? incident.fingerprint.slice(native.length) : undefined;
+  if (tail === undefined || !/^(?::[1-5][0-9]{2})?$/.test(tail)) return;
+  const message = hint.slice(native.length).trim().toLowerCase().replace(/\s+/g, ' ');
+  const { shared } = incidentHintOverlap(message, message);
+  // Generic wrapper messages cannot establish an operation across different logger codes.
+  if (shared.length < 2 || shared.every(word => ['store', 'client'].includes(word))) return;
+  return `${tail}:${message}`;
 }
 
 /** Bounded, deterministic startup retrieval. No hypothesis/category from the current run is used. */
@@ -409,13 +423,20 @@ export async function recallStartupIncidents(
     const applicability = outcome?.applicability ?? {};
     if (applicability.environment && input.environment && applicability.environment !== input.environment) continue;
     if (applicability.service && input.service && applicability.service !== input.service) continue;
+    const priorHint = typeof payload.hint === 'string' ? payload.hint : item.claim;
+    const priorMessage = loggerOnlyMessage(applicability, priorHint);
+    // This is useful prior operation context, not proof of a cause or recurrence consolidation.
+    const loggerContext = item.kind === 'investigation' && outcome?.disposition === 'unknown' &&
+      outcome.certainty === 'inferred' && !outcome.actualCause && !outcome.resolution &&
+      priorMessage !== undefined && priorMessage === loggerOnlyMessage(input.incident ?? {}, input.hint);
     const fields: string[] = []; let mismatch = false;
     for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation'] as const) {
+      if (loggerContext && (key === 'fingerprint' || key === 'errorCode')) continue;
       const expected = applicability[key]; const actual = input.incident?.[key];
       if (expected && actual) { if (expected !== actual) mismatch = true; else fields.push(key); }
     }
     if (mismatch) continue;
-    const { shared, overlap } = incidentHintOverlap(input.hint, typeof payload.hint === 'string' ? payload.hint : item.claim);
+    const { shared, overlap } = incidentHintOverlap(input.hint, priorHint);
     // ponytail: conservative lexical fallback; replace only after chronological replay improves it.
     if (!fields.length && (shared.length < 2 || overlap < 0.45)) continue;
     if (shared.length) fields.push(`hint:${shared.join(',')}`);

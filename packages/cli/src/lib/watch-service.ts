@@ -191,7 +191,9 @@ export function elasticEvent(record: LogRecord, environment: string): IncidentEv
     workflow,
     correlationId:
       string(field('correlationId', 'correlation_id')) ?? record.traceId ?? requestId,
-    errorCode: errorCode ?? record.eventCode,
+    eventCode: record.eventCode,
+    errorCode,
+    operation: string(field('operation')),
   });
 }
 

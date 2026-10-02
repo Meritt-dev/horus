@@ -48,6 +48,13 @@ as message/context fields. Supplier error codes are not assumed to be logger cod
 Recorded provider/event identity survives sync and suppresses repeated reports for
 the same event in the shortlist. Legacy records without that identity retain their
 existing report-based grouping.
+Native Elasticsearch logger codes are stored separately from actual supplier
+error codes. An unknown, inferred history item with the same specific log message
+may supply unverified operation context across logger codes; generic wrapper
+messages, different recorded statuses or actual errors, operation/workflow
+conflicts and confirmed outcomes retain strict matching. Recurrence consolidation
+keeps its existing identity guards. Cloud preserves the native source, event ID
+and logger code when restoring this context on another profile.
 Set `HORUS_STARTUP_RECALL=0` to disable startup recall while keeping stored history.
 
 The local dirty generation and frozen outbox survive process exit and a lost HTTP
