@@ -112,7 +112,7 @@ it('recalls the same specific logger message across codes without relaxing actua
   expect(await recallStartupIncidents(store, { ...q, hint: 'ERR243_05 Store client error.',
     incident: { source: 'elasticsearch', eventId: 'logs:wrapper-b', errorCode: 'ERR243_05', fingerprint: 'ERR243_05' } })).toEqual([]);
   const item = await store.get('catalog');
-  const payload = item!.payload!;
+  const payload = item!.payload as Record<string, unknown>;
   await store.update('catalog', { payload: { ...payload, outcome: {
     ...(payload.outcome as object), disposition: 'confirmed-incident', certainty: 'confirmed',
     attester: 'Fixture', verifiedAt: '2026-09-27T00:00:00Z', sourceRefs: ['fixture:verification'],
