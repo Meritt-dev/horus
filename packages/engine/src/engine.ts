@@ -1560,7 +1560,8 @@ export async function investigate(
       // Supplier codes may live in context rather than the logger's native event-code field.
       const records = deps.logs ? await deps.logs.queryEvidence({ service: input.service,
         from: logWindowFrom(input.logsSince ?? input.since), limit: 10,
-        text: candidate.outcome?.applicability.errorCode ?? input.hint, broadText: true }, collectedAt) : [];
+        text: candidate.outcome?.applicability.errorCode ?? input.incident?.eventCode ??
+          candidate.outcome?.applicability.eventCode ?? input.hint, broadText: true }, collectedAt) : [];
       const checked = records.map(ev => mkEv(ev.kind, ev.title, ev.payload, ev.links ?? {}, ev.timestamp, ev.relevance));
       recallTrace.push({ memoryId: candidate.memoryId, check, stage: deps.logs ? 'before-broad-collection' : 'provider-unavailable', evidenceIds: checked.map(e => e.id) });
     } catch (error) {
