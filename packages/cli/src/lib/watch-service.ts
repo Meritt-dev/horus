@@ -115,8 +115,12 @@ function log(message: string) {
   const home = serviceHome();
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const file = join(home, 'service.log');
-  const safe = redactErrorMessage(new Error(message));
-  const line = `${new Date().toISOString()} ${safe.length > 8192 ? `${safe.slice(0, 8192)} [truncated]` : safe}\n`;
+  // Omit oversized diagnostics before regex redaction; cutting a credential
+  // mid-value could expose it, and unbounded redaction can stall the supervisor.
+  const safe = message.length > 8192
+    ? '[truncated] Diagnostic exceeded 8192 characters'
+    : redactErrorMessage(new Error(message));
+  const line = `${new Date().toISOString()} ${safe}\n`;
   if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > 1_000_000)
     renameSync(file, `${file}.1`);
   appendFileSync(
@@ -126,7 +130,7 @@ function log(message: string) {
   );
 }
 export function recordServiceFailure(error: unknown): void {
-  log(`Supervisor stopped: ${redactErrorMessage(error)}`);
+  log(`Supervisor stopped: ${error instanceof Error ? error.message : String(error)}`);
 }
 export function sentryEvent(issue: SentryIssue, environment: string): IncidentEvent {
   if (!issue.lastSeen) throw new Error('Sentry issue has no occurrence time');

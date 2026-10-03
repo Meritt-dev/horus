@@ -530,8 +530,9 @@ it('redacts fatal diagnostics and bounds current and previous service logs', () 
   const file = join(root, 'service', 'service.log');
   expect(readFileSync(file, 'utf8')).not.toContain('diagnostic-secret-value');
   writeFileSync(file, 'previous\n' + 'x'.repeat(999_950), { mode: 0o600 });
-  recordServiceFailure(new Error('x'.repeat(2_000_000)));
+  recordServiceFailure(new Error(`https://user:${'diagnostic-secret-value'.repeat(100_000)}@host`));
   expect(readFileSync(file, 'utf8')).toContain('[truncated]');
+  expect(readFileSync(file, 'utf8')).not.toContain('diagnostic-secret-value');
   expect(readFileSync(`${file}.1`, 'utf8')).toMatch(/^previous\n/);
   expect(statSync(file).size).toBeLessThan(1_000_000);
   expect(statSync(`${file}.1`).size).toBeLessThan(1_000_000);
