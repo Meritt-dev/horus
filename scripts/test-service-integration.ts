@@ -264,6 +264,16 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   assert.equal(completedRuns[0].model, 'claude-opus-5-5');
   assert.equal(completedRuns[0].agent, 'Horus background worker');
   assert(Date.parse(completedRuns[0].endedAt) >= Date.parse(completedRuns[0].startedAt));
+  const logsResponse = await fetch(`${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs/${completedRuns[0].id}/logs`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  assert.equal(logsResponse.status, 200);
+  const runLogs = await logsResponse.json();
+  assert.equal(runLogs.logsFormat, 'application/vnd.horus.activity+json');
+  const timeline = JSON.parse(runLogs.logs);
+  assert(timeline.events.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start'));
+  assert(timeline.events.some((a: any) => a.action === 'complete'));
+  assert(timeline.result.includes('Next check:'));
+  assert(!runLogs.logs.includes('DO NOT UPLOAD'));
+  assert.equal(completedRuns.length, 1, 'Early memory sync and final timeline keep one run');
   assert.equal(deliveries.size, 1);
   assert.equal(sends, 2);
   const [cloudPending] = await db

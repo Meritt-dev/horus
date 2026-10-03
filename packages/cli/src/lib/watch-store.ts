@@ -40,6 +40,7 @@ export interface WatchJobData {
   pid?: number;
   resolvedAt?: string;
   cloudReportId?: string;
+  cloudAgentRunId?: string;
   cloudUrl?: string;
   cloudRequest?: { id: string; claimToken: string; workerId: string };
   ai?: { sessionId: string; model: string; result: unknown };

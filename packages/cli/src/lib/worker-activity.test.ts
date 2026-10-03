@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { activityPath, claudeActivityArgs, hookActivity, readActivity, workerActivitySchema } from './worker-activity.js';
+import { activityPath, claudeActivityArgs, hookActivity, readActivity, workerActivitySchema, workerRunLogs } from './worker-activity.js';
 
 it('isolates the Claude session, discards raw content, bounds records and quotes trusted hook arguments', () => {
   const session = randomUUID(), job = randomUUID();
@@ -28,4 +28,14 @@ it('isolates the Claude session, discards raw content, bounds records and quotes
     expect(readActivity(path, randomUUID())).toEqual([]);
     expect(() => activityPath(dir, '../../escape')).toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('saves bounded finite run activity and the final answer without raw hook content', () => {
+  const event = hookActivity({ session_id: 'session', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: 'secret' }, 'session', randomUUID())!;
+  const saved = workerRunLogs(Array(110).fill(event), { what: 'Observed failure', why: 'Cause uncertain', whereNext: ['Check runtime'], confidence: 0.5, citations: [{ evidenceId: 'e-1' }] });
+  expect(saved.logsFormat).toBe('application/vnd.horus.activity+json');
+  expect(JSON.parse(saved.logs).events).toHaveLength(100);
+  expect(JSON.parse(saved.logs).result).toContain('Next check: Check runtime');
+  expect(saved.logs).not.toContain('secret');
+  expect(() => workerRunLogs([{ ...event, command: 'secret' } as any])).toThrow();
 });

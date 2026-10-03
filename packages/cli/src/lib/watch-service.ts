@@ -56,7 +56,7 @@ import {
   redactCloudValue,
 } from './cloud/investigation-sync.js';
 import { dispatchNotify, notificationCause } from './notify-sink.js';
-import { activityEvent, activityPath, claudeActivityArgs, readActivity, type WorkerActivity } from './worker-activity.js';
+import { activityEvent, workerRunLogs, activityPath, claudeActivityArgs, readActivity, type WorkerActivity } from './worker-activity.js';
 
 const absolute = z.string().refine(isAbsolute, 'Absolute path required');
 export const serviceConfigSchema = z
@@ -661,9 +661,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           {
             db,
             runTiming: { startedAt: job.startedAt, endedAt: job.analysisEndedAt },
+            runActivity: job.activity ?? [],
           },
         );
         job.cloudReportId = refs.investigationId;
+        job.cloudAgentRunId = refs.agentRunId;
         job.cloudUrl = `${config.cloudWebUrl.replace(/\/$/, '')}/${[cloud.config.organization!.slug, cloud.config.workspace!.slug, cloud.config.project!.slug, 'investigations', refs.investigationId].map(encodeURIComponent).join('/')}`;
         const sync = await syncLinkedMemory(db, p.root, p.project);
         if (sync.state !== 'Synced')
@@ -715,6 +717,10 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       }
     }
     if (job.stage === 'complete') {
+      // Retry delivery of the saved timeline, never inference, if Cloud is unavailable.
+      if (job.cloudAgentRunId && job.cloudReportId)
+        await cloud.client.updateAgentRun(cloud.config.project!.id, job.cloudReportId, job.cloudAgentRunId,
+          workerRunLogs(job.activity ?? [], report?.aiJudgment));
       if (job.cloudRequest) {
         const complete = () =>
           cloud.client.alertRequest(
@@ -753,6 +759,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       if (activityTimer) clearInterval(activityTimer);
       await activitySend;
       await publishActivity();
+      if (job.cloudAgentRunId && job.cloudReportId) {
+        try { await cloud.client.updateAgentRun(cloud.config.project!.id, job.cloudReportId, job.cloudAgentRunId,
+          workerRunLogs(job.activity ?? [], report?.aiJudgment)); }
+        catch { /* The durable pre-completion timeline is already saved; completion remains authoritative. */ }
+      }
     }
   } catch (error) {
     if (activityTimer) clearInterval(activityTimer);

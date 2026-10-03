@@ -1,3 +1,4 @@
+import { workerRunLogs, type WorkerActivity } from "../worker-activity.js";
 import { createHash } from 'node:crypto';
 /**
  * Reusable cloud write-path library (HOR-239): persist and retrieve a Horus
@@ -58,6 +59,7 @@ function cloudEvidenceType(kind: string): string {
 }
 
 export interface CloudInvestigationRefs {
+  agentRunId?: string;
   projectId: string;
   investigationId: string;
 }
@@ -352,7 +354,7 @@ export async function uploadInvestigationToCloud(
   client: CloudClient,
   cfg: CloudConfig,
   report: InvestigationReport,
-  opts: { db?: HorusDb; runTiming?: { startedAt: string; endedAt: string } } = {},
+  opts: { db?: HorusDb; runTiming?: { startedAt: string; endedAt: string }; runActivity?: WorkerActivity[] } = {},
 ): Promise<CloudInvestigationRefs> {
   if (!cfg.project) {
     throw new Error("Cloud config is missing a linked project.");
@@ -391,6 +393,7 @@ export async function uploadInvestigationToCloud(
     agent: report.unattended?.engineOnly ? "Horus background worker · engine only" : report.unattended ? "Horus background worker" : "Horus CLI",
     model: report.unattended?.status === 'completed' ? report.unattended.model : undefined,
     ...opts.runTiming,
+    ...(opts.runActivity ? workerRunLogs(opts.runActivity, report.aiJudgment) : {}),
     cliVersion: HORUS_VERSION,
     summary: report.summary,
   };
@@ -400,12 +403,12 @@ export async function uploadInvestigationToCloud(
   });
   // Memory sync may have created this stable run before inference completed.
   // Enrich that same record; a later metadata-only backfill must not erase timing/model.
-  if (report.unattended || opts.runTiming)
+  if (report.unattended || opts.runTiming || opts.runActivity)
     await client.updateAgentRun(projectId, investigation.id, run.id, runMetadata);
 
   await client.updateInvestigation(projectId, investigation.id, { status: "completed" });
 
-  return { projectId, investigationId: investigation.id };
+  return { projectId, investigationId: investigation.id, agentRunId: run.id };
 }
 
 function findReportEvidence(evidence: EvidenceRecord[]): InvestigationReport | null {

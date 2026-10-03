@@ -722,7 +722,7 @@ export class CloudClient {
   /** Complete metadata for a run already created by durable memory/report sync. */
   updateAgentRun(
     projectId: string, investigationId: string, runId: string,
-    body: { agent?: string; model?: string; startedAt?: string; endedAt?: string; summary?: string },
+    body: { agent?: string; model?: string; startedAt?: string; endedAt?: string; summary?: string; logs?: string; logsFormat?: string },
   ): Promise<AgentRunRecord> {
     return this.request<AgentRunRecord>("PATCH", `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs/${runId}`, body);
   }

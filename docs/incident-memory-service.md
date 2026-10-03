@@ -421,3 +421,5 @@ contract. No local automated test, integration, replay or lifecycle scripts shou
 be run.
 
 New background runs enrich the same run record created by durable memory sync with the validated model and measured execution timing. Missing/reversed legacy timing stays “Not recorded”; captured output is distinct from the saved investigation’s evidence and findings.
+
+Each new background run also saves its latest 100 stage/tool events and the redacted validated final answer in the existing AgentRun logs (`application/vnd.horus.activity+json`, version 1). Run details render an ordered UTC timeline. The completion checkpoint retries logs delivery without repeating inference; a final best-effort update includes the done event. This is bounded history, not a full transcript. Older sessions can be recovered from actual Claude tool timestamps with source `claude-session`; missing worker stages remain explicitly unrecorded. Plain-text logs remain readable. No raw prompts, tool content or private reasoning are uploaded.

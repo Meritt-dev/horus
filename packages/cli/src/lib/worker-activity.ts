@@ -1,3 +1,4 @@
+import { redactSecrets } from '@horus/core';
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -65,4 +66,13 @@ export function claudeActivityArgs(runtime: string, runtimeArgs: string[], entry
   return ['--session-id', sessionId, '--settings', JSON.stringify({ hooks: {
     SessionStart: hook, PreToolUse: hook, PostToolUse: hook, PostToolUseFailure: hook, Stop: hook,
   } })];
+}
+
+/** Bounded durable run logs; project authorization/storage are owned by AgentRun. */
+export function workerRunLogs(events: WorkerActivity[], result?: { what: string; why: string; whereNext: string[]; confidence: number; citations: { evidenceId: string }[] }) {
+  return {
+    logsFormat: 'application/vnd.horus.activity+json',
+    logs: JSON.stringify({ version: 1, source: 'worker', events: events.slice(-100).map(event => workerActivitySchema.parse(event)),
+      result: result ? redactSecrets([result.what, result.why, `Confidence: ${result.confidence}`, ...result.whereNext.map(check => `Next check: ${check}`), `Evidence: ${result.citations.map(c => c.evidenceId).join(', ')}`].join('\n')).slice(0, 64000) : undefined }),
+  };
 }
