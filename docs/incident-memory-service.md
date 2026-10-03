@@ -10,7 +10,8 @@ and Jev ranking are outside this change.
 Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
 `0036_pagerduty_details`, `0037_worker_activity`,
 `0038_project_slack_notifications`, `0039_shared_repository_settings`, and
-`0040_project_operational_notices` before activating this CLI. Use the repository's existing migration and deployment
+`0040_project_operational_notices` before activating this CLI. Use the repository's
+existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
 and `0014_watch_jobs` apply automatically when the embedded database opens.
 
@@ -386,7 +387,7 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
 | 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
 | 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
-| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Cloud-selected Horus app channel persisted after reload, and one dated saved report was delivered and observed; automatic delivery from a fresh native incident remains unverified. CI uses controlled Claude output |
+| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Fresh native incident delivery under the configured destination policy remains unverified; one dated saved report reached the Cloud-selected app channel after reload. CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
 
 The selected Maison PagerDuty service's September 26–October 2 UTC history contains
@@ -422,7 +423,8 @@ The selected Maison Safqa private Mac pilot runs frozen CLI `faf3172` against
 production Cloud API `0.0.114`. Its local legacy notifications are off; Cloud app
 reports are enabled for `#maison-agent-runs`. The channel setting persisted after
 a full reload, and one dated saved EMODA report was acknowledged and observed in
-Slack. That establishes app delivery, not fresh native ingress or automatic
+Slack after a successful Slack API response. That establishes app delivery, not
+fresh native ingress or automatic
 worker-to-Slack delivery.
 
 The final CLI/Cloud combination began October 3, 2026 at 19:38:50 UTC. Its earliest
