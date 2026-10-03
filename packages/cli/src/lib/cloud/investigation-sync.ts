@@ -387,16 +387,21 @@ export async function uploadInvestigationToCloud(
   // and best-effort — never affects the blob or the upload result.
   await writeInvestigationProvenance(client, projectId, investigation.id, report);
 
-  await client.createAgentRun(projectId, investigation.id, {
-    repositoryId: cfg.repository?.id,
-    status: "completed",
+  const runMetadata = {
     agent: report.unattended?.engineOnly ? "Horus background worker · engine only" : report.unattended ? "Horus background worker" : "Horus CLI",
     model: report.unattended?.status === 'completed' ? report.unattended.model : undefined,
     ...opts.runTiming,
     cliVersion: HORUS_VERSION,
     summary: report.summary,
+  };
+  const run = await client.createAgentRun(projectId, investigation.id, {
+    ...runMetadata, repositoryId: cfg.repository?.id, status: "completed",
     idempotencyKey: idempotencyKey(report.id, "run"),
   });
+  // Memory sync may have created this stable run before inference completed.
+  // Enrich that same record; a later metadata-only backfill must not erase timing/model.
+  if (report.unattended || opts.runTiming)
+    await client.updateAgentRun(projectId, investigation.id, run.id, runMetadata);
 
   await client.updateInvestigation(projectId, investigation.id, { status: "completed" });
 

@@ -199,6 +199,8 @@ describe("investigation-sync", () => {
     await uploadInvestigationToCloud(client, cfg, makeReport({ unattended: { model: "claude-opus-5-5", status: "completed", sessionId: "session" } }), { runTiming });
     const call = fetchSpy.mock.calls.find((c: unknown[]) => (c[0] as string).endsWith("/agent-runs"))!;
     expect(JSON.parse((call[1] as RequestInit).body as string)).toMatchObject({ ...runTiming, agent: "Horus background worker", model: "claude-opus-5-5" });
+    const patch = fetchSpy.mock.calls.find((c: unknown[]) => (c[0] as string).includes("/agent-runs/") && (c[1] as RequestInit).method === "PATCH")!;
+    expect(JSON.parse((patch[1] as RequestInit).body as string)).toMatchObject({ ...runTiming, agent: "Horus background worker", model: "claude-opus-5-5" });
   });
 
   it("uploads a report snapshot to cloud", async () => {

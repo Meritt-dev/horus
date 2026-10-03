@@ -705,6 +705,8 @@ export class CloudClient {
       status?: string;
       agent?: string;
       model?: string;
+      startedAt?: string;
+      endedAt?: string;
       cliVersion?: string;
       summary?: string;
       idempotencyKey?: string;
@@ -715,6 +717,14 @@ export class CloudClient {
       `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs`,
       body,
     );
+  }
+
+  /** Complete metadata for a run already created by durable memory/report sync. */
+  updateAgentRun(
+    projectId: string, investigationId: string, runId: string,
+    body: { agent?: string; model?: string; startedAt?: string; endedAt?: string; summary?: string },
+  ): Promise<AgentRunRecord> {
+    return this.request<AgentRunRecord>("PATCH", `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs/${runId}`, body);
   }
 
   // ── Knowledge snapshots (HOR-296) ──────────────────────────────────────────

@@ -8,7 +8,7 @@ and Jev ranking are outside this change.
 ## Deploy the paired versions
 
 Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
-and `0036_pagerduty_details`
+`0036_pagerduty_details`, and `0037_worker_activity`
 before activating this CLI. Use the repository's existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
 and `0014_watch_jobs` apply automatically when the embedded database opens.
@@ -389,7 +389,7 @@ even when their measured rates exceed the targets.
 
 ## Live worker activity in Cloud
 
-Open the linked workspace’s **Settings → Investigation workers**. The Mac makes
+Open **Agent Runs** for live workers, unfinished queue requests and searchable run history. The same worker panel is available in workspace **Settings**. The Mac makes
 outbound authenticated REST calls to the existing queue and worker endpoints;
 Cloud never opens an inbound connection into the Mac. Claim renewal remains
 25 seconds. While investigating, best-effort activity snapshots publish every
@@ -419,3 +419,5 @@ before upgrading the private worker runtime. Hosted CI covers the activity schem
 workspace isolation/revocation, SSE updates, UI reconnection and the paired worker
 contract. No local automated test, integration, replay or lifecycle scripts should
 be run.
+
+New background runs enrich the same run record created by durable memory sync with the validated model and measured execution timing. Missing/reversed legacy timing stays “Not recorded”; captured output is distinct from the saved investigation’s evidence and findings.
