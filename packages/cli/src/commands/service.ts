@@ -18,6 +18,7 @@ import {
   runWatchService,
   runServiceWorker,
   recordServiceFailure,
+  serviceWebhook,
   serviceHome,
   routeKey,
   type ServiceConfig,
@@ -309,12 +310,8 @@ export async function runService(
           if (!provider || !(await provider.health()).ok)
             throw new Error(`${p.project}: Elasticsearch unavailable`);
         }
-        if (p.notifications === 'configured' && !env.notify?.webhook)
-          throw new Error(
-            `${p.project}: configure a notification webhook or select notifications: off; Cloud report storage alone is not an outbound notice`,
-          );
         console.log(
-          `${p.project}/${p.environment}: ${source}; ${p.notifications === 'off' ? 'notifications disabled' : 'configured destination selected'}`,
+          `${p.project}/${p.environment}: ${source}; Slack reports and worker notices follow Cloud project settings; optional generic webhook ${p.notifications === 'configured' && serviceWebhook(env.notify) ? 'selected' : 'off'}`,
         );
       }
     } else if (action === 'install' && profile === 'default')

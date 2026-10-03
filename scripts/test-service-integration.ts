@@ -61,12 +61,22 @@ const originalEnv = { ...process.env };
 process.env.LENS_DASHBOARD_ORIGIN = base;
 const originalFetch = globalThis.fetch;
 let slackCalls = 0;
+let budgetNotices = 0;
 globalThis.fetch = async (input, init) => {
   if (String(input).startsWith('https://slack.com/api/')) {
     const body = JSON.parse(String(init?.body));
     assert.equal(body.channel, 'C123');
-    assert(body.text.includes('uncertain') || body.text.includes('attention'));
-    assert(body.blocks.at(-1).elements[0].url.includes('/investigations/'));
+    if (body.blocks[0].text.text === 'Horus daily budget reached') {
+      budgetNotices++;
+      assert(body.blocks.at(-1).elements[0].url.endsWith('/settings'));
+      assert(body.text.includes('work remains queued'));
+    } else if (body.blocks[0].text.text === 'Horus investigation needs attention') {
+      assert(body.blocks.at(-1).elements[0].url.endsWith('/settings'));
+      assert(body.text.includes('Investigation needs attention'));
+    } else {
+      assert(body.text.includes('uncertain') || body.text.includes('attention'));
+      assert(body.blocks.at(-1).elements[0].url.includes('/investigations/'));
+    }
     slackCalls++;
     return new Response(JSON.stringify({ ok: true, ts: '123.456' }));
   }
@@ -444,7 +454,22 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   const deferred = (await jobs(h.db)).find((j) => j.id !== queued[0]!.id)!;
   assert.equal(deferred.stage, 'ai');
   assert.match(deferred.error!, /DAILY_BUDGET/);
+  assert.equal(deferred.notice?.state, 'done');
+  assert.equal(budgetNotices, 1, 'Budget notice uses the selected Cloud app channel');
   assert.equal((await h.db.select().from(investigations)).length, 2);
+  // Recover a local notice acknowledgement loss without rerunning analysis or posting twice.
+  const priorAttempts = { ...deferred.attempts };
+  deferred.notice!.state = 'pending';
+  deferred.notice!.retryAt = 0;
+  await saveJob(h.db, deferred);
+  await h.sql.end();
+  await runWatchService(settings, true);
+  h = await createLocalDb();
+  const recoveredNotice = (await jobs(h.db)).find(j => j.id === deferred.id)!;
+  assert.equal(recoveredNotice.notice?.state, 'done');
+  assert.deepEqual(recoveredNotice.attempts, priorAttempts);
+  assert.equal(budgetNotices, 1, 'Cloud receipt suppresses a repeated operational send');
+  Object.assign(deferred, recoveredNotice);
   deferred.nextAttemptAt = 0;
   await saveJob(h.db, deferred);
   await h.sql.end();

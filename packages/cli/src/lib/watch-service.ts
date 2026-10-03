@@ -12,7 +12,7 @@ import {
 import { resolve, isAbsolute, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import { loadConfig, resolveEnvironment, redactErrorMessage } from '@horus/core';
+import { loadConfig, resolveEnvironment, redactErrorMessage, type NotifyConfig } from '@horus/core';
 import {
   sentryForEnv,
   logsForEnv,
@@ -131,6 +131,36 @@ function log(message: string) {
 }
 export function recordServiceFailure(error: unknown): void {
   log(`Supervisor stopped: ${error instanceof Error ? error.message : String(error)}`);
+}
+/** Slack uses Cloud's app; retain explicit generic HTTP receivers for compatibility. */
+export function serviceWebhook(notify: NotifyConfig | undefined): NotifyConfig['webhook'] {
+  const webhook = notify?.webhook;
+  if (!webhook) return undefined;
+  const host = new URL(webhook.url).hostname.toLowerCase();
+  return ['hooks.slack.com', 'hooks.slack-gov.com'].includes(host) ? undefined : webhook;
+}
+/** Delivery is a checkpoint on the existing job; it never retries engine/AI work. */
+export async function deliverOperationalNotice(db: HorusDb, p: WatchProject, job: WatchJobData): Promise<void> {
+  const notice = job.notice;
+  if (!notice || notice.state === 'done' || notice.retryAt > Date.now()) return;
+  try {
+    const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
+    if (!cloud) throw new Error('Cloud sign-in/link required to deliver the worker notice');
+    if (await readWatchState<string>(db, `scope:${job.route}`) !== cloud.scope)
+      throw new Error('Watcher account/project scope mismatch; worker notice retained locally');
+    const result = await cloud.client.notifyServiceNotice(cloud.config.project!.id, {
+      kind: notice.kind, environment: p.environment, jobId: job.id,
+      day: notice.day, hint: notice.hint, cause: notice.cause,
+    });
+    if (!result || !['off', 'delivered'].includes(result.state))
+      throw new Error(result?.error ?? 'Invalid worker notice response');
+    notice.state = 'done';
+    notice.error = undefined;
+  } catch (error) {
+    notice.error = redactErrorMessage(error).slice(0, 2000);
+    notice.retryAt = Date.now() + Math.max(60_000, error instanceof CloudError ? (error.retryAfterMs ?? 0) : 0);
+  }
+  await saveJob(db, job);
 }
 export function sentryEvent(issue: SentryIssue, environment: string): IncidentEvent {
   if (!issue.lastSeen) throw new Error('Sentry issue has no occurrence time');
@@ -451,10 +481,6 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       env: p.environment,
       cwd: p.root,
     });
-    if (p.notifications === 'configured' && !env.notify?.webhook && !env.notify?.cloud)
-      throw new Error(
-        'Notification destination missing; configure Cloud or a webhook, or select notifications: off',
-      );
     const cloud = memorySyncContext(p.root, p.project, controller.signal);
     if (!cloud) throw new Error('Sign in and link Cloud before running this job');
     const storedScope = await withDb((db) =>
@@ -690,8 +716,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           throw new Error('Cloud report link missing; notification deferred');
         if (!job.notified) {
           job.attempts.notify = (job.attempts.notify ?? 0) + 1;
+          const webhook = p.notifications === 'configured' ? serviceWebhook(env.notify) : undefined;
           // Legacy direct webhook safety remains independent of Cloud's durable receipt.
-          if (p.notifications === 'configured' && env.notify?.webhook && job.notificationKey && !p.idempotentDestination)
+          if (webhook && job.notificationKey && !p.idempotentDestination)
             throw new Error('DELIVERY_UNKNOWN: inspect destination before service retry --delivery-checked');
           job.notificationKey ??= `${job.id}:${digest([job.cloudReportId, (job.latestEvent ?? job.event).severity, (job.latestEvent ?? job.event).eventId, job.aiFailure])}`;
           await save();
@@ -708,8 +735,8 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           const delivered = await cloud.client.notifyInvestigation(cloud.config.project!.id, job.cloudReportId!, headline);
           if (!delivered || !['off', 'delivered'].includes(delivered.state))
             throw new Error(`Cloud notification failed: ${delivered?.error ?? 'invalid delivery response'}`);
-          if (p.notifications === 'configured' && env.notify?.webhook) {
-            const result = await dispatchNotify({ id: report.id, ...headline, reportUrl: job.cloudUrl }, { ...env.notify, minConfidence: 0 }, { timeoutMs: Math.min(5000, remaining()) });
+          if (webhook) {
+            const result = await dispatchNotify({ id: report.id, ...headline, reportUrl: job.cloudUrl }, { ...env.notify, webhook, cloud: env.notify?.cloud ?? false, minConfidence: 0 }, { timeoutMs: Math.min(5000, remaining()) });
             if (result.some(r => !r.ok)) throw new Error(`Notification failed: ${result.filter(r => !r.ok).map(r => r.detail).join('; ')}`);
           }
           job.notified = true;
@@ -818,56 +845,20 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           })
           .catch(() => {});
       }
-      if (
-        (budget || job.status === 'terminal-failed') &&
-        p?.notifications === 'configured' &&
-        cloud
-      ) {
-        const key = budget
-          ? `notice:budget:${new Date().toISOString().slice(0, 10)}`
-          : `notice:terminal:${job.id}`;
-        const noticeDb = context?.dbHandle.db;
-        const recordNotice = async (db: HorusDb) => {
-          if (await readWatchState(db, key)) return false;
-          // Record the attempt before sending: a crash/uncertain response never creates a notice storm.
-          await writeWatchState(db, key, {
-            jobId: job!.id,
-            at: new Date().toISOString(),
-            state: 'sending',
-          });
-          return true;
-        };
-        const first = noticeDb
-          ? await recordNotice(noticeDb)
-          : await withDb(recordNotice);
-        if (first) {
-          const loaded = await loadConfig(p.config, { cwd: p.root });
-          const env = resolveEnvironment(loaded, {
-            project: p.project,
-            env: p.environment,
-            cwd: p.root,
-          });
-          const results = await dispatchNotify(
-            {
-              id: job.reportId,
-              hint: redactCloudValue(`${p.project}/${p.environment}: ${budget ? 'Daily budget reached' : 'Investigation needs attention'}`),
-              cause: `${job.error}. Inspect horus service status${budget ? '; work is deferred until UTC tomorrow' : `; retry job ${job.id} after fixing the cause`}`,
-              confidence: 0,
-              notificationKey: digest(key),
-              reportUrl: `${config.cloudWebUrl}/${cloud.config.organization!.slug}/${cloud.config.workspace!.slug}/settings`,
-            },
-            env.notify ? { ...env.notify, minConfidence: 0 } : undefined,
-            { cloudPush: async () => {} },
-          );
-          const persistNotice = (db: HorusDb) =>
-            writeWatchState(db, key, {
-              jobId: job!.id,
-              at: new Date().toISOString(),
-              results,
-            });
-          if (noticeDb) await persistNotice(noticeDb);
-          else await withDb(persistNotice);
+      if ((budget || job.status === 'terminal-failed') && p) {
+        const kind = budget ? 'budget' : 'terminal';
+        const day = new Date().toISOString().slice(0, 10);
+        if (!job.notice || job.notice.kind !== kind || (budget && job.notice.day !== day)) {
+          job.notice = {
+            kind, day, state: 'pending', retryAt: 0,
+            hint: redactCloudValue(`${p.project}/${p.environment}: ${budget ? 'Daily budget reached' : 'Investigation needs attention'}`).slice(0, 1000),
+            cause: redactCloudValue(`${job.error}. Inspect horus service status${budget ? '; work remains queued until UTC tomorrow' : `; retry job ${job.id} after fixing the cause`}`).slice(0, 4000),
+          };
+          if (context) await saveJob(context.dbHandle.db, job);
+          else await withDb(db => saveJob(db, job!));
         }
+        if (context) await deliverOperationalNotice(context.dbHandle.db, p, job);
+        else await withDb(db => deliverOperationalNotice(db, p, job!));
       }
       log(`${job.id} ${job.stage}: ${job.error}`);
     } else throw error;
@@ -961,6 +952,9 @@ export async function runWatchService(settings: string, once = false): Promise<v
           log(`${p.project} memory: ${redactErrorMessage(error)}`);
         }
         const pending = await withDb((db) => jobs(db, route));
+        // Retry one due notice per route independently of deferred/terminal analysis.
+        const noticeJob = pending.find(j => j.notice?.state === 'pending' && j.notice.retryAt <= Date.now());
+        if (noticeJob) await withDb(db => deliverOperationalNotice(db, p, noticeJob));
         const job = pending.find(
           (j) =>
             !['done', 'cancelled', 'terminal-failed'].includes(j.status) &&

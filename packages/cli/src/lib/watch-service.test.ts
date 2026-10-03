@@ -25,6 +25,8 @@ import {
   routeKey,
   pollProject,
   recordServiceFailure,
+  deliverOperationalNotice,
+  serviceWebhook,
 } from './watch-service.js';
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
@@ -60,6 +62,54 @@ const event = (extra: Partial<IncidentEvent> = {}): IncidentEvent => ({
   orderId: 'order-a',
   workflow: 'dispatch',
   ...extra,
+});
+it('keeps Slack delivery in the Cloud app while preserving explicit generic HTTP receivers', () => {
+  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://hooks.slack.com/services/fixture' } })).toBeUndefined();
+  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://hooks.slack-gov.com/services/fixture' } })).toBeUndefined();
+  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://receiver.invalid/notify' } })?.url).toBe('https://receiver.invalid/notify');
+});
+it('retains a rate-limited operational notice across DB reopen and retries only delivery under the same scope', async () => {
+  const root = temp();
+  vi.stubEnv('HORUS_HOME', join(root, 'profile'));
+  vi.stubEnv('HORUS_DB_DIR', join(root, 'db'));
+  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'u', email: 'test@example.invalid' } });
+  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'p', slug: 'p' } });
+  const p = { root, config: join(root, 'horus.config.mjs'), project: 'p', environment: 'production', source: 'pagerduty' as const, enabled: true, notifications: 'off' as const, idempotentDestination: false };
+  let h = await createLocalDb();
+  await writeWatchState(h.db, `scope:${routeKey(p)}`, memorySyncContext(root, 'p')!.scope);
+  await acceptEvents(h.db, routeKey(p), [event()]);
+  const job = (await jobs(h.db))[0]!;
+  job.status = 'terminal-failed';
+  job.attempts = { engine: 1, ai: 3 };
+  job.notice = { kind: 'terminal', day: '2026-10-03', hint: 'Investigation needs attention', cause: 'Saved evidence is retained.', state: 'pending', retryAt: 0 };
+  await saveJob(h.db, job);
+  const fetch = vi.fn(async (_url: string, _init: RequestInit): Promise<Response> => new Response('', { status: 429, headers: { 'retry-after': '120' } }));
+  vi.stubGlobal('fetch', fetch);
+  const start = Date.now();
+  await deliverOperationalNotice(h.db, p, job);
+  expect(job.notice.retryAt).toBeGreaterThanOrEqual(start + 120_000);
+  await h.sql.end();
+  h = await createLocalDb();
+  handles.push(h);
+  const restored = (await jobs(h.db))[0]!;
+  expect(restored.notice?.state).toBe('pending');
+  expect(restored.attempts).toEqual({ engine: 1, ai: 3 });
+  restored.notice!.retryAt = 0;
+  fetch.mockImplementation(async (_url: string, init: RequestInit) => {
+    expect(JSON.parse(String(init.body))).toMatchObject({ kind: 'terminal', environment: 'production', jobId: job.id });
+    return new Response(JSON.stringify({ state: 'delivered' }));
+  });
+  await deliverOperationalNotice(h.db, p, restored);
+  expect(restored.notice?.state).toBe('done');
+  expect(restored.attempts).toEqual({ engine: 1, ai: 3 });
+  expect(String(fetch.mock.calls[1]?.[0])).toContain('/projects/p/notifications/slack/notices');
+  await deliverOperationalNotice(h.db, p, restored);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  restored.notice!.state = 'pending';
+  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'other', slug: 'other' } });
+  await deliverOperationalNotice(h.db, p, restored);
+  expect(restored.notice?.error).toContain('scope mismatch');
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 it('retains the ES cursor and jobs after partial HTTP 200 results, then recovers once', async () => {
   const root = temp();

@@ -47,6 +47,15 @@ export interface WatchJobData {
   aiFailure?: string;
   notified?: boolean;
   notificationKey?: string;
+  notice?: {
+    kind: 'budget' | 'terminal';
+    day: string;
+    hint: string;
+    cause: string;
+    state: 'pending' | 'done';
+    retryAt: number;
+    error?: string;
+  };
   latestEvent?: IncidentEvent;
   activity?: WorkerActivity[];
   startedAt?: string;

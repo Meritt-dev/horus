@@ -308,6 +308,16 @@ deliveries** in project Settings to confirm the message is present or absent. Re
 the worker's saved notification after confirming absence; inference does not run
 again. No Slack credential or incoming-webhook URL belongs in the Mac's config.
 
+Budget exhaustion and terminal-failure notices use the same Cloud-selected Horus
+Slack app channel as reports, even when legacy local notifications are off. They
+link to project Settings rather than inventing a report, and use the existing
+Cloud delivery receipts. One budget notice is sent per project/environment/UTC
+day; terminal notices are deduplicated by job. A durable notice checkpoint stays
+on the original local job and retries independently of deferred/terminal analysis.
+Uncertain acknowledgements require the same administrator channel check. Direct
+Slack incoming-webhook destinations are ignored by the service; Slack delivery
+always uses the Horus app. The ordinary interactive `watch` sink is unchanged.
+
 Existing generic local webhooks remain supported for integrations already using
 `notifications: "configured"` and `notify.webhook`. Set `idempotentDestination:
 true` only when that receiver honors the stable `Idempotency-Key`/`notificationKey`.

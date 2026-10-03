@@ -497,6 +497,9 @@ export class CloudClient {
   notifyInvestigation(projectId: string, investigationId: string, input: { notificationKey: string; hint: string; cause: string; confidence: number }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
     return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/investigations/${encodeURIComponent(investigationId)}/notify`, input);
   }
+  notifyServiceNotice(projectId: string, input: { kind: 'budget' | 'terminal'; environment: string; jobId: string; day: string; hint: string; cause: string }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/notifications/slack/notices`, input);
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
