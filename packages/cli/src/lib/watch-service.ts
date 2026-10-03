@@ -527,6 +527,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     });
     const db = context.dbHandle.db;
     job.status = 'running';
+    job.startedAt ??= new Date().toISOString();
     job.pid = process.pid;
     await saveJob(db, job);
     const day = new Date().toISOString().slice(0, 10);
@@ -649,6 +650,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
         await save();
       }
       if (job.stage === 'upload') {
+        job.analysisEndedAt ??= new Date().toISOString();
         job.attempts.upload = (job.attempts.upload ?? 0) + 1;
         await save();
         const refs = await uploadInvestigationToCloud(
@@ -657,6 +659,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           report,
           {
             db,
+            runTiming: { startedAt: job.startedAt, endedAt: job.analysisEndedAt },
           },
         );
         job.cloudReportId = refs.investigationId;

@@ -256,6 +256,12 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start')));
   assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'done')));
   assert(!JSON.stringify(workerRows).includes('DO NOT UPLOAD'));
+  const runsResponse = await fetch(`${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  assert.equal(runsResponse.status, 200);
+  const completedRuns = await runsResponse.json();
+  assert.equal(completedRuns[0].model, 'claude-opus-5-5');
+  assert.equal(completedRuns[0].agent, 'Horus background worker');
+  assert(Date.parse(completedRuns[0].endedAt) >= Date.parse(completedRuns[0].startedAt));
   assert.equal(deliveries.size, 1);
   assert.equal(sends, 2);
   const [cloudPending] = await db

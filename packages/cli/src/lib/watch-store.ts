@@ -48,6 +48,8 @@ export interface WatchJobData {
   notificationKey?: string;
   latestEvent?: IncidentEvent;
   activity?: WorkerActivity[];
+  startedAt?: string;
+  analysisEndedAt?: string;
 }
 export const digest = (v: unknown) =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');

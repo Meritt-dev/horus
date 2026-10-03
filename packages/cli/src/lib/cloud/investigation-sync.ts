@@ -352,7 +352,7 @@ export async function uploadInvestigationToCloud(
   client: CloudClient,
   cfg: CloudConfig,
   report: InvestigationReport,
-  opts: { db?: HorusDb } = {},
+  opts: { db?: HorusDb; runTiming?: { startedAt: string; endedAt: string } } = {},
 ): Promise<CloudInvestigationRefs> {
   if (!cfg.project) {
     throw new Error("Cloud config is missing a linked project.");
@@ -390,7 +390,9 @@ export async function uploadInvestigationToCloud(
   await client.createAgentRun(projectId, investigation.id, {
     repositoryId: cfg.repository?.id,
     status: "completed",
-    agent: "Horus CLI",
+    agent: report.unattended?.engineOnly ? "Horus background worker · engine only" : report.unattended ? "Horus background worker" : "Horus CLI",
+    model: report.unattended?.status === 'completed' ? report.unattended.model : undefined,
+    ...opts.runTiming,
     cliVersion: HORUS_VERSION,
     summary: report.summary,
     idempotencyKey: idempotencyKey(report.id, "run"),

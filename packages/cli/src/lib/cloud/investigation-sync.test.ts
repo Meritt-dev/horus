@@ -194,6 +194,13 @@ describe("investigation-sync", () => {
     dbMock.getLatestOutcomeLabel.mockReset();
   });
 
+  it("uploads measured background timing and the validated model without inventing legacy metadata", async () => {
+    const runTiming = { startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:00:05Z" };
+    await uploadInvestigationToCloud(client, cfg, makeReport({ unattended: { model: "claude-opus-5-5", status: "completed", sessionId: "session" } }), { runTiming });
+    const call = fetchSpy.mock.calls.find((c: unknown[]) => (c[0] as string).endsWith("/agent-runs"))!;
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toMatchObject({ ...runTiming, agent: "Horus background worker", model: "claude-opus-5-5" });
+  });
+
   it("uploads a report snapshot to cloud", async () => {
     const report = makeReport();
     const refs = await uploadInvestigationToCloud(client, cfg, report);
