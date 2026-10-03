@@ -8,6 +8,7 @@ import {
   investigations,
   incidentMemory,
   memorySyncOutbox,
+  memorySyncReplica,
   eq,
   type DbHandle,
 } from '@horus/db';
@@ -365,6 +366,13 @@ it('isolates unreadable history, backfills later readable reports, and retries a
     outcome: { disposition: 'unknown', certainty: 'inferred' } });
   expect(memories[0]?.createdAt.toISOString()).toBe('2025-01-01T00:00:00.000Z');
   expect(adopted.state).toBe('Pending sync');
+  await h.db.insert(memorySyncReplica).values({
+    scope: remote.ctx.scope, memoryId: memories[0]!.id, revision: '0',
+    generation: memories[0]!.syncGeneration,
+  });
+  const acknowledged = await synchronizeMemory(h.db, remote.ctx, { pullOnly: true });
+  expect(acknowledged.pending).toBe(0);
+  expect(acknowledged.state).toBe('Pending sync'); // The unreadable report still prevents “Synced”.
   fault.mockRestore();
   const recovered = await synchronizeMemory(h.db, remote.ctx, { limit: 0 });
   expect(recovered.backfill).toEqual({ eligible: 2, indexed: 2, pending: 0, excluded: 1 });
