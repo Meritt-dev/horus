@@ -8,6 +8,7 @@ export {
   hypotheses,
   incidentMemory,
   memorySyncState,
+  memorySyncPullPage,
   memorySyncReplica,
   memorySyncOutbox,
   memoryItem,
@@ -58,7 +59,7 @@ export {
   cloudDatabaseUrlReason,
   CloudDatabaseUrlError,
 } from './guard.js';
-export { eq, desc, sql, and, or, isNull, inArray, notInArray } from 'drizzle-orm';
+export { asc, eq, desc, sql, and, or, isNull, inArray, notInArray } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
 export {
   recordOutcomeLabel,

@@ -9,6 +9,7 @@ import {
   incidentMemory,
   memorySyncOutbox,
   memorySyncReplica,
+  memorySyncState,
   eq,
   type DbHandle,
 } from '@horus/db';
@@ -437,6 +438,7 @@ it('resumes durable history at the last acknowledged page and never acknowledges
     links: Array.from({ length: 2101 }, (_, i) => ({ idempotencyKey: `l${i}`, fromClientId: created.id, rel: 'about-file', toKind: 'node', toRef: `n${i}` })),
     audit: [],
   };
+  await h.db.insert(memorySyncState).values({ scope: remote.ctx.scope, repo: remote.ctx.repo });
   await h.db.insert(memorySyncOutbox).values({ id: 'frozen-large', scope: remote.ctx.scope,
     memoryId: created.id, generation: created.syncGeneration, request });
   let interrupted = false;
@@ -457,4 +459,36 @@ it('resumes durable history at the last acknowledged page and never acknowledges
   expect(upload.mock.calls[0]![1].history!.page).toBe(1);
   expect(await h.db.select().from(memorySyncOutbox)).toEqual([]);
   expect((await h.db.select().from(memorySyncReplica))[0]).toMatchObject({ revision: '9', generation: created.syncGeneration });
+}, 30000);
+
+it('resumes history hydration after a deadline and process restart without exposing partial memory', async () => {
+  let h = await open(); const remote = cloud(); const dir = paths.at(-1)!;
+  const row = { id: 'cloud-history', clientId: 'hydrated', kind: 'investigation', claim: 'Mature incident',
+    scope: 'repo', source: 'investigation', status: 'fresh', visibility: 'private', createdByUserId: 'owner',
+    organizationId: 'org', workspaceId: 'workspace', projectId: 'project', revision: '1',
+    historyPaged: true, record: {}, createdAt: '2026-01-01T00:00:00Z' } as MemoryItemRecord;
+  remote.rows.set(row.clientId, row);
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const link = (id: string) => ({ idempotencyKey: id, fromClientId: row.clientId,
+    rel: 'about-file', toKind: 'node', toRef: id, createdAt: '2026-01-01T00:00:00Z' });
+  const links = vi.fn().mockImplementationOnce(async () => {
+    now = 501; return { links: [link('first')], nextCursor: 'second-page' };
+  }).mockResolvedValue({ links: [link('second')] });
+  Object.assign(remote.ctx.client, { listMemoryLinks: links, listMemoryAudit: vi.fn().mockResolvedValue({ audit: [] }) });
+  const paused = await synchronizeMemory(h.db, remote.ctx, { backfill: false, deadline: 500 });
+  expect(paused.error).toContain('resume from saved page');
+  expect(await h.db.select().from(memoryItem)).toEqual([]);
+  const { memorySyncState, memorySyncPullPage } = await import('@horus/db');
+  expect((await h.db.select().from(memorySyncState))[0]).toMatchObject({ cursor: '0', pullProgress: { linkCursor: 'second-page' } });
+  expect(await h.db.select().from(memorySyncPullPage)).toHaveLength(1);
+  await h.sql.end(); handles.splice(handles.indexOf(h), 1);
+  now = 0; h = await createLocalDb({ path: join(dir, 'db') }); handles.push(h);
+  links.mockClear();
+  expect((await synchronizeMemory(h.db, remote.ctx, { backfill: false, deadline: 500 })).state).toBe('Synced');
+  expect(links.mock.calls[0]![1]).toMatchObject({ cursor: 'second-page', expectedRevision: '1' });
+  expect((await h.db.select().from(memorySyncState))[0]).toMatchObject({ cursor: '1', pullProgress: null });
+  expect(await h.db.select().from(memorySyncPullPage)).toEqual([]);
+  const { memoryLink } = await import('@horus/db');
+  expect((await h.db.select().from(memoryLink)).map(l => l.id).sort()).toEqual(['first', 'second']);
 }, 30000);

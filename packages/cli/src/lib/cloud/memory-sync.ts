@@ -6,6 +6,7 @@ import {
   memoryLink,
   memoryAudit,
   memorySyncState,
+  memorySyncPullPage,
   memorySyncReplica,
   memorySyncOutbox,
   investigations,
@@ -21,7 +22,7 @@ import {
   readIncidentDisposition,
   type InvestigationReport,
 } from '@horus/engine';
-import { memoryHistoryPages } from './memory-history.js';
+import { memoryHistoryPages, hydrateMemoryHistory } from './memory-history.js';
 import { CloudClient, CloudError, type MemoryItemRecord } from './api.js';
 import { readAuth } from './auth-store.js';
 import { readCloudConfig, type CloudConfig } from './context-store.js';
@@ -230,6 +231,7 @@ async function applyRemote(
   db: HorusDb,
   ctx: MemorySyncContext,
   row: MemoryItemRecord,
+  advancePull = false,
 ): Promise<void> {
   if (
     !row.revision ||
@@ -242,6 +244,12 @@ async function applyRemote(
   }
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('horus.sync_pull', '1', true)`);
+    const finish = async () => {
+      await tx.delete(memorySyncPullPage).where(eq(memorySyncPullPage.scope, ctx.scope));
+      await tx.update(memorySyncState).set({ pullProgress: null,
+        ...(advancePull ? { cursor: row.revision!, lastPull: new Date(), error: null } : {}) })
+        .where(eq(memorySyncState.scope, ctx.scope));
+    };
     const [local] = await tx
       .select()
       .from(memoryItem)
@@ -272,6 +280,7 @@ async function applyRemote(
           .update(memoryItem)
           .set({ status: 'forgotten' })
           .where(eq(memoryItem.id, local.id));
+      await finish();
       return;
     }
     const record = row.record ?? {};
@@ -382,6 +391,7 @@ async function applyRemote(
         target: [memorySyncReplica.scope, memorySyncReplica.memoryId],
         set: { revision: row.revision!, generation: values.syncGeneration },
       });
+    await finish();
   });
 }
 
@@ -598,24 +608,6 @@ export interface MemorySyncOptions {
   restore?: string;
 }
 
-async function hydrateMemoryHistory(ctx: MemorySyncContext, row: MemoryItemRecord, deadline: number): Promise<MemoryItemRecord> {
-  if (!row.historyPaged) return row;
-  const links: NonNullable<MemoryItemRecord['links']> = [];
-  const audit: NonNullable<MemoryItemRecord['audit']> = [];
-  let cursor: string | undefined;
-  do {
-    if (Date.now() >= deadline) throw new Error('Memory history pull paused; retry from saved cursor');
-    const page = await ctx.client.listMemoryLinks(ctx.config.project!.id, { memoryItemId: row.id, expectedRevision: row.revision!, cursor });
-    links.push(...page.links); cursor = page.nextCursor;
-  } while (cursor);
-  do {
-    if (Date.now() >= deadline) throw new Error('Memory history pull paused; retry from saved cursor');
-    const page = await ctx.client.listMemoryAudit(ctx.config.project!.id, { memoryItemId: row.id, expectedRevision: row.revision!, cursor });
-    audit.push(...page.audit); cursor = page.nextCursor;
-  } while (cursor);
-  return { ...row, links, audit };
-}
-
 async function resolveConflict(
   db: HorusDb,
   ctx: MemorySyncContext,
@@ -647,7 +639,7 @@ async function resolveConflict(
     throw new Error(
       'Remote memory was forgotten; accept Cloud and use --restore explicitly',
     );
-  const cloudChoice = choice === 'cloud' ? await hydrateMemoryHistory(ctx, remote, Date.now() + 15000) : undefined;
+  const cloudChoice = choice === 'cloud' ? await hydrateMemoryHistory(db, ctx, remote, Date.now() + 15000) : undefined;
   await db.transaction(async (tx) => {
     await tx.delete(memorySyncOutbox).where(eq(memorySyncOutbox.id, op.id));
     await tx
@@ -699,7 +691,7 @@ export async function synchronizeMemory(
       let appliedRevision = state!.cursor;
       for (const row of page.items) {
         if (Date.now() >= deadline) break;
-        await applyRemote(db, ctx, await hydrateMemoryHistory(ctx, row, deadline));
+        await applyRemote(db, ctx, await hydrateMemoryHistory(db, ctx, row, deadline), true);
         appliedRevision = row.revision!;
       }
       await db

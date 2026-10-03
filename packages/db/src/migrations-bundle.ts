@@ -157,5 +157,12 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
     "statements": [
       "CREATE TABLE IF NOT EXISTS watch_state (key text PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE IF NOT EXISTS watch_job (id uuid PRIMARY KEY, route text NOT NULL, episode text NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(route,episode));\nCREATE TABLE IF NOT EXISTS watch_event (route text NOT NULL, event_id text NOT NULL, job_id uuid NOT NULL REFERENCES watch_job(id), PRIMARY KEY(route,event_id));"
     ]
+  },
+  {
+    "tag": "0015_memory_pull_pages",
+    "statements": [
+      "ALTER TABLE memory_sync_state ADD COLUMN pull_progress jsonb;",
+      "CREATE TABLE memory_sync_pull_page (\n scope text NOT NULL REFERENCES memory_sync_state(scope) ON DELETE CASCADE,\n memory_id text NOT NULL, revision text NOT NULL, stream text NOT NULL,\n page integer NOT NULL, rows jsonb NOT NULL,\n PRIMARY KEY(scope, memory_id, revision, stream, page)\n);"
+    ]
   }
 ];

@@ -248,9 +248,24 @@ try {
   ctx.client.syncMemoryItems = sync;
   await a.db.update(memorySyncOutbox).set({ nextAttemptAt: new Date(0) });
   assert.equal((await synchronizeMemory(a.db, ctx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
-  const clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
+  let clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
   const cleanCtx = { ...ctx, repo: 'clean-large-history' };
+  const readLinks = cleanCtx.client.listMemoryLinks.bind(cleanCtx.client);
+  let interruptedPull = false;
+  cleanCtx.client.listMemoryLinks = async (...args) => {
+    if (args[1].cursor && !interruptedPull) { interruptedPull = true; throw new Error('offline after a persisted history page'); }
+    return readLinks(...args);
+  };
+  const partial = await synchronizeMemory(clean.db, cleanCtx, { backfill: false, deadline: Date.now() + 60000 });
+  assert(partial.error?.includes('offline after a persisted history page'));
+  assert.equal((await clean.db.select().from(memoryItem).where(eq(memoryItem.id, mature.id))).length, 0);
+  await clean.sql.end(); handles.splice(handles.indexOf(clean), 1);
+  clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
+  let resumedCursor: string | undefined;
+  cleanCtx.client.listMemoryLinks = async (...args) => { resumedCursor ??= args[1].cursor; return readLinks(...args); };
   assert.equal((await synchronizeMemory(clean.db, cleanCtx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
+  assert(resumedCursor, 'restore resumes the persisted page cursor after process restart');
+  cleanCtx.client.listMemoryLinks = readLinks;
   assert.equal((await clean.db.select().from(memoryLink).where(eq(memoryLink.fromMemoryId, mature.id))).length, 2101);
   assert.equal((await clean.db.select().from(memoryAudit).where(eq(memoryAudit.memoryId, mature.id))).length, 2102);
   console.log('PASS: 2101 links and 2102 audit rows restored through bounded pages after a lost page acknowledgement');

@@ -249,8 +249,15 @@ export const memoryItem = pgTable(
 
 export const memorySyncState = pgTable('memory_sync_state', {
   scope: text('scope').primaryKey(), repo: text('repo').notNull(), teamCursor: text('team_cursor').notNull().default('0'), cursor: text('cursor').notNull().default('0'),
+  pullProgress: jsonb('pull_progress'),
   lastPull: timestamp('last_pull', { withTimezone: true }), lastPush: timestamp('last_push', { withTimezone: true }), error: text('error'),
 });
+/** Revision-scoped downloaded pages; never visible to recall until hydration completes. */
+export const memorySyncPullPage = pgTable('memory_sync_pull_page', {
+  scope: text('scope').notNull().references(() => memorySyncState.scope, { onDelete: 'cascade' }),
+  memoryId: text('memory_id').notNull(), revision: text('revision').notNull(),
+  stream: text('stream').notNull(), page: integer('page').notNull(), rows: jsonb('rows').notNull(),
+}, t => [primaryKey({ columns: [t.scope, t.memoryId, t.revision, t.stream, t.page] })]);
 export const memorySyncReplica = pgTable('memory_sync_replica', {
   scope: text('scope').notNull().references(() => memorySyncState.scope),
   memoryId: text('memory_id').notNull().references(() => memoryItem.id, { onDelete: 'cascade' }),
