@@ -439,8 +439,11 @@ it('resumes durable history at the last acknowledged page and never acknowledges
     audit: [],
   };
   await h.db.insert(memorySyncState).values({ scope: remote.ctx.scope, repo: remote.ctx.repo });
+  // add() also appends audit, whose trigger advances the stored generation.
+  const [stored] = await h.db.select().from(memoryItem).where(eq(memoryItem.id, created.id));
+  const frozenGeneration = stored!.syncGeneration;
   await h.db.insert(memorySyncOutbox).values({ id: 'frozen-large', scope: remote.ctx.scope,
-    memoryId: created.id, generation: created.syncGeneration, request });
+    memoryId: created.id, generation: frozenGeneration, request });
   let interrupted = false;
   const upload = vi.fn(async (_: string, body: Parameters<CloudClient['syncMemoryItems']>[1]) => {
     if (body.history!.page === 1 && !interrupted) { interrupted = true; throw new Error('offline during second page'); }
@@ -458,7 +461,7 @@ it('resumes durable history at the last acknowledged page and never acknowledges
   expect((await synchronizeMemory(h.db, remote.ctx, { backfill: false })).state).toBe('Synced');
   expect(upload.mock.calls[0]![1].history!.page).toBe(1);
   expect(await h.db.select().from(memorySyncOutbox)).toEqual([]);
-  expect((await h.db.select().from(memorySyncReplica))[0]).toMatchObject({ revision: '9', generation: created.syncGeneration });
+  expect((await h.db.select().from(memorySyncReplica))[0]).toMatchObject({ revision: '9', generation: frozenGeneration });
 }, 30000);
 
 it('resumes history hydration after a deadline and process restart without exposing partial memory', async () => {
