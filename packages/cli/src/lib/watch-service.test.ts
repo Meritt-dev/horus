@@ -39,6 +39,7 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 const temp = () => {
   const p = mkdtempSync(join(tmpdir(), 'horus-worker-'));
@@ -177,10 +178,20 @@ it('keeps Cloud liveness during source backoff without clearing failure, budget 
   await writeWatchState(h.db, `health:${route}`, health);
   await writeWatchState(h.db, `scope:${route}`, memorySyncContext(root, 'p')!.scope);
   await h.sql.end();
+  // Expire the short HTTP deadline at the next async boundary: DB startup must
+  // happen before that clock starts, even when the local store is slow.
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+    if (ms !== 5000) return realTimeout(ms);
+    const deadline = new AbortController();
+    setImmediate(() => deadline.abort(new Error('HTTP deadline elapsed')));
+    return deadline.signal;
+  });
   const beats: string[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL, options?: RequestInit) => {
     if (String(url).endsWith('/alert-workers') && options?.method === 'POST') {
       expect((options.headers as Record<string, string>).authorization).toBe('Bearer fixture');
+      expect(options.signal?.aborted).toBe(false);
       beats.push(JSON.parse(String(options.body)).state);
     }
     return new Response(JSON.stringify({ items: [], hasMore: false, nextRevision: '0' }));

@@ -213,7 +213,8 @@ export async function pollProject(
   });
   if (resolve(env.path) !== resolve(p.root))
     throw new Error('Configured project root mismatch');
-  const ctx = memorySyncContext(p.root, p.project, AbortSignal.timeout(15_000));
+  // CloudClient starts its bounded timeout per request, after local DB work.
+  const ctx = memorySyncContext(p.root, p.project);
   if (!ctx)
     throw new Error(
       'Sign-in required and Cloud project link required for unattended reports',
@@ -901,13 +902,13 @@ export async function runWatchService(settings: string, once = false): Promise<v
             await pollProject(p, workerId, config);
           else {
             // Source backoff must not make a live worker appear offline in Cloud.
-            const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
             const { scope, usage } = await withDb(async db => ({
               scope: await readWatchState<string>(db, `scope:${route}`),
               usage: await readWatchState<{ investigations: number; modelCalls: number }>(
                 db, `budget:${new Date().toISOString().slice(0, 10)}`,
               ),
             }));
+            const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
             if (cloud && scope === cloud.scope)
               await cloud.client.workerHeartbeat(cloud.config.workspace!.id, {
                 projectId: cloud.config.project!.id,
