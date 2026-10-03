@@ -347,7 +347,7 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | PRD requirement | Existing verification | Remaining release evidence |
 | --- | --- | --- |
 | 01 M1 / A1–A3: startup recall and current evidence | Hosted chronological holdout: 12/12 recurring top-three matches, 3/3 unrelated no-matches, no false matches; earlier reports only | Small, operation-context sample; broader coverage improves confidence but is not a separate PRD gate |
-| 01 M2: dispositions vs accuracy | Outcome schema, provenance and memory contracts; inferred file import through existing memory add | Install the three evidenced EMODA pilot annotations as inferred; confirmation requires actual attestation or an authoritative source |
+| 01 M2: dispositions vs accuracy | Three real EMODA annotations imported through memory add and read back from production Cloud as private/inferred, with evidence, checks and report links; the unchanged Mac worker automatically restored them (153 memories, zero pending/failures) | A future confirmed outcome still requires actual attestation or an authoritative source; no cause confirmation was invented |
 | 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
 | 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
