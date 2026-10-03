@@ -349,6 +349,7 @@ export async function runMemoryAdd(
     kind?: string;
     evidence?: string[];
     confidence?: string;
+    outcomeFile?: string;
     json?: boolean;
   },
 ): Promise<number> {
@@ -359,7 +360,17 @@ export async function runMemoryAdd(
       return 1;
     }
 
-    const kind = (opts.kind ?? 'code-fact') as MemoryKind;
+    const disposition = opts.outcomeFile
+      ? readIncidentDisposition(JSON.parse(readFileSync(opts.outcomeFile, 'utf8')))
+      : null;
+    if (opts.outcomeFile && (!disposition || disposition.certainty !== 'inferred' ||
+        !disposition.sourceInvestigation.trim() || !disposition.sourceRefs.some(ref => ref.trim()))) {
+      throw new Error('Outcome file requires an inferred disposition with sourceInvestigation and sourceRefs; use memory confirm for an attested outcome.');
+    }
+    const kind = (opts.kind ?? (disposition ? 'incident-pattern' : 'code-fact')) as MemoryKind;
+    if (disposition && (kind !== 'incident-pattern' || (opts.scope && opts.scope !== 'repo'))) {
+      throw new Error('An inferred disposition requires --kind incident-pattern and --scope repo.');
+    }
     if (!MEMORY_KINDS.includes(kind)) {
       console.error(pc.red(`Unknown --kind "${opts.kind}" (one of: ${MEMORY_KINDS.join(', ')}).`));
       return 1;
@@ -393,8 +404,28 @@ export async function runMemoryAdd(
       repo: project,
     };
 
-    return await withStore(config, project, async (store) => {
+    return await withStore(config, project, async (store, db) => {
+      if (disposition) {
+        const investigation = await getInvestigation(db, disposition.sourceInvestigation);
+        if (!investigation || investigation.project !== project) {
+          throw new Error(`Investigation not found in this project: ${disposition.sourceInvestigation}`);
+        }
+        Object.assign(item, deriveIncidentKeys(investigation.report), {
+          claim: `Inferred ${disposition.disposition}: ${text}`,
+          source: 'derived',
+          visibility: 'private',
+          payload: {
+            investigationId: investigation.id,
+            hint: (investigation.report as InvestigationReport | null)?.input?.hint ?? investigation.title,
+            outcome: disposition,
+          },
+        });
+      }
       const created = await store.add(item, { actor: { kind: 'user' } });
+      if (disposition) await store.addLink({
+        id: '', fromMemoryId: created.id, rel: 'about-incident', toKind: 'incident',
+        toRef: disposition.sourceInvestigation,
+      });
       if (opts.json) {
         console.log(
           JSON.stringify(
@@ -412,7 +443,7 @@ export async function runMemoryAdd(
       // blocks or fails the command — a down source host just leaves recall on Jaccard.
       await bestEffortUpsert(buildVectorIndex(config, project), {
         memoryId: created.id,
-        claim: text,
+        claim: item.claim,
         repo: project,
         scope,
       });

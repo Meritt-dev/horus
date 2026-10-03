@@ -367,6 +367,57 @@ describe('runMemoryShow — synthesis path', () => {
 });
 
 describe('runMemoryAdd', () => {
+  it('stores an evidenced inferred disposition privately without confirming cause or accuracy', async () => {
+    const config = writeSingleProjectConfig();
+    const outcomeFile = join(dirs.at(-1)!, 'inferred.json');
+    const outcome = {
+      disposition: 'confirmed-incident', certainty: 'inferred', sourceInvestigation: 'inv-1',
+      sourceRefs: ['runtime:reserve-response'], actualCause: 'Ambiguous reservation response',
+      applicability: { environment: 'production', errorCode: 'ETIMEDOUT' },
+      checks: ['Read the existing reservation'], invalidatingConditions: ['Explicit stock rejection'],
+    };
+    writeFileSync(outcomeFile, JSON.stringify(outcome));
+    db.getInvestigation.mockResolvedValueOnce({ id: 'inv-1', project: 'my-api', title: 'Reserve timeout', report: { input: { hint: 'EMODA reserve indeterminate ETIMEDOUT' } } });
+    expect(await runMemoryAdd('Reservation result remains unknown', { config, outcomeFile, json: true })).toBe(0);
+    expect(store.add.mock.calls[0]![0]).toMatchObject({
+      kind: 'incident-pattern', source: 'derived', visibility: 'private', repo: 'my-api',
+      claim: 'Inferred confirmed-incident: Reservation result remains unknown',
+      payload: { investigationId: 'inv-1', hint: 'EMODA reserve indeterminate ETIMEDOUT', outcome },
+    });
+    expect(store.add.mock.calls[0]![0].lastVerifiedAt).toBeUndefined();
+    expect(store.addLink).toHaveBeenCalledWith(expect.objectContaining({ rel: 'about-incident', toRef: 'inv-1' }));
+    expect(db.recordOutcomeLabel).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout()).ok).toBe(true);
+  });
+
+  it.each([
+    { certainty: 'confirmed', attester: 'Operator', verifiedAt: '2026-10-03T00:00:00Z' },
+    { sourceRefs: [] }, { sourceRefs: [' '] }, { sourceInvestigation: '' }, { certainty: 'maybe' },
+  ])('rejects unsupported disposition provenance before opening the database: %j', async patch => {
+    const config = writeSingleProjectConfig();
+    const outcomeFile = join(dirs.at(-1)!, 'invalid.json');
+    writeFileSync(outcomeFile, JSON.stringify({
+      disposition: 'unknown', certainty: 'inferred', sourceInvestigation: 'inv-1',
+      sourceRefs: ['runtime:1'], applicability: {}, checks: [], invalidatingConditions: [], ...patch,
+    }));
+    expect(await runMemoryAdd('Unknown result', { config, outcomeFile })).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: 'inv-1', project: 'other-api' }, { id: 'inv-1', project: null }])('rejects missing or out-of-project source investigations: %j', async investigation => {
+    const config = writeSingleProjectConfig();
+    const outcomeFile = join(dirs.at(-1)!, 'inferred.json');
+    writeFileSync(outcomeFile, JSON.stringify({
+      disposition: 'unknown', certainty: 'inferred', sourceInvestigation: 'inv-1',
+      sourceRefs: ['runtime:1'], applicability: {}, checks: [], invalidatingConditions: [],
+    }));
+    db.getInvestigation.mockResolvedValueOnce(investigation);
+    expect(await runMemoryAdd('Unknown result', { config, outcomeFile })).toBe(1);
+    expect(store.add).not.toHaveBeenCalled();
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
   it('routes a human claim to the store with the resolved repo + parsed evidence', async () => {
     const config = writeSingleProjectConfig();
     const code = await runMemoryAdd('Payments are idempotent', {

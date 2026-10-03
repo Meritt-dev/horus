@@ -98,6 +98,14 @@ commands/service passes continue pending work. The checkout path/local alias may
 Use `horus memory sync` to inspect or manually retry, and verify recall and `horus ask`
 before enabling unattended work.
 
+For an evidenced inference, use `horus memory add "Bounded finding" --outcome-file
+/path/to/inferred-outcome.json`. This stores a private, derived incident pattern,
+checks that its source investigation belongs to the selected project, and does not
+write an accuracy label or verification timestamp. The file must say
+`certainty: "inferred"` and include evidence references. The finding stays inferred
+through sync and recall. To replace it, forget the old item and add the corrected
+finding; existing memory links can record `supersedes`.
+
 For an attested disposition, use `horus memory confirm INVESTIGATION_ID --outcome-file
 /path/to/outcome.json`. The file uses the disposition schema: `disposition`
 (`confirmed-incident`, `expected-behavior`, `duplicate-alert`, `monitoring-error`,
@@ -338,15 +346,15 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 
 | PRD requirement | Existing verification | Remaining release evidence |
 | --- | --- | --- |
-| 01 M1 / A1–A3: startup recall and current evidence | Startup recall/engine checks; chronological historical replay before the CI-only instruction | Human-attested relevance and unrelated no-match holdout |
-| 01 M2: dispositions vs accuracy | Outcome schema, provenance and memory contracts | Confirmed EMODA outcomes, rather than inferred labels |
+| 01 M1 / A1–A3: startup recall and current evidence | Hosted chronological holdout: 12/12 recurring top-three matches, 3/3 unrelated no-matches, no false matches; earlier reports only | Small, operation-context sample; broader coverage improves confidence but is not a separate PRD gate |
+| 01 M2: dispositions vs accuracy | Outcome schema, provenance and memory contracts; inferred file import through existing memory add | Install the three evidenced EMODA pilot annotations as inferred; confirmation requires actual attestation or an authoritative source |
 | 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
 | 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
 | 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
 | 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
-| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check | Production rates, healthy-path latency and week-long cost calibration |
+| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826 | Production rates, healthy-path latency and a week of native alert volume to calibrate temporary daily caps |
 
 The read-only Maison Safqa Elasticsearch pilot completed its September 28–October 1
 72-hour elapsed window using frozen runtime `08db520`, isolated local Cloud storage,
@@ -356,8 +364,11 @@ notifications off and unchanged budgets. It completed 60 additional jobs, ending
 An actual shutdown/reboot caused a ten-hour observation gap; LaunchAgents recovered the
 same history after login. This is elapsed-window and reboot-recovery evidence, rather
 than 72 hours of continuous online availability. The subsequent cancellation-diagnostic
-fix is outside this recorded window. Physical sleep/wake, second-machine restoration,
-production subscriptions/delivery and independently reviewed recall quality remain unverified.
+fix is outside this recorded window. Physical sleep/wake and fresh native delivery
+remain unverified. The later physical second-host restore passed, and the frozen
+15-case chronological pilot holdout meets the proposed numerical targets. The
+labels are source-reviewed operation relevance, not human-attested causes; the
+PRD does not require a human reviewer or prescribe a minimum sample size.
 No local automated test or fault-injection scripts ran during the window.
 
 Before release, verify production rules/subscriptions and destination policies,

@@ -686,8 +686,7 @@ Examples:
     )
     .option(
       '--kind <kind>',
-      'code-fact|contract|decision|pitfall|incident-pattern',
-      'code-fact',
+      'code-fact|contract|decision|pitfall|incident-pattern (default code-fact, or incident-pattern with --outcome-file)',
     )
     .option(
       '--evidence <kind:ref>',
@@ -696,6 +695,7 @@ Examples:
       [],
     )
     .option('--confidence <0..1>', 'confidence in the claim (default 0.75)')
+    .option('--outcome-file <path>', 'inferred incident disposition JSON with investigation and evidence provenance (private)')
     .option('--json', 'output JSON')
     .action(
       async (
@@ -707,6 +707,7 @@ Examples:
           kind?: string;
           evidence?: string[];
           confidence?: string;
+          outcomeFile?: string;
           json?: boolean;
         },
       ) => {
@@ -730,7 +731,7 @@ Examples:
     .action(
       async (
         investigationId: string,
-        opts: { config?: string; repo?: string; note?: string; json?: boolean },
+        opts: { config?: string; repo?: string; note?: string; json?: boolean; outcomeFile?: string },
       ) => {
         process.exitCode = await runMemoryConfirm(investigationId, opts);
       },
