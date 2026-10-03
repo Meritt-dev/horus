@@ -656,7 +656,6 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
     assert.equal((await jobs(h.db, routeKey(project)))[0]?.cloudRequest?.id, groupedId);
     await h.sql.end();
   } finally {
-    globalThis.fetch = originalFetch;
     globalThis.fetch = nativeFetch;
   }
   console.log(
@@ -671,7 +670,7 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   await db.$client.end();
   const { getDb } = await cloudImport('apps/api/src/db.ts');
   await getDb().$client.end();
-  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) {
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR', 'LENS_DASHBOARD_ORIGIN']) {
     if (originalEnv[key]) process.env[key] = originalEnv[key];
     else delete process.env[key];
   }

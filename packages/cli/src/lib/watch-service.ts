@@ -686,11 +686,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           job.notificationKey ??= `${job.id}:${digest([job.cloudReportId, (job.latestEvent ?? job.event).severity, (job.latestEvent ?? job.event).eventId, job.aiFailure])}`;
           await save();
           const ai = job.ai ? incidentResultSchema.parse(job.ai.result) : undefined;
-          const cause = notificationCause(report, ai, Boolean(job.aiFailure));
+          const cause = notificationCause(report, ai, Boolean(job.aiFailure)).slice(0, 4000);
           const headline = {
             notificationKey: job.notificationKey,
             confidence: ai?.confidence ?? report.confidence,
-            hint: redactCloudValue(`${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`),
+            hint: redactCloudValue(`${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`).slice(0, 1000),
             cause,
           };
           // Cloud owns the Slack app and project channel. This explicit checkpoint,
