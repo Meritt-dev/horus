@@ -286,18 +286,33 @@ takes precedence. A changed account/project cannot heartbeat the previous route.
 
 ## Notifications, limits, and recovery
 
-Set `notifications: "configured"` only after selecting the existing environment's
-`notify.webhook`. Cloud report storage is automatic and alone is not an outbound
-notice destination; use `notifications: "off"` for report-only operation.
-Uncertain high-urgency reports are sent;
-the service does not apply the foreground confidence threshold. Each message carries
-a real uploaded report link, current uncertainty, and a next check.
+Configure investigation reports in **Cloud → project Settings → Investigation
+reports in Slack**. Connect the existing Horus Slack app, create a channel for the
+project, invite the app, then select that channel and enable reports. The app uses
+`chat:write`, `channels:read`, and `groups:read`; it reuses the existing Slack OAuth
+callback. App credentials remain in Cloud. Other projects in the same Cloud
+workspace can reuse the connection while choosing their own channels.
 
-For automatic retries, set `idempotentDestination: true` only when the receiving
-endpoint honors the stable `Idempotency-Key`/`notificationKey`. A bare Slack incoming
-webhook does not provide that contract: use an idempotent relay, or leave the flag
-false. After an uncertain send without receiver deduplication, Horus retains the
-failure and requires inspection instead of sending possible duplicates.
+Cloud delivery is an explicit checkpoint after the report, AI result, and memory
+have been saved. It sends uncertain results too, with evidence, next checks, and a
+report/timeline link. Historical sync never posts project reports. Connecting alone
+leaves delivery off. The worker checks the Cloud setting even when its local
+`notifications` option is `"off"`; that option controls legacy local destinations.
+For report-only operation, turn off reports in Cloud as well.
+
+Cloud keeps a durable delivery receipt before contacting Slack. A repeated delivery
+key reuses its receipt; a changed result updates the saved Slack message. Rate
+limits defer retries. If an acknowledgement is lost, delivery stops rather than
+risking a duplicate. Check the selected channel, then use **Recent report
+deliveries** in project Settings to confirm the message is present or absent. Retry
+the worker's saved notification after confirming absence; inference does not run
+again. No Slack credential or incoming-webhook URL belongs in the Mac's config.
+
+Existing generic local webhooks remain supported for integrations already using
+`notifications: "configured"` and `notify.webhook`. Set `idempotentDestination:
+true` only when that receiver honors the stable `Idempotency-Key`/`notificationKey`.
+For a destination without deduplication, inspect an uncertain delivery before
+retrying it.
 
 ```sh
 horus service retry --job JOB_ID

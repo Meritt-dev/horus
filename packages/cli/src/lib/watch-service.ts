@@ -441,9 +441,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       env: p.environment,
       cwd: p.root,
     });
-    if (p.notifications === 'configured' && !env.notify?.webhook)
+    if (p.notifications === 'configured' && !env.notify?.webhook && !env.notify?.cloud)
       throw new Error(
-        'Notification webhook missing; configure a destination or select notifications: off',
+        'Notification destination missing; configure Cloud or a webhook, or select notifications: off',
       );
     const cloud = memorySyncContext(p.root, p.project, controller.signal);
     if (!cloud) throw new Error('Sign in and link Cloud before running this job');
@@ -678,38 +678,30 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       if (job.stage === 'notify') {
         if (!job.cloudUrl)
           throw new Error('Cloud report link missing; notification deferred');
-        if (p.notifications === 'configured' && !job.notified) {
-          if (!env.notify?.webhook && !env.notify?.cloud)
-            throw new Error('Configured notification destination missing');
+        if (!job.notified) {
           job.attempts.notify = (job.attempts.notify ?? 0) + 1;
-          // A previous uncertain send is inspectable; retry only if destination deduplicates keys.
-          if (job.notificationKey && !p.idempotentDestination)
-            throw new Error(
-              'DELIVERY_UNKNOWN: inspect destination before service retry --delivery-checked',
-            );
+          // Legacy direct webhook safety remains independent of Cloud's durable receipt.
+          if (p.notifications === 'configured' && env.notify?.webhook && job.notificationKey && !p.idempotentDestination)
+            throw new Error('DELIVERY_UNKNOWN: inspect destination before service retry --delivery-checked');
           job.notificationKey ??= `${job.id}:${digest([job.cloudReportId, (job.latestEvent ?? job.event).severity, (job.latestEvent ?? job.event).eventId, job.aiFailure])}`;
           await save();
           const ai = job.ai ? incidentResultSchema.parse(job.ai.result) : undefined;
           const cause = notificationCause(report, ai, Boolean(job.aiFailure));
-          const result = await dispatchNotify(
-            {
-              id: report.id,
-              confidence: ai?.confidence ?? report.confidence,
-              hint: redactCloudValue(`${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`),
-              cause,
-              reportUrl: job.cloudUrl,
-              notificationKey: job.notificationKey,
-            },
-            { ...env.notify!, minConfidence: 0 },
-            { cloudPush: async () => {}, timeoutMs: Math.min(5000, remaining()) },
-          );
-          if (result.some((r) => !r.ok))
-            throw new Error(
-              `Notification failed: ${result
-                .filter((r) => !r.ok)
-                .map((r) => r.detail)
-                .join('; ')}`,
-            );
+          const headline = {
+            notificationKey: job.notificationKey,
+            confidence: ai?.confidence ?? report.confidence,
+            hint: redactCloudValue(`${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`),
+            cause,
+          };
+          // Cloud owns the Slack app and project channel. This explicit checkpoint,
+          // after upload, cannot notify from historical sync or repeat engine/AI work.
+          const delivered = await cloud.client.notifyInvestigation(cloud.config.project!.id, job.cloudReportId!, headline);
+          if (!delivered || !['off', 'delivered'].includes(delivered.state))
+            throw new Error(`Cloud notification failed: ${delivered?.error ?? 'invalid delivery response'}`);
+          if (p.notifications === 'configured' && env.notify?.webhook) {
+            const result = await dispatchNotify({ id: report.id, ...headline, reportUrl: job.cloudUrl }, { ...env.notify, minConfidence: 0 }, { timeoutMs: Math.min(5000, remaining()) });
+            if (result.some(r => !r.ok)) throw new Error(`Notification failed: ${result.filter(r => !r.ok).map(r => r.detail).join('; ')}`);
+          }
           job.notified = true;
         }
         job.stage = 'complete';

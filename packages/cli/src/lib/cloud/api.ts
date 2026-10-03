@@ -494,6 +494,10 @@ export class CloudClient {
     return this.request('POST', `/v1/workspaces/${workspaceId}/alert-workers`, body);
   }
 
+  notifyInvestigation(projectId: string, investigationId: string, input: { notificationKey: string; hint: string; cause: string; confidence: number }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/investigations/${encodeURIComponent(investigationId)}/notify`, input);
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
     if (this.token) headers.authorization = `Bearer ${this.token}`;

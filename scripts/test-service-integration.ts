@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { CLAUDE_ARGS } from '../packages/cli/src/lib/claude-investigation.js';
 import { createServer } from 'node:http';
 import { createHmac } from 'node:crypto';
-import { runWatchService, pollProject, serviceConfigSchema, routeKey } from '../packages/cli/src/lib/watch-service.js';
+import {
+  runWatchService,
+  pollProject,
+  serviceConfigSchema,
+  routeKey,
+} from '../packages/cli/src/lib/watch-service.js';
 import {
   jobs,
   saveJob,
@@ -26,8 +31,14 @@ assert(new URL(url).pathname.endsWith('_test'), 'Database name must end in _test
 process.env.HORUS_CLOUD_DATABASE_URL = url;
 const cloudRoot = resolve(process.env.HORUS_CLOUD_REPO ?? '../horus-cloud');
 const cloudImport = (path: string) => import(pathToFileURL(join(cloudRoot, path)).href);
-const { createDatabase, cliTokens, investigationRequests, organizations, users } =
-  await cloudImport('packages/db/src/index.ts');
+const {
+  createDatabase,
+  cliTokens,
+  investigationRequests,
+  organizations,
+  users,
+  notificationTargets,
+} = await cloudImport('packages/db/src/index.ts');
 const { seedTenant } = await cloudImport('packages/core/src/test-helpers.ts');
 const { buildServer } = await cloudImport('apps/api/src/server.ts');
 const { generateCliToken } = await cloudImport('apps/api/src/auth/tokens.ts');
@@ -47,6 +58,33 @@ const base = `http://127.0.0.1:${app.server.address().port}`;
 
 const dir = await mkdtemp(join(tmpdir(), 'horus-service-contract-'));
 const originalEnv = { ...process.env };
+process.env.LENS_DASHBOARD_ORIGIN = base;
+const originalFetch = globalThis.fetch;
+let slackCalls = 0;
+globalThis.fetch = async (input, init) => {
+  if (String(input).startsWith('https://slack.com/api/')) {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.channel, 'C123');
+    assert(body.text.includes('uncertain') || body.text.includes('attention'));
+    assert(body.blocks.at(-1).elements[0].url.includes('/investigations/'));
+    slackCalls++;
+    return new Response(JSON.stringify({ ok: true, ts: '123.456' }));
+  }
+  return originalFetch(input, init);
+};
+await db
+  .insert(notificationTargets)
+  .values({
+    organizationId: tenant.orgId,
+    workspaceId: tenant.workspaceId,
+    projectId: tenant.projectId,
+    type: 'slack',
+    name: 'Project app reports',
+    oauth: { accessToken: 'fixture-bot-token' },
+    config: { channelId: 'C123' },
+    enabled: true,
+    minConfidence: 0,
+  });
 const deliveries = new Set<string>();
 const deliveryTexts: string[] = [];
 let sends = 0;
@@ -105,7 +143,7 @@ for(const hook_event_name of ['SessionStart','PreToolUse','PostToolUse','Stop'])
  const r=require('child_process').spawnSync('/bin/sh',['-c',hooks[hook_event_name][0].hooks[0].command],{input:JSON.stringify({session_id:session,hook_event_name,tool_name:hook_event_name.includes('Tool')?'Bash':undefined,tool_input:{command:'DO NOT UPLOAD THIS SECRET'},tool_response:'DO NOT UPLOAD RAW OUTPUT'}),encoding:'utf8',timeout:5000});if(r.status!==0)throw new Error('Activity hook failed '+r.stderr);
 }
 let live=false;const liveDeadline=Date.now()+8000;
-while(Date.now()<liveDeadline){const r=await fetch(${JSON.stringify(base+'/v1/workspaces/'+tenant.workspaceId+'/alert-workers')},{headers:{authorization:${JSON.stringify('Bearer '+token.plaintext)}}});const rows=await r.json();live=r.ok&&rows.some(w=>w.activeJob?.stage==='ai'&&w.activity?.some(a=>a.action==='Bash'&&a.kind==='tool-start'));if(live)break;await new Promise(r=>setTimeout(r,200));}if(!live)throw new Error('No live AI tool activity reached Cloud before inference finished');
+while(Date.now()<liveDeadline){const r=await fetch(${JSON.stringify(base + '/v1/workspaces/' + tenant.workspaceId + '/alert-workers')},{headers:{authorization:${JSON.stringify('Bearer ' + token.plaintext)}}});const rows=await r.json();live=r.ok&&rows.some(w=>w.activeJob?.stage==='ai'&&w.activity?.some(a=>a.action==='Bash'&&a.kind==='tool-start'));if(live)break;await new Promise(r=>setTimeout(r,200));}if(!live)throw new Error('No live AI tool activity reached Cloud before inference finished');
 const {report}=JSON.parse(s.split('\\nDATA:\\n')[1]);
 console.log(JSON.stringify({type:'result',is_error:false,session_id:session,modelUsage:{'claude-opus-5-5':{}},result:JSON.stringify({reportId:report.id,summary:'Cause uncertain',likelyCause:null,confidence:0,evidenceIds:[],historicalMemoryIds:[],nextChecks:['Check current reservation state'],uncertainty:'No current evidence'})}));});`,
     { mode: 0o700 },
@@ -241,6 +279,11 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   assert.equal(queued[0]!.stage, 'done', JSON.stringify(queued[0]));
   assert.equal((await h.db.select().from(investigations)).length, 1);
   assert.equal(queued[0]!.reportId, reportId);
+  assert.equal(
+    slackCalls,
+    1,
+    'Cloud receipt prevents duplicate Slack send on notification retry',
+  );
   const budget = await readWatchState<{ modelCalls: number; investigations: number }>(
     h.db,
     `budget:${new Date().toISOString().slice(0, 10)}`,
@@ -252,28 +295,47 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   const argv = JSON.parse((await readFile(calls, 'utf8')).trim().split('\n')[0]!);
   assert.deepEqual(argv.slice(0, CLAUDE_ARGS.length), CLAUDE_ARGS);
   assert(argv.includes('--session-id') && argv.includes('--settings'));
-  const activityResponse = await fetch(`${base}/v1/workspaces/${tenant.workspaceId}/alert-workers`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  const activityResponse = await fetch(
+    `${base}/v1/workspaces/${tenant.workspaceId}/alert-workers`,
+    { headers: { authorization: `Bearer ${token.plaintext}` } },
+  );
   assert.equal(activityResponse.status, 200);
   const workerRows = await activityResponse.json();
-  assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start')));
+  assert(
+    workerRows.some((w: any) =>
+      w.activity.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start'),
+    ),
+  );
   assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'done')));
   assert(!JSON.stringify(workerRows).includes('DO NOT UPLOAD'));
-  const runsResponse = await fetch(`${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  const runsResponse = await fetch(
+    `${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs`,
+    { headers: { authorization: `Bearer ${token.plaintext}` } },
+  );
   assert.equal(runsResponse.status, 200);
   const completedRuns = await runsResponse.json();
   assert.equal(completedRuns[0].model, 'claude-opus-5-5');
   assert.equal(completedRuns[0].agent, 'Horus background worker');
   assert(Date.parse(completedRuns[0].endedAt) >= Date.parse(completedRuns[0].startedAt));
-  const logsResponse = await fetch(`${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs/${completedRuns[0].id}/logs`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  const logsResponse = await fetch(
+    `${base}/v1/projects/${tenant.projectId}/investigations/${queued[0]!.cloudReportId}/agent-runs/${completedRuns[0].id}/logs`,
+    { headers: { authorization: `Bearer ${token.plaintext}` } },
+  );
   assert.equal(logsResponse.status, 200);
   const runLogs = await logsResponse.json();
   assert.equal(runLogs.logsFormat, 'application/vnd.horus.activity+json');
   const timeline = JSON.parse(runLogs.logs);
-  assert(timeline.events.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start'));
+  assert(
+    timeline.events.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start'),
+  );
   assert(timeline.events.some((a: any) => a.action === 'complete'));
   assert(timeline.result.includes('Next check:'));
   assert(!runLogs.logs.includes('DO NOT UPLOAD'));
-  assert.equal(completedRuns.length, 1, 'Early memory sync and final timeline keep one run');
+  assert.equal(
+    completedRuns.length,
+    1,
+    'Early memory sync and final timeline keep one run',
+  );
   assert.equal(deliveries.size, 1);
   assert.equal(sends, 2);
   const [cloudPending] = await db
@@ -594,12 +656,14 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
     assert.equal((await jobs(h.db, routeKey(project)))[0]?.cloudRequest?.id, groupedId);
     await h.sql.end();
   } finally {
+    globalThis.fetch = originalFetch;
     globalThis.fetch = nativeFetch;
   }
   console.log(
     'PASS: native PagerDuty -> authenticated lease -> real worker process -> saved engine -> exact Claude argv via fake executable -> Cloud report/memory -> idempotent notification retry; an in-flight same-timestamp PagerDuty update survives completion with one report/model call; durable AI checkpoint recovery and acknowledged severity updates without repeated inference; budget deferral and three invalid-AI retries preserve engine-only fallback',
   );
 } finally {
+  globalThis.fetch = originalFetch;
   await new Promise<void>((r) => sink.close(() => r()));
   await app.close();
   await db.delete(organizations).where(eq(organizations.id, tenant.orgId));
