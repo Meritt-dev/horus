@@ -340,7 +340,7 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | --- | --- | --- |
 | 01 M1 / A1–A3: startup recall and current evidence | Startup recall/engine checks; chronological historical replay before the CI-only instruction | Human-attested relevance and unrelated no-match holdout |
 | 01 M2: dispositions vs accuracy | Outcome schema, provenance and memory contracts | Confirmed EMODA outcomes, rather than inferred labels |
-| 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Physical second machine and production storage/migrations |
+| 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
 | 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
 | 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
@@ -429,3 +429,16 @@ be run.
 New background runs enrich the same run record created by durable memory sync with the validated model and measured execution timing. Missing/reversed legacy timing stays “Not recorded”; captured output is distinct from the saved investigation’s evidence and findings.
 
 Each new background run also saves its latest 100 stage/tool events and the redacted validated final answer in the existing AgentRun logs (`application/vnd.horus.activity+json`, version 1). Run details render an ordered UTC timeline. The completion checkpoint retries logs delivery without repeating inference; a final best-effort update includes the done event. This is bounded history, not a full transcript. Older sessions can be recovered from actual Claude tool timestamps with source `claude-session`; missing worker stages remain explicitly unrecorded. Plain-text logs remain readable. No raw prompts, tool content or private reasoning are uploaded.
+
+
+### Real second-host restoration
+
+A clean profile on the existing interserver machine, running the same private CLI
+build with Node 24.11.0, restored all 150 acknowledged private Maison memories
+through normal Cloud linking. Its local alias differed from the Mac checkout;
+no local database or history export was copied. A saved large report was fetched
+on demand by `horus ask` and remained usable by `horus packet`. Sync inspection
+reported zero pending operations, failures or conflicts. The temporary owner
+credential was removed after use. This covers initial restoration on a physical
+second host; fresh interactive login and live competing corrections were not
+exercised. Linux service packaging remains deferred, and the Mac soak is unchanged.
