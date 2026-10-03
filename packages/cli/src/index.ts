@@ -2345,7 +2345,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   }
   await program.parseAsync(parseArgv);
   // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
-  await flushTelemetry();
+  if (!(firstOperand === 'service' && program.args[1] === 'activity')) await flushTelemetry();
   // Resolution-time feedback nudge (HOR-431): at the END of a run, if a prior investigation is
   // still unlabeled and old enough, ask once. Deferred (never at investigate time), rate-limited,
   // dismissible, suppressed on non-TTY/CI/--json/--no-input. Never blocks or throws.
