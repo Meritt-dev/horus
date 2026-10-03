@@ -8,8 +8,9 @@ and Jev ranking are outside this change.
 ## Deploy the paired versions
 
 Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
-`0036_pagerduty_details`, and `0037_worker_activity`
-before activating this CLI. Use the repository's existing migration and deployment
+`0036_pagerduty_details`, `0037_worker_activity`,
+`0038_project_slack_notifications`, `0039_shared_repository_settings`, and
+`0040_project_operational_notices` before activating this CLI. Use the repository's existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
 and `0014_watch_jobs` apply automatically when the embedded database opens.
 
@@ -385,7 +386,7 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
 | 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
 | 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
-| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
+| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Cloud-selected Horus app channel persisted after reload, and one dated saved report was delivered and observed; automatic delivery from a fresh native incident remains unverified. CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
 
 The selected Maison PagerDuty service's September 26–October 2 UTC history contains
@@ -417,7 +418,22 @@ No local automated test or fault-injection scripts ran during the window.
 Before release, verify production rules/subscriptions and destination policies,
 private report storage and migrations, then complete the labeled recall holdout
 and 72-hour selected-project soak including physical lifecycle and network loss.
-The selected Maison Safqa private Mac pilot is active against production Cloud with notifications off; public automator release remains gated while these checks are open.
+The selected Maison Safqa private Mac pilot runs frozen CLI `faf3172` against
+production Cloud API `0.0.114`. Its local legacy notifications are off; Cloud app
+reports are enabled for `#maison-agent-runs`. The channel setting persisted after
+a full reload, and one dated saved EMODA report was acknowledged and observed in
+Slack. That establishes app delivery, not fresh native ingress or automatic
+worker-to-Slack delivery.
+
+The final CLI/Cloud combination began October 3, 2026 at 19:38:50 UTC. Its earliest
+72-hour elapsed point is October 6 at 19:38:50 UTC (22:38:50 Istanbul). Public
+release still requires the actual scenario soak, physical sleep/wake and
+logout/login recovery, fresh accepted PagerDuty incidents with automatic report
+delivery, and observed latency, failure and duplicate rates. Elapsed time alone
+is insufficient; no native requests had been accepted at the October 3 checkpoint.
+The three earlier Elasticsearch bootstrap reports do not substitute for that
+sample. This documentation update does not restart the worker or change its
+frozen executable.
 Azure/AWS/Grafana triggers, managed execution, Linux packaging and PRD 03 remain
 later scope. Cloud ingestion does not imply always-on investigation execution.
 
