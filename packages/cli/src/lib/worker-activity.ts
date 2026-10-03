@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 export const workerActivitySchema = z.object({
-  id: z.string().uuid(), at: z.string().datetime({ offset: true }), jobId: z.string().uuid(),
+  id: z.string().uuid(), at: z.string().max(40).datetime({ offset: true }), jobId: z.string().uuid(),
   kind: z.enum(['stage', 'tool-start', 'tool-end', 'tool-error', 'agent-start', 'agent-finish', 'error']),
   action: z.enum(['engine', 'recall', 'collect', 'ai', 'upload', 'notify', 'complete', 'done', 'Read', 'Grep', 'Glob', 'Bash', 'connected-tool', 'agent', 'other-tool']),
 }).strict();
