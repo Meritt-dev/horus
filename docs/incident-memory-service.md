@@ -357,7 +357,7 @@ No local automated test or fault-injection scripts ran during the window.
 Before release, verify production rules/subscriptions and destination policies,
 private report storage and migrations, then complete the labeled recall holdout
 and 72-hour selected-project soak including physical lifecycle and network loss.
-No production automator activation is declared while these gates remain open.
+The selected Maison Safqa private Mac pilot is active against production Cloud with notifications off; public automator release remains gated while these checks are open.
 Azure/AWS/Grafana triggers, managed execution, Linux packaging and PRD 03 remain
 later scope. Cloud ingestion does not imply always-on investigation execution.
 
@@ -385,3 +385,37 @@ customer logs or connector credentials. CI deletes its temporary files on exit;
 pull-request runs do not decode the private dataset. Missing data leaves the
 quality gate unverified. Small or operation-only samples remain exploratory,
 even when their measured rates exceed the targets.
+
+
+## Live worker activity in Cloud
+
+Open the linked workspace’s **Settings → Investigation workers**. The Mac makes
+outbound authenticated REST calls to the existing queue and worker endpoints;
+Cloud never opens an inbound connection into the Mac. Claim renewal remains
+25 seconds. While investigating, best-effort activity snapshots publish every
+two seconds, independent of claim renewal. They retain the latest 100 stage and
+tool-category events on the existing worker row.
+
+The browser receives Server-Sent Events through an authenticated same-origin
+route. Cloud samples its durable worker rows every three seconds, checks workspace
+membership each time, and closes streams after 45 seconds so reconnection obtains
+a fresh credential. Hidden tabs close their stream; reconnecting tabs recover the
+current snapshot. Two minutes without a heartbeat means offline. This is a live
+snapshot feed, not a complete audit log or a guarantee of subsecond delivery.
+
+The required local invocation still uses `claude -p --model claude-opus-5-5
+--permission-mode bypassPermissions --output-format json`, stdin for the incident,
+and the configured user’s login. Session-specific `--session-id` and `--settings`
+add documented Claude command hooks (SessionStart, PreToolUse, PostToolUse,
+PostToolUseFailure, Stop). Only finite event/tool categories leave the Mac; hook
+arguments, output, file paths, credentials and private reasoning are discarded.
+Session identity is checked against the validated final JSON result. Hook metadata
+files are private, bounded and removed after interpretation. Failed activity
+transport cannot fail or retry an investigation. Final validated findings remain
+in the saved report.
+
+Apply Cloud migration `0037_worker_activity` and deploy both the API and web app
+before upgrading the private worker runtime. Hosted CI covers the activity schema,
+workspace isolation/revocation, SSE updates, UI reconnection and the paired worker
+contract. No local automated test, integration, replay or lifecycle scripts should
+be run.

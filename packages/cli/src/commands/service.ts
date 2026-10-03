@@ -23,6 +23,7 @@ import {
 } from '../lib/watch-service.js';
 import { jobs, saveJob, readWatchState } from '../lib/watch-store.js';
 import { runProcess } from '../lib/claude-investigation.js';
+import { recordActivityHook } from '../lib/worker-activity.js';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { memorySyncContext } from '../lib/cloud/memory-sync.js';
 import { sentryForEnv, logsForEnv } from '@horus/connectors';
@@ -88,6 +89,7 @@ export async function runService(
     settings?: string;
     profile?: string;
     job?: string;
+    session?: string;
     once?: boolean;
     deliveryChecked?: boolean;
     skipChecks?: boolean;
@@ -95,6 +97,10 @@ export async function runService(
     env?: string;
   },
 ): Promise<number> {
+  if (action === 'activity') {
+    if (opts.session && opts.job) await recordActivityHook(serviceHome(), opts.session, opts.job);
+    return 0;
+  }
   const settings = resolve(opts.settings ?? join(serviceHome(), 'settings.json'));
   if (action === 'pause' || action === 'resume') {
     const file = realpathSync(settings);

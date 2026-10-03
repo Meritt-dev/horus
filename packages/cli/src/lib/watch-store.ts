@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { and, eq, watchState, watchJob, watchEvent, type HorusDb } from '@horus/db';
 import { redactCloudValue } from './cloud/investigation-sync.js';
+import type { WorkerActivity } from './worker-activity.js';
 
 export const incidentEventSchema = z.object({
   source: z.enum(['sentry', 'elasticsearch', 'pagerduty']),
@@ -46,6 +47,7 @@ export interface WatchJobData {
   notified?: boolean;
   notificationKey?: string;
   latestEvent?: IncidentEvent;
+  activity?: WorkerActivity[];
 }
 export const digest = (v: unknown) =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');

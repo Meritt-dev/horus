@@ -262,7 +262,7 @@ function loadReranker(): ((causes: readonly CauseCandidate[]) => CauseCandidate[
 export async function runOneInvestigation(
   input: RunInvestigationInput,
   ctx: InvestigationContext,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; onActivity?: (action: 'recall' | 'collect') => void } = {},
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
   if (input.reportId) {
@@ -274,6 +274,7 @@ export async function runOneInvestigation(
     }
   }
   const rerank = loadReranker();
+  opts.onActivity?.('recall');
   try { await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true }); }
   catch (error) { console.error(`Memory refresh unavailable: ${(error as Error).message}`); }
   // Stale-index freshness feeds the engine's next-step routing: when the index is
@@ -309,6 +310,7 @@ export async function runOneInvestigation(
       onStartupRecall: items => {
         if (!items.length) console.error('Prior incidents: no relevant match.');
         for (const item of items) console.error(formatStartupIncident(item));
+        opts.onActivity?.('collect');
       },
       logs: ctx.logs,
       mongo: ctx.mongo,

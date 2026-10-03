@@ -1,5 +1,6 @@
 /** Run explicitly against a disposable Cloud test database; never reads the user's Horus profile. */
 import assert from 'node:assert/strict';
+import { CLAUDE_ARGS } from '../packages/cli/src/lib/claude-investigation.js';
 import { createServer } from 'node:http';
 import { createHmac } from 'node:crypto';
 import { runWatchService, pollProject, serviceConfigSchema, routeKey } from '../packages/cli/src/lib/watch-service.js';
@@ -98,8 +99,13 @@ try {
 const fs=require('fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',async()=>{
 const deadline=Date.now()+2000;let stage;while(Date.now()<deadline){stage=JSON.parse(fs.readFileSync(${JSON.stringify(join(dir, 'profile/service/status.json'))},'utf8')).activeJob?.stage;if(stage==='ai')break;await new Promise(r=>setTimeout(r,20));}if(stage!=='ai')throw new Error('Service status did not reach AI stage while worker owned DB');
 fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');
+const args=process.argv.slice(2);const session=args[args.indexOf('--session-id')+1];
+const hooks=JSON.parse(args[args.indexOf('--settings')+1]).hooks;
+for(const hook_event_name of ['SessionStart','PreToolUse','PostToolUse','Stop']){
+ const r=require('child_process').spawnSync('/bin/sh',['-c',hooks[hook_event_name][0].hooks[0].command],{input:JSON.stringify({session_id:session,hook_event_name,tool_name:hook_event_name.includes('Tool')?'Bash':undefined,tool_input:{command:'DO NOT UPLOAD THIS SECRET'},tool_response:'DO NOT UPLOAD RAW OUTPUT'}),encoding:'utf8',timeout:5000});if(r.status!==0)throw new Error('Activity hook failed '+r.stderr);
+}
 const {report}=JSON.parse(s.split('\\nDATA:\\n')[1]);
-console.log(JSON.stringify({type:'result',is_error:false,session_id:'test-session-'+report.id,modelUsage:{'claude-opus-5-5':{}},result:JSON.stringify({reportId:report.id,summary:'Cause uncertain',likelyCause:null,confidence:0,evidenceIds:[],historicalMemoryIds:[],nextChecks:['Check current reservation state'],uncertainty:'No current evidence'})}));});`,
+console.log(JSON.stringify({type:'result',is_error:false,session_id:session,modelUsage:{'claude-opus-5-5':{}},result:JSON.stringify({reportId:report.id,summary:'Cause uncertain',likelyCause:null,confidence:0,evidenceIds:[],historicalMemoryIds:[],nextChecks:['Check current reservation state'],uncertainty:'No current evidence'})}));});`,
     { mode: 0o700 },
   );
   const configPath = join(root, 'horus.config.mjs');
@@ -241,6 +247,15 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:'test-sessio
   assert.equal(budget?.investigations, 1);
   await h.sql.end();
   assert.equal((await readFile(calls, 'utf8')).trim().split('\n').length, 1);
+  const argv = JSON.parse((await readFile(calls, 'utf8')).trim().split('\n')[0]!);
+  assert.deepEqual(argv.slice(0, CLAUDE_ARGS.length), CLAUDE_ARGS);
+  assert(argv.includes('--session-id') && argv.includes('--settings'));
+  const activityResponse = await fetch(`${base}/v1/workspaces/${tenant.workspaceId}/alert-workers`, { headers: { authorization: `Bearer ${token.plaintext}` } });
+  assert.equal(activityResponse.status, 200);
+  const workerRows = await activityResponse.json();
+  assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'Bash' && a.kind === 'tool-start')));
+  assert(workerRows.some((w: any) => w.activity.some((a: any) => a.action === 'done')));
+  assert(!JSON.stringify(workerRows).includes('DO NOT UPLOAD'));
   assert.equal(deliveries.size, 1);
   assert.equal(sends, 2);
   const [cloudPending] = await db

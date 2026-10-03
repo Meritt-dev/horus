@@ -1273,6 +1273,7 @@ Examples:
     .option('--settings <path>', 'absolute service settings JSON')
     .option('--profile <name>', 'launchd profile label', 'default')
     .option('--job <id>', 'job identity for retry/worker')
+    .option('--session <id>', 'internal Claude activity session identity')
     .option('--path <dir>', 'project root to pause/resume (default: cwd)')
     .option('--env <name>', 'environment to pause/resume')
     .option('--once', 'one foreground cycle')

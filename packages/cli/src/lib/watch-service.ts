@@ -7,6 +7,7 @@ import {
   existsSync,
   statSync,
   appendFileSync,
+  unlinkSync,
 } from 'node:fs';
 import { resolve, isAbsolute, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -55,6 +56,7 @@ import {
   redactCloudValue,
 } from './cloud/investigation-sync.js';
 import { dispatchNotify, notificationCause } from './notify-sink.js';
+import { activityEvent, activityPath, claudeActivityArgs, readActivity, type WorkerActivity } from './worker-activity.js';
 
 const absolute = z.string().refine(isAbsolute, 'Absolute path required');
 export const serviceConfigSchema = z
@@ -419,6 +421,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
   let job: WatchJobData | undefined;
   let previousAttempts: WatchJobData['attempts'] = {};
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let activityTimer: ReturnType<typeof setInterval> | undefined;
+  let hookFile: string | undefined;
+  let activitySend: Promise<void> | undefined;
   let localWorkerId = `local-${process.ppid}`;
   try {
     job = await withDb(async (db) => (await jobs(db)).find((j) => j.id === jobId));
@@ -451,6 +456,35 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       environment: p.environment,
       ...job!.cloudRequest,
     });
+    const addActivity = (kind: WorkerActivity['kind'], action: WorkerActivity['action']) => {
+      job!.activity = [...(job!.activity ?? []), activityEvent(job!.id, kind, action)].slice(-100);
+    };
+    const collectActivity = () => {
+      if (!hookFile) return;
+      try {
+        const events = new Map((job!.activity ?? []).map(event => [event.id, event]));
+        for (const event of readActivity(hookFile, job!.id)) events.set(event.id, event);
+        job!.activity = [...events.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-100);
+      } catch { /* A damaged activity file cannot fail evidence gathering. */ }
+    };
+    const publishActivity = (): Promise<void> => {
+      if (activitySend) return activitySend;
+      activitySend = (async () => {
+        try {
+          collectActivity();
+          const telemetry = memorySyncContext(p.root, p.project, AbortSignal.timeout(3000));
+          if (!telemetry || telemetry.scope !== cloud.scope) return;
+          await telemetry.client.workerHeartbeat(cloud.config.workspace!.id, {
+            projectId: cloud.config.project!.id, environment: p.environment,
+            workerId: job!.cloudRequest?.workerId ?? localWorkerId,
+            state: job!.status === 'done' ? 'idle' : 'running',
+            activeJob: job!.status === 'done' ? null : { jobId: job!.id, reportId: job!.reportId, cloudReportId: job!.cloudReportId, stage: job!.stage },
+            activity: job!.activity ?? [],
+          });
+        } catch { /* Activity transport never fails or retries the investigation. */ }
+      })().finally(() => { activitySend = undefined; });
+      return activitySend;
+    };
     const beat = async () => {
       if (job!.cloudRequest)
         await cloud.client.alertRequest(
@@ -459,12 +493,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           'heartbeat',
           claimBody(),
         );
-      await cloud.client.workerHeartbeat(cloud.config.workspace!.id, {
-        projectId: cloud.config.project!.id,
-        environment: p.environment,
-        workerId: job!.cloudRequest?.workerId ?? localWorkerId,
-        state: 'running',
-      });
+      await publishActivity();
     };
     if (job.cloudRequest && job.stage !== 'complete') {
       try {
@@ -487,6 +516,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     heartbeat = setInterval(() => {
       void beat().catch(stop);
     }, 25_000);
+    addActivity('stage', job.stage);
+    void publishActivity();
+    activityTimer = setInterval(() => { void publishActivity(); }, 2000);
     // No source host auto-start or re-index in the unattended path.
     context = await buildInvestigationContext(env, {
       databaseUrl: loaded.database.url,
@@ -504,7 +536,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     )) ?? { investigations: 0, modelCalls: 0 };
     const save = async () => {
       controller.signal.throwIfAborted();
+      collectActivity();
+      const lastStage = [...(job!.activity ?? [])].reverse().find(a => a.kind === 'stage' && !['recall', 'collect'].includes(a.action));
+      if (lastStage?.action !== job!.stage) addActivity('stage', job!.stage);
       await saveJob(db, job!);
+      void publishActivity();
       // The supervisor alone writes status.json; IPC avoids a second PGlite reader or file writer.
       if (process.connected)
         process.send?.({ jobId: job!.id, stage: job!.stage }, () => {});
@@ -533,7 +569,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             service: job.event.service,
           },
           context,
-          { timeoutMs: config.deadlineSeconds * 1000 + 60_000 },
+          { timeoutMs: config.deadlineSeconds * 1000 + 60_000, onActivity: action => { addActivity('stage', action); void publishActivity(); } },
         );
         if (!report.persisted) throw new Error('Engine report was not durably saved');
       }
@@ -553,6 +589,13 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           job.attempts.ai = (job.attempts.ai ?? 0) + 1;
           await save();
           try {
+            const sessionId = randomUUID();
+            let activityArgs: string[] = [];
+            try {
+              hookFile = activityPath(serviceHome(), sessionId);
+              writeFileSync(hookFile, '', { mode: 0o600, flag: 'wx' });
+              activityArgs = claudeActivityArgs(config.runtime, config.runtimeArgs, config.entry, sessionId, job.id);
+            } catch { hookFile = undefined; }
             job.ai = await interpretIncident(
               config.claude,
               p.root,
@@ -561,6 +604,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
               remaining(),
               controller.signal,
               true, // Keep Claude/tools in the worker group so supervisor cleanup survives SIGKILL.
+              activityArgs,
             );
             job.aiFailure = undefined;
             // Persist inference before report annotation: recovery reuses the validated result.
@@ -568,6 +612,10 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           } catch (error) {
             job.aiFailure = redactErrorMessage(error);
             if ((job.attempts.ai ?? 0) < 3) throw error;
+          } finally {
+            collectActivity();
+            try { if (hookFile && existsSync(hookFile)) unlinkSync(hookFile); } catch { /* private bounded metadata only */ }
+            hookFile = undefined;
           }
         }
         report = {
@@ -698,9 +746,15 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       job.error = undefined;
       job.pid = undefined;
       await save();
+      if (activityTimer) clearInterval(activityTimer);
+      await activitySend;
+      await publishActivity();
     }
   } catch (error) {
+    if (activityTimer) clearInterval(activityTimer);
+    await activitySend;
     if (job) {
+      job.activity = [...(job.activity ?? []), activityEvent(job.id, 'error', job.stage)].slice(-100);
       job.error = redactErrorMessage(error);
       job.pid = undefined;
       const budget = job.error.includes('DAILY_BUDGET');
@@ -742,6 +796,8 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             environment: p.environment,
             workerId: job.cloudRequest?.workerId ?? localWorkerId,
             state: budget ? 'budget-exhausted' : 'degraded',
+            activeJob: { jobId: job.id, reportId: job.reportId, cloudReportId: job.cloudReportId, stage: job.stage },
+            activity: job.activity ?? [],
           })
           .catch(() => {});
       }
@@ -802,6 +858,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     clearTimeout(timer);
     if (termination) clearTimeout(termination);
     if (heartbeat) clearInterval(heartbeat);
+    if (activityTimer) clearInterval(activityTimer);
+    await activitySend;
+    try { if (hookFile && existsSync(hookFile)) unlinkSync(hookFile); } catch { /* private bounded metadata only */ }
     if (context) await disposeInvestigationContext(context);
     process.removeListener('SIGTERM', stopBySignal);
     process.removeListener('SIGINT', stopBySignal);
