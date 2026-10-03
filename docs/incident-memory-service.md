@@ -354,7 +354,18 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
 | 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Live configured destination policy; CI uses controlled Claude output |
-| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826 | Production rates, healthy-path latency and a week of native alert volume to calibrate temporary daily caps |
+| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
+
+The selected Maison PagerDuty service's September 26–October 2 UTC history contains
+ten triggers, eleven acknowledgements and ten resolutions, all on September 27.
+All 204 retained incident metadata records were scanned for changes; no older
+incident changed within that week. The ten changed incidents contain 107 log
+entries, including notification/assignment records that do not each start an
+investigation. The temporary 30-investigation cap leaves three times the observed
+peak of ten native starts; 45 model calls allows all three bounded attempts for
+that peak plus 50% headroom. Related retries may group into fewer episodes.
+These remain adjustable pilot caps, not a forecast or proof of future volume.
+Historical provider reads do not certify fresh webhook delivery or start latency.
 
 The read-only Maison Safqa Elasticsearch pilot completed its September 28–October 1
 72-hour elapsed window using frozen runtime `08db520`, isolated local Cloud storage,
