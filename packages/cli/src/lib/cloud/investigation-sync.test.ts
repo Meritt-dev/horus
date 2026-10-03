@@ -477,6 +477,7 @@ describe("investigation-sync", () => {
       if (u.endsWith("/investigations") && method === "POST") {
         return json({ id: "inv-1", status: "running" });
       }
+      if (u.endsWith("/agent-runs") && method === "POST") return json({ id: "run-1" });
       return json({ id: "ok" });
     });
 
