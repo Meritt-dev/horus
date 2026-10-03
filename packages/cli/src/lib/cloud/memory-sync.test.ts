@@ -15,6 +15,7 @@ import {
 import { createLocalMemoryStore } from '@horus/engine';
 import { synchronizeMemory, restoreMemoryReport, type MemorySyncContext } from './memory-sync.js';
 import type { CloudClient, MemoryItemRecord, MemorySyncResult } from './api.js';
+import * as investigationSync from './investigation-sync.js';
 
 const paths: string[] = [];
 const handles: DbHandle[] = [];
@@ -380,4 +381,46 @@ it('isolates unreadable history, backfills later readable reports, and retries a
   expect(recovered.error).toBeUndefined();
   expect(await h.db.select().from(memoryItem)).toHaveLength(2);
   expect(await h.db.select().from(investigations)).toHaveLength(4);
+}, 30_000);
+
+it('retains completed report uploads in the authorized scope when a recurring memory sync is interrupted', async () => {
+  const h = await open();
+  const remote = cloud();
+  const store = createLocalMemoryStore(h.db);
+  const memory = await store.add({
+    id: '', kind: 'investigation', source: 'investigation', scope: 'repo', repo: remote.ctx.repo,
+    claim: 'recurring incident', confidence: 0.3,
+  }, audit);
+  const ids = ['0c2ad168-fc56-453c-903e-981623ebcc6f', '93f60d4c-a63d-4b6b-8ee9-c4dcdc22533f'];
+  for (const id of ids) {
+    await h.db.insert(investigations).values({
+      id, title: 'incident', project: remote.ctx.repo, incidentInput: {},
+      report: { id, input: { repo: remote.ctx.repo, hint: 'incident' }, hypotheses: [] },
+    });
+    await store.addLink({ id: '', fromMemoryId: memory.id, rel: 'about-incident',
+      toKind: 'incident', toRef: id });
+  }
+  let interrupted = false;
+  const upload = vi.spyOn(investigationSync, 'uploadInvestigationToCloud').mockImplementation(
+    async (_client, _config, report) => {
+      if (report.id === ids[1] && !interrupted) {
+        interrupted = true;
+        throw new Error('deadline interrupted the second report');
+      }
+      return { projectId: remote.ctx.config.project!.id, investigationId: `cloud-${report.id}` };
+    },
+  );
+  const first = await synchronizeMemory(h.db, remote.ctx);
+  expect(first.state).toBe('Pending sync');
+  expect(first.error).toContain('deadline');
+  const partial = await store.get(memory.id);
+  expect(partial?.syncScope).toBe(remote.ctx.scope);
+  expect(partial?.payload).toMatchObject({ reportRefs: { [ids[0]!]: `cloud-${ids[0]}` } });
+  expect(await h.db.select().from(memorySyncOutbox)).toHaveLength(0);
+  const result = await synchronizeMemory(h.db, remote.ctx);
+  expect(result.state).toBe('Synced');
+  expect(upload.mock.calls.map((c) => c[2].id)).toEqual([ids[0], ids[1], ids[1]]);
+  expect(remote.rows.get(memory.id)?.record).toMatchObject({ reportRefs: {
+    [ids[0]!]: `cloud-${ids[0]}`, [ids[1]!]: `cloud-${ids[1]}`,
+  } });
 }, 30_000);

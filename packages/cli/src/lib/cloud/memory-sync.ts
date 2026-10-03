@@ -768,6 +768,17 @@ export async function synchronizeMemory(
               { db },
             );
             reportRefs[link.toRef] = result.investigationId;
+            // A recurring memory can link many reports; retain each completed upload across deadlines.
+            await db.transaction(async (tx) => {
+              await tx.execute(sql`SELECT set_config('horus.sync_pull', '1', true)`);
+              await tx.update(memoryItem).set({
+                payload: { ...payloadOf(item), reportRefs: { ...reportRefs } },
+                syncScope: ctx.scope,
+                orgId: ctx.config.organization?.id,
+                workspaceId: ctx.config.workspace?.id,
+                userId: ctx.userId,
+              }).where(eq(memoryItem.id, item.id));
+            });
           }
         }
         record.reportRefs = reportRefs;

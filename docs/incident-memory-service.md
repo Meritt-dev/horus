@@ -88,6 +88,9 @@ from the memory synchronization counts. Unreadable report payloads are isolated 
 readable history can continue backfilling. Their IDs and a separate `backfill.failed`
 count remain visible, and the state stays `Pending sync` until they are recovered.
 Failed rows are never counted as excluded or overwritten automatically.
+Completed report uploads are checkpointed with their authorized Cloud scope before
+the memory operation is published. Interrupted passes resume the remaining report
+references instead of repeating every upload in a large recurring incident family.
 
 On a clean second machine: install the paired CLI, log into the same account, and link
 the same Cloud project. Linking automatically starts bounded restoration; subsequent
