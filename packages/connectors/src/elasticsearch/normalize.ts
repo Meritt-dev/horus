@@ -178,6 +178,8 @@ export function validateFieldMapping(m: ElasticsearchFieldMapping): void {
 // ---------------------------------------------------------------------------
 
 export interface LogRecord {
+  /** Native Elasticsearch document identity, separate from user-authored _source fields. */
+  documentId?: string;
   timestamp: string;
   level: LogLevel;
   levelValue: number;
@@ -341,7 +343,7 @@ export function buildTextMust(
 ): unknown[] {
   if (q.text === undefined) return [{ match_all: {} }];
   if (q.broadText === true) {
-    const fields = [mapping.messageField];
+    const fields = [mapping.messageField, mapping.eventCodeField];
     if (mapping.messageFallbackField !== undefined) fields.push(mapping.messageFallbackField);
     fields.push('detail', 'context.*');
     return [{ multi_match: { query: q.text, fields, type: 'phrase', lenient: true } }];
@@ -601,6 +603,7 @@ export function normalizeHit(
   const index = typeof h['_index'] === 'string' ? h['_index'] : '';
 
   return {
+    ...(typeof h['_id'] === 'string' ? { documentId: h['_id'] } : {}),
     timestamp,
     level,
     levelValue,

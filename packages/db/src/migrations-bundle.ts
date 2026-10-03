@@ -135,5 +135,27 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
       "ALTER TABLE \"memory_item\" ADD COLUMN \"pulled_at\" timestamp with time zone;",
       "CREATE INDEX IF NOT EXISTS \"memory_item_origin_idx\" ON \"memory_item\" (\"repo\",\"origin\");"
     ]
+  },
+  {
+    "tag": "0013_memory_sync",
+    "statements": [
+      "ALTER TABLE memory_item ADD COLUMN sync_scope text, ADD COLUMN sync_generation integer NOT NULL DEFAULT 1;",
+      "CREATE TABLE memory_sync_state (\n scope text PRIMARY KEY, repo text NOT NULL, cursor text NOT NULL DEFAULT '0', team_cursor text NOT NULL DEFAULT '0',\n last_pull timestamptz, last_push timestamptz, error text\n);",
+      "CREATE TABLE memory_sync_replica (\n scope text NOT NULL REFERENCES memory_sync_state(scope),\n memory_id text NOT NULL REFERENCES memory_item(id) ON DELETE CASCADE,\n revision text NOT NULL DEFAULT '0', generation integer NOT NULL DEFAULT 0,\n PRIMARY KEY(scope, memory_id)\n);",
+      "CREATE TABLE memory_sync_outbox (\n id text PRIMARY KEY, scope text NOT NULL REFERENCES memory_sync_state(scope),\n memory_id text NOT NULL REFERENCES memory_item(id) ON DELETE CASCADE,\n generation integer NOT NULL, request jsonb NOT NULL,\n attempts integer NOT NULL DEFAULT 0, next_attempt_at timestamptz NOT NULL DEFAULT now(),\n error text, conflict jsonb, created_at timestamptz NOT NULL DEFAULT now(),\n UNIQUE(scope, memory_id)\n);",
+      "CREATE FUNCTION horus_memory_changed() RETURNS trigger AS $$\nBEGIN\n IF current_setting('horus.sync_pull', true) = '1' THEN RETURN NEW; END IF;\n NEW.sync_generation := OLD.sync_generation + 1;\n RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;",
+      "CREATE TRIGGER memory_changed BEFORE UPDATE ON memory_item FOR EACH ROW EXECUTE FUNCTION horus_memory_changed();",
+      "CREATE FUNCTION horus_memory_relation_changed() RETURNS trigger AS $$\nDECLARE mid text;\nBEGIN\n IF current_setting('horus.sync_pull', true) = '1' THEN RETURN NULL; END IF;\n IF TG_TABLE_NAME = 'memory_link' THEN\n   IF TG_OP = 'DELETE' THEN mid := OLD.from_memory_id; ELSE mid := NEW.from_memory_id; END IF;\n ELSE mid := NEW.memory_id;\n END IF;\n UPDATE memory_item SET sync_generation = sync_generation + 1 WHERE id = mid;\n RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;",
+      "CREATE TRIGGER memory_link_changed AFTER INSERT OR UPDATE OR DELETE ON memory_link FOR EACH ROW EXECUTE FUNCTION horus_memory_relation_changed();",
+      "CREATE TRIGGER memory_audit_changed AFTER INSERT ON memory_audit FOR EACH ROW EXECUTE FUNCTION horus_memory_relation_changed();",
+      "CREATE FUNCTION horus_memory_feedback_changed() RETURNS trigger AS $$\nBEGIN\n IF current_setting('horus.sync_pull', true) = '1' THEN RETURN NULL; END IF;\n UPDATE memory_item SET sync_generation = sync_generation + 1\n WHERE id IN (SELECT from_memory_id FROM memory_link WHERE to_kind = 'incident' AND to_ref = NEW.investigation_id::text);\n RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;",
+      "CREATE TRIGGER memory_feedback_changed AFTER INSERT ON outcome_label FOR EACH ROW EXECUTE FUNCTION horus_memory_feedback_changed();"
+    ]
+  },
+  {
+    "tag": "0014_watch_jobs",
+    "statements": [
+      "CREATE TABLE IF NOT EXISTS watch_state (key text PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE IF NOT EXISTS watch_job (id uuid PRIMARY KEY, route text NOT NULL, episode text NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(route,episode));\nCREATE TABLE IF NOT EXISTS watch_event (route text NOT NULL, event_id text NOT NULL, job_id uuid NOT NULL REFERENCES watch_job(id), PRIMARY KEY(route,event_id));"
+    ]
   }
 ];

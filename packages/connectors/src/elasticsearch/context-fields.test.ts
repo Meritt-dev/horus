@@ -83,13 +83,14 @@ describe('buildTextMust — broad search (HOR-216)', () => {
     expect(must[0]).toEqual({ match: { message: 'boom' } });
   });
 
-  it('matches across message, detail, and context.* when broadText is set', () => {
+  it('matches across message, native event code, detail, and context.* when broadText is set', () => {
     const must = buildTextMust({ text: 'ENOTFOUND', broadText: true }, MERITT_FIELD_MAPPING);
     const mm = (must[0] as Record<string, any>)['multi_match'];
     expect(mm.query).toBe('ENOTFOUND');
     expect(mm.fields).toContain('message');
     expect(mm.fields).toContain('detail');
     expect(mm.fields).toContain('context.*');
+    expect(mm.fields).toContain('event_code');
   });
 
   it('flows broadText through buildSearchBody', () => {

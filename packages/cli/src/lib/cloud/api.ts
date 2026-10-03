@@ -10,6 +10,7 @@ export class CloudError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "CloudError";
@@ -286,6 +287,7 @@ export interface ChangeReportRecord {
  * vectors never cross the trust boundary; the cloud re-embeds from `claim` text if it ever needs to.
  */
 export interface MemoryItemSyncInput {
+  record?: Record<string, unknown>;
   /** CLI memory_item.id (ULID) — the upsert key. */
   clientId: string;
   kind?: string;
@@ -330,6 +332,7 @@ export interface MemoryLinkSyncInput {
  * memory_id`), resolved to the cloud uuid server-side. `actor` is the verbatim provenance object.
  */
 export interface MemoryAuditSyncInput {
+  detail?: Record<string, unknown>;
   /** CLI memory_audit.id — the (org, clientAuditId) dedup key. */
   clientAuditId: string;
   /** CLI item ULID (memory_audit.memory_id), resolved to the cloud uuid server-side. */
@@ -346,6 +349,10 @@ export interface MemoryAuditSyncInput {
 
 /** A memory item as the cloud returns it. `clientId` round-trips the CLI ULID. */
 export interface MemoryItemRecord {
+  revision?: string;
+  record?: Record<string, unknown>;
+  links?: Array<MemoryLinkSyncInput & { createdAt: string }>;
+  audit?: Array<MemoryAuditSyncInput & { detail: Record<string, unknown> }>;
   id: string;
   clientId: string;
   organizationId: string;
@@ -375,6 +382,9 @@ export interface MemorySyncBatchCounts {
 }
 
 export interface MemorySyncResult {
+  operationId?: string;
+  revision?: string;
+  conflict?: { reason: string; currentRevision: string };
   /** Echoed item records — present only when the cloud build returns them (older builds did). */
   items?: MemoryItemRecord[];
   created?: number;
@@ -389,6 +399,7 @@ export interface MemorySyncResult {
 }
 
 export interface MemoryListQuery {
+  afterRevision?: string;
   status?: string;
   kind?: string;
   /** ilike on claim. */
@@ -467,7 +478,28 @@ export class CloudClient {
   constructor(
     private readonly baseUrl: string,
     private readonly token?: string,
+    private readonly signal?: AbortSignal,
   ) {}
+
+  listAlertSources(workspaceId: string): Promise<Array<{ provider: string; projectId: string | null; environment: string | null; enabled: boolean; serviceId: string | null; hasApiToken?: boolean; apiRegion?: string; lastError?: string | null }>> {
+    return this.request('GET', `/v1/workspaces/${workspaceId}/alert-sources`);
+  }
+  listAlertRequests(workspaceId: string, projectId: string, environment: string): Promise<Array<{ id: string; localReportId: string; hint: string; payload: Record<string, unknown>; projectId: string; environment: string }>> {
+    return this.request('GET', `/v1/workspaces/${workspaceId}/investigation-requests?${new URLSearchParams({ projectId, environment, ready: 'true' })}`);
+  }
+  alertRequest(workspaceId: string, requestId: string, action: 'claim' | 'heartbeat' | 'complete' | 'fail' | 'retry', body: Record<string, unknown>): Promise<{ id: string; claimToken: string; localReportId: string }> {
+    return this.request('POST', `/v1/workspaces/${workspaceId}/investigation-requests/${requestId}/${action}`, body);
+  }
+  workerHeartbeat(workspaceId: string, body: Record<string, unknown>): Promise<unknown> {
+    return this.request('POST', `/v1/workspaces/${workspaceId}/alert-workers`, body);
+  }
+
+  notifyInvestigation(projectId: string, investigationId: string, input: { notificationKey: string; hint: string; cause: string; confidence: number }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/investigations/${encodeURIComponent(investigationId)}/notify`, input);
+  }
+  notifyServiceNotice(projectId: string, input: { kind: 'budget' | 'terminal'; environment: string; jobId: string; day: string; hint: string; cause: string }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/notifications/slack/notices`, input);
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
@@ -478,6 +510,7 @@ export class CloudClient {
     try {
       res = await fetch(`${this.baseUrl.replace(/\/$/, "")}${path}`, {
         method,
+        signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
@@ -490,14 +523,20 @@ export class CloudClient {
     if (res.status === 204) return undefined as T;
 
     const text = await res.text();
-    const json = text ? (JSON.parse(text) as unknown) : undefined;
+    let json: unknown;
+    try { json = text ? JSON.parse(text) : undefined; }
+    catch (error) { if (res.ok) throw error; }
 
     if (!res.ok) {
       const envelope = json as { error?: { code?: string; message?: string } } | undefined;
+      const retryAfter = res.headers.get('retry-after');
+      const retryAfterMs = retryAfter === null ? NaN : /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
       throw new CloudError(
         res.status,
         envelope?.error?.code ?? "http_error",
         envelope?.error?.message ?? `Request failed (${res.status}).`,
+        Number.isFinite(retryAfterMs) ? Math.max(0, retryAfterMs) : undefined,
       );
     }
     return json as T;
@@ -673,6 +712,8 @@ export class CloudClient {
       status?: string;
       agent?: string;
       model?: string;
+      startedAt?: string;
+      endedAt?: string;
       cliVersion?: string;
       summary?: string;
       idempotencyKey?: string;
@@ -683,6 +724,14 @@ export class CloudClient {
       `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs`,
       body,
     );
+  }
+
+  /** Complete metadata for a run already created by durable memory/report sync. */
+  updateAgentRun(
+    projectId: string, investigationId: string, runId: string,
+    body: { agent?: string; model?: string; startedAt?: string; endedAt?: string; summary?: string; logs?: string; logsFormat?: string },
+  ): Promise<AgentRunRecord> {
+    return this.request<AgentRunRecord>("PATCH", `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs/${runId}`, body);
   }
 
   // ── Knowledge snapshots (HOR-296) ──────────────────────────────────────────
@@ -732,6 +781,7 @@ export class CloudClient {
   syncMemoryItems(
     projectId: string,
     body: {
+      operation?: { id: string; baseRevision: string; restore?: boolean };
       items?: MemoryItemSyncInput[];
       links?: MemoryLinkSyncInput[];
       audit?: MemoryAuditSyncInput[];
@@ -748,15 +798,16 @@ export class CloudClient {
   listMemoryItems(
     projectId: string,
     q?: MemoryListQuery,
-  ): Promise<{ items: MemoryItemRecord[]; nextCursor?: string }> {
+  ): Promise<{ items: MemoryItemRecord[]; nextCursor?: string; nextRevision?: string; hasMore?: boolean }> {
     const params = new URLSearchParams();
+    if (q?.afterRevision !== undefined) params.set("afterRevision", q.afterRevision);
     if (q?.status) params.set("status", q.status);
     if (q?.kind) params.set("kind", q.kind);
     if (q?.search) params.set("search", q.search);
     if (q?.limit !== undefined) params.set("limit", String(q.limit));
     if (q?.cursor) params.set("cursor", q.cursor);
     const qs = params.toString();
-    return this.request<{ items: MemoryItemRecord[]; nextCursor?: string }>(
+    return this.request<{ items: MemoryItemRecord[]; nextCursor?: string; nextRevision?: string; hasMore?: boolean }>(
       "GET",
       `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ""}`,
     );

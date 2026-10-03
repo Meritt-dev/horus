@@ -1,4 +1,5 @@
 import { cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv, type QueueEvidenceProvider, type StructuredLogSource } from '@horus/connectors';
+import { syncLinkedMemory, memorySyncContext } from './cloud/memory-sync.js';
 /**
  * Shared investigation runner (HOR-CLI).
  *
@@ -16,7 +17,7 @@ import { cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv, type Qu
  */
 
 import pc from 'picocolors';
-import type { ResolvedEnvironment, ShopifyQuerySpec } from '@horus/core';
+import { redactSecrets, type ResolvedEnvironment, type ShopifyQuerySpec } from '@horus/core';
 import {
   codeForEnv,
   codeForUrl,
@@ -43,7 +44,7 @@ import type {
   MetricsProvider,
   CodeProvider,
 } from '@horus/connectors';
-import { openDb } from '@horus/db';
+import { openDb, investigations, eq } from '@horus/db';
 import type { DbHandle } from '@horus/db';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -55,6 +56,15 @@ import { resolveSourceHostUrl } from './ensure-host.js';
 import { readIndexMeta, STALE_INDEX_MS } from './freshness.js';
 import { readAuth } from './cloud/auth-store.js';
 import { readCloudConfig } from './cloud/context-store.js';
+
+/** Explain the startup match before current evidence is gathered. */
+export function formatStartupIncident(item: NonNullable<InvestigationReport['startupRecall']>[number]): string {
+  const refs = Object.entries(item.reportRefs).map(([local, cloud]) => `${local} (Cloud ${cloud})`);
+  return redactSecrets(`Prior incident ${item.incidentId ?? item.memoryId} [${item.environment}; ${item.outcome?.certainty ?? 'inferred'}]: ${item.claim}
+  Matched: ${item.matchingFields.join(', ') || 'unspecified'}; last verified: ${item.lastVerifiedAt ?? 'never'}.
+  Reports: ${refs.join(', ') || item.outcome?.sourceInvestigation || 'unavailable'}; historical outcome: ${item.outcome?.disposition ?? 'unknown'}.
+  First check: ${item.checks[0] ?? 'Review current evidence'}. Historical match; current outcome unconfirmed.`);
+}
 
 /**
  * Everything a single `investigate()` call needs: the resolved env, the live connectors,
@@ -88,6 +98,7 @@ export interface InvestigationContext {
 export interface BuildContextOptions {
   /** Database URL for the investigation store (config.database.url). */
   databaseUrl: string;
+  unattended?: boolean;
   /** Explicit service scope; falls back to the ES connector's configured serviceName. */
   service?: string;
   /** Sink for human-readable status/warning lines (default: console.error). */
@@ -112,7 +123,7 @@ export async function buildInvestigationContext(
   const log = opts.log ?? ((l: string) => console.error(l));
 
   let code = codeForEnv(renv);
-  if (!code && !Object.values(renv.connectors).some(Boolean)) {
+  if (!code && !opts.unattended && !Object.values(renv.connectors).some(Boolean)) {
     throw new Error(
       `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
     );
@@ -121,7 +132,9 @@ export async function buildInvestigationContext(
   // `codeForEnv` only returns a provider when the repo has a configured sourceHostUrl.
   const sourceUrl = renv.repositories[0]?.sourceHostUrl;
   let runtimeOnly: boolean;
-  if (sourceUrl) {
+  if (opts.unattended) {
+    runtimeOnly = !code || !(await code.health()).ok;
+  } else if (sourceUrl) {
     // HOR-319 (layer-1) self-heal a down host + HOR-421 verify the host serves THIS repo
     // (never ground on a foreign repo's host occupying the shared :8420 default). The
     // resolved URL may differ from the configured one when we had to start this repo's own
@@ -202,6 +215,8 @@ function databaseUrlOrThrow(url: string): string {
 
 /** Per-investigation overrides — the hint plus optional scoping/window flags. */
 export interface RunInvestigationInput {
+  reportId?: string;
+  incident?: import('@horus/engine').IncidentContext;
   hint: string;
   /** Git ref/range for change-impact (e.g. HEAD~5). */
   since?: string;
@@ -247,10 +262,21 @@ function loadReranker(): ((causes: readonly CauseCandidate[]) => CauseCandidate[
 export async function runOneInvestigation(
   input: RunInvestigationInput,
   ctx: InvestigationContext,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; onActivity?: (action: 'recall' | 'collect') => void } = {},
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
+  if (input.reportId) {
+    const [saved] = await ctx.dbHandle.db.select().from(investigations).where(eq(investigations.id, input.reportId));
+    if (saved) {
+      const report = saved.report as InvestigationReport | null;
+      if (!report || saved.project !== renv.project || report.input.environment !== renv.env) throw new Error('Saved report identity/scope mismatch');
+      return report;
+    }
+  }
   const rerank = loadReranker();
+  opts.onActivity?.('recall');
+  try { await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true }); }
+  catch (error) { console.error(`Memory refresh unavailable: ${(error as Error).message}`); }
   // Stale-index freshness feeds the engine's next-step routing: when the index is
   // behind, `horus init` must appear as a real next step, not only as a banner caveat.
   const indexMeta = readIndexMeta(renv.path);
@@ -259,8 +285,11 @@ export async function runOneInvestigation(
     !Number.isNaN(indexedAtMs) && Date.now() - indexedAtMs > STALE_INDEX_MS;
   const investigation = investigate(
     {
+      reportId: input.reportId,
       hint: input.hint,
       repo: renv.project,
+      environment: renv.env,
+      incident: input.incident,
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.since !== undefined ? { since: input.since } : {}),
       ...(input.logsSince !== undefined ? { logsSince: input.logsSince } : {}),
@@ -276,7 +305,13 @@ export async function runOneInvestigation(
       db: ctx.dbHandle.db,
       // HOR-432 — the authored-memory store so every investigation auto-captures a recurrence-aware
       // memory. Best-effort + CONTEXT-ONLY in the engine (never feeds scoring, never blocks delivery).
-      store: createLocalMemoryStore(ctx.dbHandle.db),
+      store: createLocalMemoryStore(ctx.dbHandle.db, { syncScope: memorySyncContext(renv.path, renv.project)?.scope }),
+      memoryScope: memorySyncContext(renv.path, renv.project)?.scope,
+      onStartupRecall: items => {
+        if (!items.length) console.error('Prior incidents: no relevant match.');
+        for (const item of items) console.error(formatStartupIncident(item));
+        opts.onActivity?.('collect');
+      },
       logs: ctx.logs,
       mongo: ctx.mongo,
       postgres: ctx.postgres,
@@ -321,7 +356,12 @@ export async function runOneInvestigation(
   const timeoutMs =
     opts.timeoutMs ??
     (Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) || 120) * 1000;
-  return withDeadline(investigation, timeoutMs);
+  const report = await withDeadline(investigation, timeoutMs);
+  try {
+    const sync = await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project);
+    console.error(`Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`);
+  } catch (error) { console.error(`Memory is not durably saved: ${(error as Error).message}`); }
+  return report;
 }
 
 /**

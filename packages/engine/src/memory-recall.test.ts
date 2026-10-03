@@ -52,6 +52,7 @@ function makeItem(p: Partial<MemoryItem>): MemoryItem {
     cloudId: null,
     authorName: null,
     pulledAt: null,
+    syncScope: null, syncGeneration: 1,
     payload: null,
     signature: null,
     tags: null,

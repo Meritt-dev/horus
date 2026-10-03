@@ -12,6 +12,7 @@ vi.mock("@horus/db", async (importOriginal) => {
 
 import {
   uploadInvestigationToCloud,
+  redactCloudValue,
   fetchInvestigationReportFromCloud,
   listCloudInvestigations,
   buildEvidenceItems,
@@ -193,10 +194,22 @@ describe("investigation-sync", () => {
     dbMock.getLatestOutcomeLabel.mockReset();
   });
 
+  it("uploads measured background timing and the validated model without inventing legacy metadata", async () => {
+    const runActivity = [{ id: "d887f443-ff2a-42d9-9b63-5c55ed7c3b2e", jobId: "98d7a40f-3c6f-4e50-ac69-44d0599bcb38", at: "2026-01-01T00:00:01Z", kind: "tool-start" as const, action: "Read" as const }];
+    const runTiming = { startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:00:05Z" };
+    await uploadInvestigationToCloud(client, cfg, makeReport({ unattended: { model: "claude-opus-5-5", status: "completed", sessionId: "session" } }), { runTiming, runActivity });
+    const call = fetchSpy.mock.calls.find((c: unknown[]) => (c[0] as string).endsWith("/agent-runs"))!;
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toMatchObject({ ...runTiming, agent: "Horus background worker", model: "claude-opus-5-5" });
+    const patch = fetchSpy.mock.calls.find((c: unknown[]) => (c[0] as string).includes("/agent-runs/") && (c[1] as RequestInit).method === "PATCH")!;
+    const patched = JSON.parse((patch[1] as RequestInit).body as string);
+    expect(patched).toMatchObject({ ...runTiming, agent: "Horus background worker", model: "claude-opus-5-5", logsFormat: "application/vnd.horus.activity+json" });
+    expect(JSON.parse(patched.logs).events).toEqual(runActivity);
+  });
+
   it("uploads a report snapshot to cloud", async () => {
     const report = makeReport();
     const refs = await uploadInvestigationToCloud(client, cfg, report);
-    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
+    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1", agentRunId: "run-1" });
 
     const createInvestigation = fetchSpy.mock.calls.find(
       (c: unknown[]) => (c[0] as string).endsWith("/investigations") && (c[1] as RequestInit)?.method === "POST",
@@ -464,11 +477,12 @@ describe("investigation-sync", () => {
       if (u.endsWith("/investigations") && method === "POST") {
         return json({ id: "inv-1", status: "running" });
       }
+      if (u.endsWith("/agent-runs") && method === "POST") return json({ id: "run-1" });
       return json({ id: "ok" });
     });
 
     const refs = await uploadInvestigationToCloud(client, cfg, richReport());
-    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
+    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1", agentRunId: "run-1" });
   });
 
   // ── HOR-390: human outcome label rides the tenant-scoped investigation sync ──
@@ -542,7 +556,7 @@ describe("investigation-sync", () => {
 
     const refs = await uploadInvestigationToCloud(client, cfg, makeReport(), { db: fakeDb });
 
-    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
+    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1", agentRunId: "run-1" });
     expect(createInvestigationBody()).not.toHaveProperty("outcome");
   });
 });
@@ -570,5 +584,18 @@ describe("toInvestigationOutcome", () => {
   it("drops a row that fails the validate-on-read firewall (bad resolved/source)", () => {
     expect(toInvestigationOutcome(labelRow({ resolved: "maybe" as never }))).toBeUndefined();
     expect(toInvestigationOutcome(labelRow({ source: "telemetry" as never }))).toBeUndefined();
+  });
+});
+
+it("preserves durable UUID identity and references during recursive export redaction", () => {
+  const id = "30826839-0264-4713-9e98-b7db298805d3";
+  expect(redactCloudValue({
+    operation: { id, baseRevision: "0" },
+    items: [{ clientId: id, record: { sourceRefs: [`horus:investigation:${id}`], token: id,
+      note: "card 4111-1111-1111-1111", embeddings: [0.5] } }],
+  })).toEqual({
+    operation: { id, baseRevision: "0" },
+    items: [{ clientId: id, record: { sourceRefs: [`horus:investigation:${id}`], token: "[REDACTED]",
+      note: "card [REDACTED-CARD]" } }],
   });
 });

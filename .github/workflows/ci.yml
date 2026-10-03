@@ -24,7 +24,32 @@ jobs:
       # The source-intelligence HTTP contract tests (packages/connectors/src/source/contract.test.ts)
       # auto-skip when no host is reachable at HORUS_SOURCE_HOST_URL, so CI passes without a
       # live source-intelligence backend; to exercise them, run with a backend and HORUS_SOURCE_HOST_URL set.
-      - run: pnpm test
+      # Bound package concurrency so cold CLI subprocesses are not CPU-starved.
+      - run: pnpm test --concurrency=2
+
+      # Private report projections and independently reviewed labels stay out of Git.
+      - name: Chronological recall review
+        if: github.event_name == 'push'
+        env:
+          HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
+        run: |
+          if [ -z "$HORUS_RECALL_REVIEW_BUNDLE" ]; then
+            echo 'No private recall review configured; release quality gate remains unverified.'
+            exit 0
+          fi
+          review_dir=$(mktemp -d)
+          export HORUS_RECALL_HISTORY="$review_dir/history.json"
+          export HORUS_RECALL_LABELS="$review_dir/review.json"
+          trap 'rm -rf "$review_dir"' EXIT
+          node <<'NODE'
+          const { gunzipSync } = require('node:zlib');
+          const { writeFileSync } = require('node:fs');
+          const bundle = JSON.parse(gunzipSync(Buffer.from(process.env.HORUS_RECALL_REVIEW_BUNDLE, 'base64'), { maxOutputLength: 2 * 1024 * 1024 }));
+          writeFileSync(process.env.HORUS_RECALL_HISTORY, JSON.stringify(bundle.history), { mode: 0o600 });
+          writeFileSync(process.env.HORUS_RECALL_LABELS, JSON.stringify(bundle.review), { mode: 0o600 });
+          NODE
+          unset HORUS_RECALL_REVIEW_BUNDLE
+          pnpm exec tsx scripts/test-recall-history.ts
 
       - run: pnpm build
 
@@ -33,6 +58,23 @@ jobs:
       # Run with bash to avoid relying on execute permission in CI checkout.
       - name: CLI smoke test
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
+
+  # Run the existing isolated service lifecycle check on a hosted Mac, never locally.
+  launchd:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build installed CLI artifact
+        run: pnpm --filter @merittdev/horus build
+      - name: Verify isolated launchd restart and durable state
+        run: pnpm exec tsx scripts/test-service-launchd.ts
 
   # The source-intelligence backend (HOR-450 step B: this IS the canonical
   # codebase — the standalone repo is archived, no PyPI). Own Python toolchain,

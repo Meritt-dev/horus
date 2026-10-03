@@ -327,3 +327,20 @@ describe('compactInvestigateJSON — size budget', () => {
     expect(ev['payload']).toContain('omitted');
   });
 });
+
+describe('startup recall presentation', () => {
+  it('shows match provenance and an honest missing verification date', async () => {
+    const { formatStartupIncident } = await import('../lib/investigation-runner.js');
+    const text = formatStartupIncident({
+      memoryId: 'mem-1', incidentId: 'incident-1', claim: 'Prior timeout token=private-value',
+      reportRefs: { 'local-1': 'cloud-1' }, matchingFields: ['errorCode', 'service'],
+      lastVerifiedAt: null, environment: 'production', outcome: null,
+      checks: ['Check current timeout rate'], relevance: 1,
+      validation: 'unverified', contradictingEvidenceIds: [],
+    });
+    for (const value of ['incident-1', 'inferred', 'errorCode, service', 'last verified: never',
+      'local-1 (Cloud cloud-1)', 'historical outcome: unknown', 'Check current timeout rate',
+      'current outcome unconfirmed']) expect(text).toContain(value);
+    expect(text).not.toContain('private-value');
+  });
+});

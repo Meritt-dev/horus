@@ -21,6 +21,9 @@ export type { CauseCandidate };
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
+  /** Durable job identity; interactive callers may omit. */
+  reportId?: string;
+  incident?: import('./memory-recall.js').IncidentContext;
   /** Free-text hint naming a symbol, file, or behaviour to investigate. */
   hint: string;
   /** Optional repository scope. */
@@ -104,6 +107,11 @@ export interface ReportFinding {
 
 /** The full investigation report — also the persisted shape. */
 export interface InvestigationReport {
+  createdAt?: string;
+  unattended?: { model: string; sessionId?: string; status: 'completed' | 'failed'; error?: string; engineOnly?: boolean };
+  startupRecall?: import('./memory-recall.js').StartupIncident[];
+  recallTrace?: Array<{ memoryId: string; check: string; stage: string; evidenceIds: string[]; error?: string }>;
+  memoryCaptureError?: string;
   id: string;
   /**
    * False when the investigation-store DB was unreachable and the report could not

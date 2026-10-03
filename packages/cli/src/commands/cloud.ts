@@ -1,3 +1,4 @@
+import { syncLinkedMemory } from '../lib/cloud/memory-sync.js';
 /**
  * `horus cloud link` / `unlink` / `status` (HOR-226, per HOR-225).
  *
@@ -130,6 +131,14 @@ export async function runCloudLink(
   console.log(
     pc.dim(`  Investigations here save to Horus Cloud. ${pc.bold("horus context use local")} to switch back.`),
   );
+  try {
+    const local = resolveEnvironment(await loadConfig(undefined, { cwd: root }), { cwd: root });
+    const handle = await openDb();
+    try {
+      const state = await syncLinkedMemory(handle.db, root, local.project);
+      console.log(`Memory: ${state.state}; ${state.pending} pending${state.error ? ` — ${state.error}` : ''}`);
+    } finally { await handle.sql.end(); }
+  } catch (error) { console.error(`Memory restoration pending: ${(error as Error).message}`); }
   return 0;
 }
 

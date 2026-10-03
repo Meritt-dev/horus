@@ -481,6 +481,7 @@ describe('detectMemoryEdges — CONTEXT-ONLY seam contract', () => {
       cloudId: null,
       authorName: null,
       pulledAt: null,
+      syncScope: null, syncGeneration: 1,
       payload: null,
       signature: 'src/auth|x|',
       tags: null,

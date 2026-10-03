@@ -1,3 +1,4 @@
+import { readIncidentDisposition } from './memory-recall.js';
 /**
  * HOR-432 — auto-capture a recurrence-aware memory from EVERY investigation, CONSOLIDATING recurrences.
  *
@@ -71,7 +72,9 @@ export interface InvestigationFields {
  * persistence, no clock. Reused by {@link createInvestigationMemory} (new item) and the recurrence
  * probe / {@link consolidateRecurrence} (existing item refresh) so both speak the exact same keys.
  */
-export function deriveInvestigationFields(report: InvestigationReport): InvestigationFields {
+export function deriveInvestigationFields(
+  report: InvestigationReport,
+): InvestigationFields {
   const hint = report.input.hint;
   const topHyp = report.hypotheses[0];
   // The headline is the top hypothesis (recorded AS a hypothesis), falling back to the summary.
@@ -139,6 +142,19 @@ export async function createInvestigationMemory(
       topHypothesis: fields.topHypothesisCategory,
       // First sighting: a single investigation is "recurred 1×". Bumped on each later recurrence.
       recurrenceCount: 1,
+      outcome: {
+        disposition: 'unknown',
+        certainty: 'inferred',
+        sourceInvestigation: investigationId ?? '',
+        sourceRefs: [],
+        applicability: {
+          environment: report.input.environment,
+          service: report.input.service,
+          ...report.input.incident,
+        },
+        invalidatingConditions: [],
+        checks: [],
+      },
     },
   };
 
@@ -171,8 +187,9 @@ export async function createInvestigationMemory(
  */
 export async function detectRecurrence(
   store: MemoryStore,
-  probe: Pick<MemoryItem, 'signature' | 'tags' | 'claim'>,
+  probe: Pick<MemoryItem, 'signature' | 'tags' | 'claim'> & { hint?: string },
   repo: string,
+  input?: InvestigationReport['input'],
 ): Promise<MemoryItem | null> {
   const r = repo.trim();
   if (r === '') return null; // HOR-46 fail-closed
@@ -184,7 +201,26 @@ export async function detectRecurrence(
   });
 
   for (const candidate of existing) {
-    if (recurrenceReason(candidate, probe as MemoryItem) !== null) return candidate;
+    if (['forgotten', 'deprecated', 'contradicted'].includes(candidate.status)) continue;
+    const a = readIncidentDisposition(
+      (candidate.payload as Record<string, unknown> | null)?.outcome,
+    )?.applicability;
+    if (
+      a &&
+      input &&
+      ((a.environment && input.environment && a.environment !== input.environment) ||
+        (a.service && input.service && a.service !== input.service) ||
+        (['errorCode', 'fingerprint', 'workflow', 'operation'] as const).some(
+          (key) => a[key] && input.incident?.[key] && a[key] !== input.incident[key],
+        ))
+    )
+      continue;
+    const structuredMatch = a?.fingerprint && a.fingerprint === input?.incident?.fingerprint;
+    const compared = {
+      ...probe,
+      payload: structuredMatch ? undefined : { hint: input?.hint ?? probe.hint },
+    };
+    if (recurrenceReason(candidate, compared as MemoryItem) !== null) return candidate;
   }
   return null;
 }
@@ -211,6 +247,13 @@ export async function consolidateRecurrence(
   audit: AuditCtx,
 ): Promise<MemoryItem> {
   const prev = (existing.payload ?? {}) as Record<string, unknown>;
+  if (
+    investigationId &&
+    (prev.investigationId === investigationId ||
+      (Array.isArray(prev.investigationIds) &&
+        prev.investigationIds.includes(investigationId)))
+  )
+    return existing;
   const recurrenceCount = recurrenceCountOf(prev) + 1;
 
   // Roll the source investigation ids forward (seeding from the original single id on first bump),
@@ -224,7 +267,8 @@ export async function consolidateRecurrence(
       : typeof prev.investigationId === 'string'
         ? [prev.investigationId]
         : [];
-  const thisId = investigationId !== null && investigationId.trim() !== '' ? investigationId : null;
+  const thisId =
+    investigationId !== null && investigationId.trim() !== '' ? investigationId : null;
   const investigationIds = (thisId !== null ? [...seedIds, thisId] : seedIds).slice(
     -MAX_INVESTIGATION_IDS,
   );
@@ -238,7 +282,9 @@ export async function consolidateRecurrence(
     hint: fields.hint,
     topHypothesis: fields.topHypothesisCategory,
     investigationId:
-      typeof prev.investigationId === 'string' ? prev.investigationId : (seedIds[0] ?? thisId),
+      typeof prev.investigationId === 'string'
+        ? prev.investigationId
+        : (seedIds[0] ?? thisId),
   };
 
   const updated = await store.update(
@@ -253,7 +299,10 @@ export async function consolidateRecurrence(
       audit,
       action: 'recurrence',
       detection: 'auto:recurrence-consolidate',
-      detail: { recurrenceCount, ...(thisId !== null ? { investigationId: thisId } : {}) },
+      detail: {
+        recurrenceCount,
+        ...(thisId !== null ? { investigationId: thisId } : {}),
+      },
     },
   );
 
@@ -308,8 +357,14 @@ export async function captureInvestigationMemory(
   const fields = deriveInvestigationFields(report);
   const existing = await detectRecurrence(
     store,
-    { signature: fields.signature, tags: fields.tags, claim: fields.claim },
+    {
+      signature: fields.signature,
+      tags: fields.tags,
+      claim: fields.claim,
+      hint: fields.hint,
+    },
     repo,
+    report.input,
   );
 
   if (existing !== null) {
