@@ -21,6 +21,7 @@ import {
   readIncidentDisposition,
   type InvestigationReport,
 } from '@horus/engine';
+import { memoryHistoryPages } from './memory-history.js';
 import { CloudClient, CloudError, type MemoryItemRecord } from './api.js';
 import { readAuth } from './auth-store.js';
 import { readCloudConfig, type CloudConfig } from './context-store.js';
@@ -597,6 +598,24 @@ export interface MemorySyncOptions {
   restore?: string;
 }
 
+async function hydrateMemoryHistory(ctx: MemorySyncContext, row: MemoryItemRecord, deadline: number): Promise<MemoryItemRecord> {
+  if (!row.historyPaged) return row;
+  const links: NonNullable<MemoryItemRecord['links']> = [];
+  const audit: NonNullable<MemoryItemRecord['audit']> = [];
+  let cursor: string | undefined;
+  do {
+    if (Date.now() >= deadline) throw new Error('Memory history pull paused; retry from saved cursor');
+    const page = await ctx.client.listMemoryLinks(ctx.config.project!.id, { memoryItemId: row.id, expectedRevision: row.revision!, cursor });
+    links.push(...page.links); cursor = page.nextCursor;
+  } while (cursor);
+  do {
+    if (Date.now() >= deadline) throw new Error('Memory history pull paused; retry from saved cursor');
+    const page = await ctx.client.listMemoryAudit(ctx.config.project!.id, { memoryItemId: row.id, expectedRevision: row.revision!, cursor });
+    audit.push(...page.audit); cursor = page.nextCursor;
+  } while (cursor);
+  return { ...row, links, audit };
+}
+
 async function resolveConflict(
   db: HorusDb,
   ctx: MemorySyncContext,
@@ -613,6 +632,7 @@ async function resolveConflict(
   do {
     const page = await ctx.client.listMemoryItems(ctx.config.project!.id, {
       afterRevision: cursor,
+      includeHistory: false,
       limit: 100,
     });
     remote = page.items.find((item) => item.clientId === id);
@@ -627,6 +647,7 @@ async function resolveConflict(
     throw new Error(
       'Remote memory was forgotten; accept Cloud and use --restore explicitly',
     );
+  const cloudChoice = choice === 'cloud' ? await hydrateMemoryHistory(ctx, remote, Date.now() + 15000) : undefined;
   await db.transaction(async (tx) => {
     await tx.delete(memorySyncOutbox).where(eq(memorySyncOutbox.id, op.id));
     await tx
@@ -639,7 +660,7 @@ async function resolveConflict(
         and(eq(memorySyncReplica.scope, ctx.scope), eq(memorySyncReplica.memoryId, id)),
       );
   });
-  if (choice === 'cloud') await applyRemote(db, ctx, remote);
+  if (cloudChoice) await applyRemote(db, ctx, cloudChoice);
   await db.insert(memoryAudit).values({
     id: randomUUID(),
     memoryId: id,
@@ -668,6 +689,7 @@ export async function synchronizeMemory(
     while (Date.now() < deadline) {
       const page = await ctx.client.listMemoryItems(ctx.config.project!.id, {
         afterRevision: state!.cursor,
+        includeHistory: false,
         limit: 25,
       });
       if (page.nextRevision === undefined)
@@ -677,7 +699,7 @@ export async function synchronizeMemory(
       let appliedRevision = state!.cursor;
       for (const row of page.items) {
         if (Date.now() >= deadline) break;
-        await applyRemote(db, ctx, row);
+        await applyRemote(db, ctx, await hydrateMemoryHistory(ctx, row, deadline));
         appliedRevision = row.revision!;
       }
       await db
@@ -855,10 +877,24 @@ export async function synchronizeMemory(
       }
       if (!op || op.conflict || op.nextAttemptAt.getTime() > Date.now()) continue;
       try {
-        const result = await ctx.client.syncMemoryItems(
-          ctx.config.project!.id,
-          op.request as Request,
-        );
+        // Derive the same page IDs/content on every retry, including old oversized
+        // outbox snapshots. A final receipt is the only acknowledgement of generation.
+        let result: Awaited<ReturnType<CloudClient['syncMemoryItems']>> | undefined;
+        const { historyNextPage = 0, ...snapshot } = op.request as Request & { historyNextPage?: number };
+        const pages = memoryHistoryPages(snapshot);
+        for (let i = historyNextPage; i < pages.length; i++) {
+          const page = pages[i]!;
+          if (Date.now() >= deadline) break;
+          result = await ctx.client.syncMemoryItems(ctx.config.project!.id, page);
+          if (result.conflict) break;
+          if (page.history && page.history.page < page.history.pages - 1 &&
+              (result.operationId !== page.operation!.id || !result.staged))
+            throw new Error('Cloud does not support bounded memory history; upgrade Cloud before retrying');
+          if (result.staged) await db.update(memorySyncOutbox)
+            .set({ request: { ...snapshot, historyNextPage: i + 1 } })
+            .where(eq(memorySyncOutbox.id, op.id));
+        }
+        if (!result || result.staged) continue;
         if (result.conflict) {
           await db
             .update(memorySyncOutbox)

@@ -349,6 +349,7 @@ export interface MemoryAuditSyncInput {
 
 /** A memory item as the cloud returns it. `clientId` round-trips the CLI ULID. */
 export interface MemoryItemRecord {
+  historyPaged?: boolean;
   revision?: string;
   record?: Record<string, unknown>;
   links?: Array<MemoryLinkSyncInput & { createdAt: string }>;
@@ -382,6 +383,7 @@ export interface MemorySyncBatchCounts {
 }
 
 export interface MemorySyncResult {
+  staged?: boolean;
   operationId?: string;
   revision?: string;
   conflict?: { reason: string; currentRevision: string };
@@ -399,6 +401,7 @@ export interface MemorySyncResult {
 }
 
 export interface MemoryListQuery {
+  includeHistory?: boolean;
   afterRevision?: string;
   status?: string;
   kind?: string;
@@ -782,6 +785,7 @@ export class CloudClient {
     projectId: string,
     body: {
       operation?: { id: string; baseRevision: string; restore?: boolean };
+      history?: { operationId: string; page: number; pages: number };
       items?: MemoryItemSyncInput[];
       links?: MemoryLinkSyncInput[];
       audit?: MemoryAuditSyncInput[];
@@ -800,6 +804,7 @@ export class CloudClient {
     q?: MemoryListQuery,
   ): Promise<{ items: MemoryItemRecord[]; nextCursor?: string; nextRevision?: string; hasMore?: boolean }> {
     const params = new URLSearchParams();
+    if (q?.includeHistory !== undefined) params.set("includeHistory", String(q.includeHistory));
     if (q?.afterRevision !== undefined) params.set("afterRevision", q.afterRevision);
     if (q?.status) params.set("status", q.status);
     if (q?.kind) params.set("kind", q.kind);
@@ -811,6 +816,18 @@ export class CloudClient {
       "GET",
       `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ""}`,
     );
+  }
+
+  /** Existing paginated history endpoints; pin every page to the item revision. */
+  listMemoryLinks(projectId: string, q: { memoryItemId: string; expectedRevision: string; cursor?: string }) {
+    const params = new URLSearchParams({ memoryItemId: q.memoryItemId, expectedRevision: q.expectedRevision, limit: '100' });
+    if (q.cursor) params.set('cursor', q.cursor);
+    return this.request<{ links: NonNullable<MemoryItemRecord['links']>; nextCursor?: string }>('GET', `/v1/projects/${projectId}/memory-links?${params}`);
+  }
+  listMemoryAudit(projectId: string, q: { memoryItemId: string; expectedRevision: string; cursor?: string }) {
+    const params = new URLSearchParams({ memoryItemId: q.memoryItemId, expectedRevision: q.expectedRevision, limit: '100' });
+    if (q.cursor) params.set('cursor', q.cursor);
+    return this.request<{ audit: NonNullable<MemoryItemRecord['audit']>; nextCursor?: string }>('GET', `/v1/projects/${projectId}/memory-audit?${params}`);
   }
 
   // ── Team memory (HOR-464 / M4) ────────────────────────────────────────────

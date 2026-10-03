@@ -424,3 +424,37 @@ it('retains completed report uploads in the authorized scope when a recurring me
     [ids[0]!]: `cloud-${ids[0]}`, [ids[1]!]: `cloud-${ids[1]}`,
   } });
 }, 30_000);
+
+it('resumes durable history at the last acknowledged page and never acknowledges a partial generation', async () => {
+  const h = await open(); const remote = cloud();
+  const created = await createLocalMemoryStore(h.db).add({
+    id: 'paged', kind: 'investigation', source: 'investigation', scope: 'repo',
+    claim: 'Long recurring incident', repo: remote.ctx.repo, confidence: 0.4,
+  }, { actor: { kind: 'user' } });
+  const request = {
+    operation: { id: 'frozen-large', baseRevision: '0' },
+    items: [{ clientId: created.id, kind: created.kind, claim: created.claim, scope: created.scope, source: created.source, record: {} }],
+    links: Array.from({ length: 2101 }, (_, i) => ({ idempotencyKey: `l${i}`, fromClientId: created.id, rel: 'about-file', toKind: 'node', toRef: `n${i}` })),
+    audit: [],
+  };
+  await h.db.insert(memorySyncOutbox).values({ id: 'frozen-large', scope: remote.ctx.scope,
+    memoryId: created.id, generation: created.syncGeneration, request });
+  let interrupted = false;
+  const upload = vi.fn(async (_: string, body: Parameters<CloudClient['syncMemoryItems']>[1]) => {
+    if (body.history!.page === 1 && !interrupted) { interrupted = true; throw new Error('offline during second page'); }
+    return body.history!.page < body.history!.pages - 1
+      ? { operationId: body.operation!.id, staged: true }
+      : { operationId: body.operation!.id, revision: '9' };
+  });
+  remote.ctx.client.syncMemoryItems = upload;
+  expect((await synchronizeMemory(h.db, remote.ctx, { backfill: false })).state).toBe('Pending sync');
+  expect(await h.db.select().from(memorySyncReplica)).toEqual([]);
+  const [pending] = await h.db.select().from(memorySyncOutbox);
+  expect(pending!.request).toHaveProperty('historyNextPage', 1);
+  await h.db.update(memorySyncOutbox).set({ nextAttemptAt: new Date(0) });
+  upload.mockClear();
+  expect((await synchronizeMemory(h.db, remote.ctx, { backfill: false })).state).toBe('Synced');
+  expect(upload.mock.calls[0]![1].history!.page).toBe(1);
+  expect(await h.db.select().from(memorySyncOutbox)).toEqual([]);
+  expect((await h.db.select().from(memorySyncReplica))[0]).toMatchObject({ revision: '9', generation: created.syncGeneration });
+}, 30000);

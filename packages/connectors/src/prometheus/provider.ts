@@ -1,7 +1,7 @@
 import { runtimeSchemas, redactErrorMessage, type RuntimeConfig } from '@horus/core';
 import type { MetricsProvider } from '../grafana/provider.js';
 import { parseRange } from '../grafana/series.js';
-import { classifyPanel, panelMatchesHint, type Panel } from '../grafana/panels.js';
+import { classifyPanel, panelMatchesHint, findMatchSource, findingLabelsMatchHint, type Panel } from '../grafana/panels.js';
 import {
   buildFindings,
   findingsToEvidence,
@@ -74,7 +74,9 @@ export class PrometheusMetricsProvider implements MetricsProvider {
     signal?: AbortSignal;
   }): Promise<MetricFinding[]> {
     const findings: MetricFinding[] = [];
-    for (const p of await this.findPanels()) {
+    const panels = await this.findPanels(opts.hint);
+    const labelFallback = panels.length === 0 && !!opts.hint;
+    for (const p of labelFallback ? await this.findPanels() : panels) {
       const [current, baseline] = await Promise.all([
         this.query(p.exprs[0]!, opts.from, opts.to, opts.step, opts.signal),
         this.query(
@@ -85,7 +87,11 @@ export class PrometheusMetricsProvider implements MetricsProvider {
           opts.signal,
         ),
       ]);
-      findings.push(...buildFindings('prometheus', p.title, p.kind, baseline, current));
+      const matched = buildFindings('prometheus', p.title, p.kind, baseline, current);
+      findings.push(...(labelFallback
+        ? matched.filter(f => findingLabelsMatchHint(f.labels, opts.hint!))
+          .map(f => ({ ...f, matchSource: 'series-labels' as const }))
+        : matched.map(f => ({ ...f, matchSource: opts.hint ? findMatchSource(p, opts.hint) : null }))));
     }
     return findings;
   }

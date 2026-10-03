@@ -9,6 +9,8 @@ import {
   investigations,
   outcomeLabel,
   recordOutcomeLabel,
+  memoryLink,
+  memoryAudit,
   memorySyncOutbox,
   memoryItem,
   eq,
@@ -220,6 +222,38 @@ try {
   );
   await synchronizeMemory(a.db, ctx);
   assert.equal((await createLocalMemoryStore(a.db).get(memId))!.status, 'fresh');
+  // A mature recurrence exceeds the old per-request array cap. Freeze it in
+  // the existing outbox, lose a page response, then restore every row on a clean machine.
+  const mature = await createLocalMemoryStore(a.db).add({
+    id: 'mature-history', kind: 'investigation', source: 'investigation', scope: 'repo',
+    claim: 'Mature recurring incident', repo: ctx.repo, confidence: 0.4,
+  }, { actor: { kind: 'user' } });
+  for (let offset = 0; offset < 2101; offset += 500) {
+    const indices = Array.from({ length: Math.min(500, 2101 - offset) }, (_, i) => offset + i);
+    await a.db.insert(memoryLink).values(indices.map(i => ({ id: `large-link-${i}`,
+      fromMemoryId: mature.id, rel: 'about-file', toKind: 'node', toRef: `file-${i}.ts` })));
+    await a.db.insert(memoryAudit).values(indices.map(i => ({ id: `large-audit-${i}`,
+      memoryId: mature.id, action: 'link', actor: { kind: 'system' }, at: new Date('2026-01-01T00:00:00Z') })));
+  }
+  const sync = ctx.client.syncMemoryItems.bind(ctx.client);
+  let lostPage = false;
+  ctx.client.syncMemoryItems = async (...args) => {
+    const result = await sync(...args);
+    if (result.staged && !lostPage) { lostPage = true; throw new Error('lost page response'); }
+    return result;
+  };
+  await synchronizeMemory(a.db, ctx, { backfill: false, deadline: Date.now() + 60000 });
+  const [frozen] = await a.db.select().from(memorySyncOutbox).where(eq(memorySyncOutbox.memoryId, mature.id));
+  assert(frozen && frozen.request.links.length === 2101, 'oversized snapshot remains durable');
+  ctx.client.syncMemoryItems = sync;
+  await a.db.update(memorySyncOutbox).set({ nextAttemptAt: new Date(0) });
+  assert.equal((await synchronizeMemory(a.db, ctx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
+  const clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
+  const cleanCtx = { ...ctx, repo: 'clean-large-history' };
+  assert.equal((await synchronizeMemory(clean.db, cleanCtx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
+  assert.equal((await clean.db.select().from(memoryLink).where(eq(memoryLink.fromMemoryId, mature.id))).length, 2101);
+  assert.equal((await clean.db.select().from(memoryAudit).where(eq(memoryAudit.memoryId, mature.id))).length, 2102);
+  console.log('PASS: 2101 links and 2102 audit rows restored through bounded pages after a lost page acknowledgement');
   if (process.env.HORUS_RECALL_HISTORY) {
     const history = JSON.parse(await readFile(process.env.HORUS_RECALL_HISTORY, 'utf8'));
     assert(Array.isArray(history.reports) && history.reports.length <= 1000);
