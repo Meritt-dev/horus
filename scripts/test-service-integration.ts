@@ -104,6 +104,8 @@ const hooks=JSON.parse(args[args.indexOf('--settings')+1]).hooks;
 for(const hook_event_name of ['SessionStart','PreToolUse','PostToolUse','Stop']){
  const r=require('child_process').spawnSync('/bin/sh',['-c',hooks[hook_event_name][0].hooks[0].command],{input:JSON.stringify({session_id:session,hook_event_name,tool_name:hook_event_name.includes('Tool')?'Bash':undefined,tool_input:{command:'DO NOT UPLOAD THIS SECRET'},tool_response:'DO NOT UPLOAD RAW OUTPUT'}),encoding:'utf8',timeout:5000});if(r.status!==0)throw new Error('Activity hook failed '+r.stderr);
 }
+let live=false;const liveDeadline=Date.now()+8000;
+while(Date.now()<liveDeadline){const r=await fetch(${JSON.stringify(base+'/v1/workspaces/'+tenant.workspaceId+'/alert-workers')},{headers:{authorization:${JSON.stringify('Bearer '+token.plaintext)}}});const rows=await r.json();live=r.ok&&rows.some(w=>w.activeJob?.stage==='ai'&&w.activity?.some(a=>a.action==='Bash'&&a.kind==='tool-start'));if(live)break;await new Promise(r=>setTimeout(r,200));}if(!live)throw new Error('No live AI tool activity reached Cloud before inference finished');
 const {report}=JSON.parse(s.split('\\nDATA:\\n')[1]);
 console.log(JSON.stringify({type:'result',is_error:false,session_id:session,modelUsage:{'claude-opus-5-5':{}},result:JSON.stringify({reportId:report.id,summary:'Cause uncertain',likelyCause:null,confidence:0,evidenceIds:[],historicalMemoryIds:[],nextChecks:['Check current reservation state'],uncertainty:'No current evidence'})}));});`,
     { mode: 0o700 },
