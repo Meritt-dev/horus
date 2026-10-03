@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, acquireDbLock, type DbHandle } from '@horus/db';
@@ -24,6 +24,7 @@ import {
   runWatchService,
   routeKey,
   pollProject,
+  recordServiceFailure,
 } from './watch-service.js';
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
@@ -511,6 +512,29 @@ it('preserves the caller abort reason before spawn and while killing a running c
     controller.abort(reason);
     await running.catch(() => {});
   }
+});
+it('records supervisor startup failures before preserving the failing exit', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'horus-supervisor-failure-'));
+  dirs.push(root);
+  vi.stubEnv('HORUS_SERVICE_DIR', root);
+  await expect(runService('run', { settings: join(root, 'missing.json'), once: true })).rejects.toThrow('ENOENT');
+  const file = join(root, 'service', 'service.log');
+  expect(readFileSync(file, 'utf8')).toContain('Supervisor stopped: ENOENT');
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+});
+it('redacts fatal diagnostics and bounds current and previous service logs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'horus-supervisor-log-'));
+  dirs.push(root);
+  vi.stubEnv('HORUS_SERVICE_DIR', root);
+  recordServiceFailure(new Error('Authorization: Bearer diagnostic-secret-value'));
+  const file = join(root, 'service', 'service.log');
+  expect(readFileSync(file, 'utf8')).not.toContain('diagnostic-secret-value');
+  writeFileSync(file, 'previous\n' + 'x'.repeat(999_950), { mode: 0o600 });
+  recordServiceFailure(new Error('x'.repeat(2_000_000)));
+  expect(readFileSync(file, 'utf8')).toContain('[truncated]');
+  expect(readFileSync(`${file}.1`, 'utf8')).toMatch(/^previous\n/);
+  expect(statSync(file).size).toBeLessThan(1_000_000);
+  expect(statSync(`${file}.1`).size).toBeLessThan(1_000_000);
 });
 it('launchd uses argument array and explicit auth paths; no shell or API key requirement', () => {
   const c = serviceConfigSchema.parse({

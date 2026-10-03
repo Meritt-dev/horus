@@ -115,12 +115,18 @@ function log(message: string) {
   const home = serviceHome();
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const file = join(home, 'service.log');
-  if (existsSync(file) && statSync(file).size > 1_000_000) renameSync(file, `${file}.1`);
+  const safe = redactErrorMessage(new Error(message));
+  const line = `${new Date().toISOString()} ${safe.length > 8192 ? `${safe.slice(0, 8192)} [truncated]` : safe}\n`;
+  if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > 1_000_000)
+    renameSync(file, `${file}.1`);
   appendFileSync(
     file,
-    `${new Date().toISOString()} ${redactErrorMessage(new Error(message))}\n`,
+    line,
     { mode: 0o600 },
   );
+}
+export function recordServiceFailure(error: unknown): void {
+  log(`Supervisor stopped: ${redactErrorMessage(error)}`);
 }
 export function sentryEvent(issue: SentryIssue, environment: string): IncidentEvent {
   if (!issue.lastSeen) throw new Error('Sentry issue has no occurrence time');

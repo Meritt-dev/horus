@@ -337,6 +337,11 @@ stage, error, report, and an operational-notice checkpoint.
 The active queue cap is 500 jobs per route; at capacity, source cursors stop advancing
 and status reports backlog. Logs rotate at 1 MB with one previous file. Status and
 logs live under `~/.horus/service/` (or the explicitly selected test/profile root).
+Fatal supervisor and startup failures are recorded in the same private
+`service.log` before the command exits unsuccessfully, so launchd restart causes
+remain inspectable. Each diagnostic is redacted and capped at 8,192 characters;
+rotation happens before a write would exceed 1 MB. If the log cannot be written,
+stderr reports that failure while retaining the original failing exit.
 
 PGlite requires one live process owner. Concurrent CLI access returns `HORUS_DB_BUSY`
 after a bounded wait. Never delete a live owner's lock. A dead PID is recoverable;

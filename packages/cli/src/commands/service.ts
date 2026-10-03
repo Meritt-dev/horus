@@ -17,6 +17,7 @@ import {
   readServiceConfig,
   runWatchService,
   runServiceWorker,
+  recordServiceFailure,
   serviceHome,
   routeKey,
   type ServiceConfig,
@@ -24,7 +25,7 @@ import {
 import { jobs, saveJob, readWatchState } from '../lib/watch-store.js';
 import { runProcess } from '../lib/claude-investigation.js';
 import { recordActivityHook } from '../lib/worker-activity.js';
-import { loadConfig, resolveEnvironment } from '@horus/core';
+import { loadConfig, resolveEnvironment, redactErrorMessage } from '@horus/core';
 import { memorySyncContext } from '../lib/cloud/memory-sync.js';
 import { sentryForEnv, logsForEnv } from '@horus/connectors';
 
@@ -134,7 +135,16 @@ export async function runService(
     return 0;
   }
   if (action === 'run') {
-    await runWatchService(settings, opts.once);
+    try {
+      await runWatchService(settings, opts.once);
+    } catch (error) {
+      try {
+        recordServiceFailure(error);
+      } catch (logError) {
+        console.error(`Could not save service failure: ${redactErrorMessage(logError)}`);
+      }
+      throw error;
+    }
     return 0;
   }
   const profile = opts.profile ?? 'default';
