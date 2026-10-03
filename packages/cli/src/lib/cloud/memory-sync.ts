@@ -44,7 +44,7 @@ export interface MemorySyncStatus {
   oldestPending?: string;
   error?: string;
   conflicts?: Array<{ memoryId: string; operationId: string; detail: unknown }>;
-  backfill?: { eligible: number; indexed: number; pending: number; excluded: number };
+  backfill?: { eligible: number; indexed: number; pending: number; excluded: number; failed?: number };
 }
 export interface MemorySyncContext {
   client: CloudClient;
@@ -97,6 +97,40 @@ const canBackfill = (value: unknown): value is InvestigationReport => {
   return !!report?.input?.hint && Array.isArray(report.hypotheses);
 };
 
+/** Read eligibility cheaply; isolate unreadable payloads without losing the rest of the history. */
+async function reportHistory(db: HorusDb, repo: string) {
+  const rows: Array<{ id: string; eligible: boolean }> = [];
+  const failed: string[] = [];
+  const read = async (ids?: string[]): Promise<void> => {
+    if (ids?.length === 0) return;
+    try {
+      const batch = await db.select({
+        id: investigations.id,
+        eligible: sql<boolean>`coalesce(jsonb_typeof(${investigations.report}->'hypotheses') = 'array'
+          AND ${investigations.report}->'input'->>'hint' <> '', false)`,
+      }).from(investigations).where(and(
+        eq(investigations.project, repo),
+        ids ? inArray(investigations.id, ids) : undefined,
+      ));
+      rows.push(...batch);
+      // A damaged index can expose a metadata row that cannot be fetched by its primary key.
+      if (ids) {
+        const found = new Set(batch.map((r) => r.id));
+        failed.push(...ids.filter((id) => !found.has(id)));
+      }
+    } catch {
+      if (!ids) ids = (await db.select({ id: investigations.id }).from(investigations)
+        .where(eq(investigations.project, repo))).map((r) => r.id);
+      if (ids.length <= 1) { failed.push(...ids); return; }
+      const mid = Math.ceil(ids.length / 2);
+      await read(ids.slice(0, mid));
+      await read(ids.slice(mid));
+    }
+  };
+  await read();
+  return { rows, failed };
+}
+
 /** Only named scalar/incident fields leave the device. Unknown payload keys are excluded. */
 export function memoryRecord(item: MemoryItem): Record<string, unknown> {
   const payload = payloadOf(item);
@@ -142,14 +176,7 @@ async function status(db: HorusDb, ctx: MemorySyncContext): Promise<MemorySyncSt
     .where(eq(memorySyncState.scope, ctx.scope));
   const rows = await db.select().from(memoryItem).where(eq(memoryItem.repo, ctx.repo));
   // Status needs eligibility, not megabytes of historical evidence on every refresh.
-  const reports = await db
-    .select({
-      id: investigations.id,
-      eligible: sql<boolean>`coalesce(jsonb_typeof(${investigations.report}->'hypotheses') = 'array'
-        AND ${investigations.report}->'input'->>'hint' <> '', false)`,
-    })
-    .from(investigations)
-    .where(eq(investigations.project, ctx.repo));
+  const { rows: reports, failed: unreadable } = await reportHistory(db, ctx.repo);
   const covered = coveredReports(rows, await db.select().from(memoryLink));
   const eligibleReports = reports.filter((r) => r.eligible);
   const indexed = eligibleReports.filter((r) => covered.has(r.id)).length;
@@ -158,6 +185,7 @@ async function status(db: HorusDb, ctx: MemorySyncContext): Promise<MemorySyncSt
     indexed,
     pending: eligibleReports.length - indexed,
     excluded: reports.length - eligibleReports.length,
+    ...(unreadable.length ? { failed: unreadable.length } : {}),
   };
   const replicas = await db
     .select()
@@ -175,14 +203,14 @@ async function status(db: HorusDb, ctx: MemorySyncContext): Promise<MemorySyncSt
   return {
     state: state?.error?.startsWith('Sign-in required')
       ? 'Sign-in required'
-      : pending.length || backfill.pending || state?.error
+      : pending.length || backfill.pending || unreadable.length || state?.error
         ? 'Pending sync'
         : 'Synced',
     eligible: eligible.length,
     synced: eligible.length - pending.length,
     pending: pending.length,
     excluded: rows.length - eligible.length,
-    failed: outbox.filter((r) => r.error || r.conflict).length,
+    failed: outbox.filter((r) => r.error || r.conflict).length + unreadable.length,
     backfill,
     lastPull: iso(state?.lastPull ?? null),
     lastPush: iso(state?.lastPush ?? null),
@@ -192,7 +220,8 @@ async function status(db: HorusDb, ctx: MemorySyncContext): Promise<MemorySyncSt
     conflicts: outbox
       .filter((r) => r.conflict)
       .map((r) => ({ memoryId: r.memoryId, operationId: r.id, detail: r.conflict })),
-    error: state?.error ?? outbox.find((r) => r.error)?.error ?? undefined,
+    error: state?.error ?? outbox.find((r) => r.error)?.error ??
+      (unreadable.length ? `Unreadable saved reports (${unreadable.length}): ${unreadable.join(', ')}` : undefined),
   };
 }
 
@@ -526,19 +555,20 @@ async function backfill(
   deadline: number,
 ): Promise<void> {
   const store = createLocalMemoryStore(db);
-  const reports = await db
-    .select()
-    .from(investigations)
-    .where(eq(investigations.project, ctx.repo));
+  const { rows: reports } = await reportHistory(db, ctx.repo);
   const memories = await db
     .select()
     .from(memoryItem)
     .where(eq(memoryItem.repo, ctx.repo));
   const links = await db.select().from(memoryLink);
   const covered = coveredReports(memories, links);
-  for (const row of reports) {
+  for (const entry of reports) {
     if (Date.now() >= deadline) break;
-    if (!canBackfill(row.report) || covered.has(row.id)) continue;
+    if (!entry.eligible || covered.has(entry.id)) continue;
+    const [row] = await db.select().from(investigations).where(and(
+      eq(investigations.project, ctx.repo), eq(investigations.id, entry.id),
+    ));
+    if (!row || !canBackfill(row.report)) continue;
     const report = row.report;
     const item = await createInvestigationMemory(
       store,

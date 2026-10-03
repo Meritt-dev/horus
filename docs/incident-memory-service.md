@@ -84,7 +84,10 @@ Imported report copies refresh on demand, so a report restored before its AI sta
 finishes picks up the completed interpretation. The last saved copy remains usable
 offline; locally authored reports are not overwritten by this refresh.
 The `backfill` status counts eligible/indexed/pending/excluded saved reports separately
-from the memory synchronization counts.
+from the memory synchronization counts. Unreadable report payloads are isolated so
+readable history can continue backfilling. Their IDs and a separate `backfill.failed`
+count remain visible, and the state stays `Pending sync` until they are recovered.
+Failed rows are never counted as excluded or overwritten automatically.
 
 On a clean second machine: install the paired CLI, log into the same account, and link
 the same Cloud project. Linking automatically starts bounded restoration; subsequent

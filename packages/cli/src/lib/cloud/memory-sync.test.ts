@@ -18,6 +18,7 @@ import type { CloudClient, MemoryItemRecord, MemorySyncResult } from './api.js';
 const paths: string[] = [];
 const handles: DbHandle[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const h of handles.splice(0)) await h.sql.end();
   for (const p of paths.splice(0)) await rm(p, { recursive: true, force: true });
 }, 30_000);
@@ -320,4 +321,55 @@ it('startup status counts eligible legacy reports without backfilling incomplete
   expect(result.state).toBe('Pending sync');
   expect(result.backfill).toEqual({ eligible: 1, indexed: 0, pending: 1, excluded: 4 });
   expect(await h.db.select().from(memoryItem)).toHaveLength(0);
+}, 30_000);
+
+it('isolates unreadable history, backfills later readable reports, and retries after recovery', async () => {
+  const h = await open();
+  const remote = cloud();
+  const broken = '93760717-00f9-4811-8b9b-46211f0773a7';
+  const good = '93f60d4c-a63d-4b6b-8ee9-c4dcdc22533f';
+  for (const id of [broken, good]) await h.db.insert(investigations).values({
+    id, title: 'saved incident', project: remote.ctx.repo, incidentInput: {},
+    createdAt: new Date('2025-01-01'), report: {
+      id, input: { repo: remote.ctx.repo, hint: 'saved incident' },
+      seeds: [], evidence: [], hypotheses: [], timeline: { boundaryCrossings: [] },
+      summary: 'unconfirmed', confidence: 0.3,
+    },
+  });
+  await h.db.insert(investigations).values({
+    title: 'incomplete', project: remote.ctx.repo, incidentInput: {}, report: {},
+  });
+  await h.db.insert(investigations).values({
+    title: 'other project', project: 'other', incidentInput: {}, report: {},
+  });
+  // Hosted CI: simulate the observed payload-read failure, preserving real PGlite writes/queries.
+  const client = (h.db as unknown as { $client: {
+    query(sql: string, params?: unknown[], options?: unknown): Promise<unknown>;
+  } }).$client;
+  const query = client.query.bind(client);
+  const fault = vi.spyOn(client, 'query').mockImplementation(async (...args) => {
+    if (args[0].includes('jsonb_typeof') &&
+      (!args[0].includes(' in (') || args[1]?.includes(broken)))
+      throw new Error('unreadable report payload');
+    return query(...args);
+  });
+  const before = await synchronizeMemory(h.db, remote.ctx, { pullOnly: true });
+  expect(before).toMatchObject({ state: 'Pending sync', failed: 1,
+    backfill: { eligible: 1, indexed: 0, pending: 1, excluded: 1, failed: 1 } });
+  expect(before.error).toContain(broken);
+  const adopted = await synchronizeMemory(h.db, remote.ctx, { limit: 0 });
+  expect(adopted.backfill).toEqual({ eligible: 1, indexed: 1, pending: 0, excluded: 1, failed: 1 });
+  const memories = await h.db.select().from(memoryItem);
+  expect(memories).toHaveLength(1);
+  expect(memories[0]?.payload).toMatchObject({ investigationId: good,
+    outcome: { disposition: 'unknown', certainty: 'inferred' } });
+  expect(memories[0]?.createdAt.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  expect(adopted.state).toBe('Pending sync');
+  fault.mockRestore();
+  const recovered = await synchronizeMemory(h.db, remote.ctx, { limit: 0 });
+  expect(recovered.backfill).toEqual({ eligible: 2, indexed: 2, pending: 0, excluded: 1 });
+  expect(recovered.failed).toBe(0);
+  expect(recovered.error).toBeUndefined();
+  expect(await h.db.select().from(memoryItem)).toHaveLength(2);
+  expect(await h.db.select().from(investigations)).toHaveLength(4);
 }, 30_000);
