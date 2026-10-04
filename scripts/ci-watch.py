@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import re
+import tempfile
 import subprocess
 import time
 from pathlib import Path
@@ -55,8 +57,20 @@ def main():
                 state["logsFetched"] = True
                 save_state(args.state, state)
                 try:
-                    print(gh("run", "view", str(args.run), "--repo", args.repo,
-                             "--log-failed")[-12000:], flush=True)
+                    logs = gh("run", "view", str(args.run), "--repo", args.repo, "--log-failed")
+                    with tempfile.NamedTemporaryFile(mode="w", prefix=f"horus-ci-{args.run}-", suffix=".failed.log",
+                            dir=args.state.parent if args.state else None, delete=False) as file:
+                        file.write(logs)
+                        state["logsPath"] = file.name
+                    save_state(args.state, state)
+                    print(f"Full failure log saved: {state['logsPath']}", flush=True)
+                    lines = re.sub(r"(?:\x1b|\^\[)\[[0-9;]*m", "", logs).splitlines()
+                    indexes = set()
+                    for i, line in enumerate(lines):
+                        if any(marker in line for marker in ["FAIL ", "AssertionError", "Error:", "timed out"]):
+                            indexes.update(range(max(0, i - 2), min(len(lines), i + 12)))
+                    selected = [lines[i] for i in sorted(indexes)][:80] if indexes else lines[-20:]
+                    print("\n".join(selected)[-12000:], flush=True)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                     print("Failed logs unavailable; run conclusion remains authoritative.", flush=True)
             save_state(args.state, state)

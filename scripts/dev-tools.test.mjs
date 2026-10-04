@@ -31,6 +31,9 @@ test('CI observer emits job changes only and fetches failed logs once across con
     assert.equal(first.status, 1);
     assert.equal(next.status, 1);
     assert.match(first.stdout, /build: completed failure/);
+    const saved = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    assert.match(readFileSync(saved.logsPath, 'utf8'), /one failure log/);
+    assert.match(first.stdout, /Full failure log saved/);
     assert.doesNotMatch(next.stdout, /build:|one failure log/);
     assert.equal(
       readFileSync(join(dir, 'calls'), 'utf8').split('--log-failed').length - 1,
