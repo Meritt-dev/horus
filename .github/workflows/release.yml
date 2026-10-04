@@ -1,8 +1,8 @@
 name: Release
 
 # Manual release — not every push to master is a release. Reads the version from
-# apps/horus/package.json and skips if a GitHub Release for that version already
-# exists, so each step is idempotent.
+# apps/horus/package.json. Existing GitHub releases resume package publication from
+# the immutable release tag instead of skipping unfinished npm/Homebrew steps.
 #
 # To release: bump apps/horus/package.json, commit + push to master, then run this
 # workflow manually:
@@ -40,9 +40,6 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org/
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
       - name: Read version
         id: version
         run: |
@@ -58,13 +55,24 @@ jobs:
         run: |
           if gh release view "$RELEASE_TAG" &>/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Release $RELEASE_TAG already published — skipping."
+            echo "Release $RELEASE_TAG exists — resuming package publication from its tag."
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
+      # A partial release may already have public GitHub assets. Rebuild their exact
+      # revision, never publish newer master code under the existing package version.
+      - name: Check out existing release tag
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          clean: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Typecheck
-        if: steps.check.outputs.exists == 'false'
         run: pnpm typecheck
 
       - name: Lint
@@ -87,11 +95,9 @@ jobs:
         run: python3 scripts/release-receipt.py release docs/implementation/current-release.json
 
       - name: Test
-        if: steps.check.outputs.exists == 'false'
         run: pnpm test
 
       - name: Stamp source-py version (one bundle, one version)
-        if: steps.check.outputs.exists == 'false'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -111,14 +117,11 @@ jobs:
           PYEOF
 
       - uses: astral-sh/setup-uv@v5
-        if: steps.check.outputs.exists == 'false'
 
       - name: Build bundled source-intelligence wheel
-        if: steps.check.outputs.exists == 'false'
         run: bash ./scripts/release/build-source-wheel.sh
 
       - name: Build CLI
-        if: steps.check.outputs.exists == 'false'
         run: pnpm --filter ./apps/horus build
 
       - name: Verify accepted CLI artifact
@@ -126,11 +129,9 @@ jobs:
         run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
 
       - name: Assert bundled wheel is in dist
-        if: steps.check.outputs.exists == 'false'
         run: test -f apps/horus/dist/horus_source.whl
 
       - name: Assert pglite assets are in dist
-        if: steps.check.outputs.exists == 'false'
         # The single-file binary loads these three assets as siblings at runtime for local
         # persistence (incident memory, `horus ask`, queue topology). tsup copies them into
         # dist during the CLI build; publish them as release assets so install.sh / `horus
@@ -141,7 +142,6 @@ jobs:
           test -f apps/horus/dist/initdb.wasm
 
       - name: Smoke test
-        if: steps.check.outputs.exists == 'false'
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
 
       - name: Build platform archives (Homebrew)
@@ -150,8 +150,22 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: bash ./scripts/homebrew/build-archives.sh "$RELEASE_VERSION" apps/horus/dist/index.cjs
 
+      # tar/gzip and wheel timestamps are not reproducible. A resumed tap update
+      # must use the checksums of the archives users will actually download.
+      - name: Verify existing platform archives
+        if: steps.check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p .homebrew-archives
+          gh release download "$RELEASE_TAG" --pattern '*.tar.gz*' --dir .homebrew-archives
+          cd .homebrew-archives
+          for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
+            sha256sum --check "horus-${RELEASE_TAG}-${platform}.tar.gz.sha256"
+          done
+
       - name: Prepare install.sh artifact
-        if: steps.check.outputs.exists == 'false'
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -161,7 +175,6 @@ jobs:
             > "apps/horus/dist/horus-${RELEASE_TAG}.sha256"
 
       - name: Write release notes
-        if: steps.check.outputs.exists == 'false'
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -220,7 +233,6 @@ jobs:
             ".homebrew-archives/horus-${RELEASE_TAG}-linux-x86_64.tar.gz.sha256"
 
       - name: Publish to npm
-        if: steps.check.outputs.exists == 'false'
         working-directory: apps/horus
         # Idempotent: skip if this version is already on npm (e.g. the separate NPM Publish
         # workflow ran). Without this, a 403 "cannot publish over previous version" fails the
@@ -236,25 +248,30 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.npm_token }}
 
       - name: Update Homebrew formula
-        if: steps.check.outputs.exists == 'false'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: bash ./scripts/homebrew/update-formula.sh "$RELEASE_VERSION"
+          RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+        # Packaging fixes follow the dispatched workflow; application code stays
+        # pinned to the release tag when resuming an existing release.
+        run: |
+          git restore --source "$RELEASE_WORKFLOW_SHA" -- scripts/homebrew/update-formula.sh
+          bash ./scripts/homebrew/update-formula.sh "$RELEASE_VERSION"
 
       - name: Push Homebrew formula to tap
-        if: steps.check.outputs.exists == 'false'
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          git clone \
-            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/meritt-dev/homebrew-tap.git" \
-            /tmp/homebrew-tap
+          git clone https://github.com/meritt-dev/homebrew-tap.git /tmp/homebrew-tap
           cp homebrew-tap/Formula/horus.rb /tmp/homebrew-tap/Formula/horus.rb
           cd /tmp/homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/horus.rb
-          git diff --cached --quiet \
-            || git commit -m "chore: horus ${RELEASE_TAG}"
+          if git diff --cached --quiet; then
+            echo "Homebrew formula is already current — skipping push."
+            exit 0
+          fi
+          git commit -m "chore: horus ${RELEASE_TAG}"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/meritt-dev/homebrew-tap.git"
           git push origin master
