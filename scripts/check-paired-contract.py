@@ -12,6 +12,6 @@ sha = config.get("pairedCliSha", "")
 if not re.fullmatch(r"[a-f0-9]{40}", sha):
     raise ValueError("Deployed Cloud does not report a verified paired CLI revision")
 subprocess.run(["git", "fetch", "--no-tags", "origin", sha], check=True, timeout=60)
-subprocess.run(["git", "diff", "--quiet", sha, "HEAD", "--", "packages", "apps", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.json", "turbo.json",
+subprocess.run(["git", "diff", "--quiet", sha, "HEAD", "--", "packages", "apps", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json", ".npmrc", "turbo.json",
                 ":(exclude)**/*.test.*"], check=True)
 print(f"Cloud paired contract has the current CLI production source: {sha}")

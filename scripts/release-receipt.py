@@ -102,7 +102,7 @@ def main():
             raise ValueError("Deployed Cloud differs from receipt")
         # A receipt cannot authorize publication of different production source.
         subprocess.run(["git", "diff", "--quiet", data["cli"]["sourceSha"], "HEAD", "--",
-                        "packages", "apps", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.json", "turbo.json", ":(exclude)**/*.test.*"], check=True)
+                        "packages", "apps", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json", ".npmrc", "turbo.json", ":(exclude)**/*.test.*"], check=True)
 
 
 if __name__ == "__main__":
