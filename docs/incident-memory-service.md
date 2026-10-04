@@ -65,8 +65,8 @@ Set `HORUS_STARTUP_RECALL=0` to disable startup recall while keeping stored hist
 
 The local dirty generation and frozen outbox survive process exit and a lost HTTP
 response. Server revisions order updates independently of laptop clocks. Private
-replicas remain editable on a second machine. Growing link/audit histories use
-bounded upload pages (500 rows and about 1 MiB per page). Downloaded pages and
+replicas remain editable on a second machine. Small valid requests retain the existing unpaged protocol. Growing link/audit
+histories that exceed those bounds use bounded upload pages (500 rows and about 1 MiB per page). Downloaded pages and
 cursors persist across short sync deadlines and process restarts; only complete
 histories enter recall. Operations above the server's 32 MiB staging cap are
 rejected visibly without publishing or truncating a partial history. Team
@@ -391,7 +391,7 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
 | 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
-| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts; owner confirms manual sleep/wake and logout/login | Pending-job wake recovery and full scenario coverage remain unobserved; no repeat physical actions requested |
+| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts; owner confirms earlier manual sleep/wake and logout/login on faf3172 | Pending-job wake recovery and full scenario coverage remain unobserved; no repeat physical actions requested |
 | 02 S2–S3 / A3–A9: cursors, grouping and claims | Hosted PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and crash-safe database ownership | Maison PagerDuty subscription active; fresh native acceptance and upstream retention under an outage remain unmeasured |
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Fresh native incident delivery under the configured destination policy remains unverified; one dated saved report reached the Cloud-selected app channel after reload. CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
@@ -415,8 +415,9 @@ notifications off and unchanged budgets. It completed 60 additional jobs, ending
 An actual shutdown/reboot caused a ten-hour observation gap; LaunchAgents recovered the
 same history after login. This is elapsed-window and reboot-recovery evidence, rather
 than 72 hours of continuous online availability. The subsequent cancellation-diagnostic
-fix is outside this recorded window. Physical sleep/wake and fresh native delivery
-remain unverified. The later physical second-host restore passed, and the frozen
+fix is outside this recorded window. At that September checkpoint, physical
+sleep/wake and fresh native delivery remained unverified; the owner's later
+manual-action confirmation below does not extend that older scenario window. The later physical second-host restore passed, and the frozen
 15-case chronological pilot holdout meets the proposed numerical targets. The
 labels are source-reviewed operation relevance, not human-attested causes; the
 PRD does not require a human reviewer or prescribe a minimum sample size.
@@ -430,6 +431,8 @@ This is not a downloaded CI artifact. Cloud migrations through `0040` are deploy
 the history-paging server change requires no further Cloud migration.
 Latest hosted verification and deployment proof are in
 [the runtime review-fix record](implementation/review-fixes-2026-10-04.md).
+Use [the requirement checklist](implementation/horus-prd-release-checklist.md)
+for each acceptance case and its remaining verification limit.
 The broad primary source checkpoint is preserved separately and has not itself
 run in CI or been deployed.
 
@@ -442,8 +445,9 @@ connected, with that same single successful delivery receipt.
 
 The updated CLI/Cloud combination began October 3 at 23:47:57 UTC. Its earliest
 72-hour elapsed point is October 6 at 23:47:57 UTC / October 7 at 02:47:57 Istanbul.
-This supersedes earlier runtime anchors. The owner confirms the manual sleep/wake
-and logout/login exercises; no repetition is requested. The full scenario soak,
+This supersedes earlier runtime anchors. On October 3 at 22:24 and 22:44 UTC, the owner confirmed the earlier manual
+sleep/wake and logout/login exercises on prior runtime `faf3172`; no repetition
+is requested. This does not establish those scenarios on the new runtime. The full scenario soak,
 fresh accepted PagerDuty incidents with automatic report delivery, and measured
 latency, failure and duplicate rates remain release gates. Elapsed time alone
 does not prove those scenarios.
