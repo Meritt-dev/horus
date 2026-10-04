@@ -11,10 +11,11 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "lint": "turbo run lint",
+    "lint": "node scripts/lint.mjs",
     "horus": "tsx apps/horus/src/index.ts",
     "db": "pnpm --filter @horus/db",
-    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "format:check": "node scripts/lint.mjs --format-only"
   },
   "devDependencies": {
     "@horus/core": "workspace:*",
