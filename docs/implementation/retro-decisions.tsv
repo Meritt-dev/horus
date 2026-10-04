@@ -1,0 +1,5 @@
+timestamp	action	why	evidence	result
+2026-10-04	Implement seven approved retrospective changes	User requested fixes and releases	Annotated retrospective; repository source and CI workflows	Changes prepared across Horus and Cloud
+2026-10-04	Keep automated verification hosted	User and repository restrictions	AGENTS.md	Only static checks run locally
+2026-10-04	Retain explicit public release gates	Build success cannot establish recall or timed acceptance	Existing PRD checklist	Native delivery, measured rates and scenario soak remain unverified
+2026-10-04	Reuse existing ticket ownership	Meritt Linear unavailable through connected workspace	Available connector does not expose Meritt tickets	No new tickets created under user waiver

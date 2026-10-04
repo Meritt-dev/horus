@@ -40,14 +40,22 @@ try {
     }),
   );
   await runService('install', { settings, profile, skipChecks: true });
-  for (let i = 0; i < 90 && !existsSync(join(dir, 'service/status.json')); i++)
+  let state: any;
+  for (let i = 0; i < 90; i++) {
+    state = await readFile(join(dir, 'service/status.json'), 'utf8')
+      .then((text) => JSON.parse(text))
+      .catch(() => null);
+    if (state?.projects?.[0]?.enabled === false) break;
     await new Promise((r) => setTimeout(r, 500));
+  }
   assert(
-    existsSync(join(dir, 'service/status.json')),
-    'launchd did not produce a durable status snapshot within 45 seconds',
+    state?.projects?.[0]?.enabled === false,
+    'launchd did not produce a complete durable status snapshot within 45 seconds',
   );
-  const state = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
   assert(state.pid);
+  assert.match(state.supervisor.runtimeSha256, /^[a-f0-9]{64}$/);
+  assert.equal(state.supervisor.restartCount, 0);
+  assert.equal(state.supervisor.previousExit, null);
   assert.equal(state.projects[0].enabled, false);
   for (const action of ['resume', 'pause']) {
     await runService(action, { settings, profile, path: dir, env: 'test' });
@@ -74,6 +82,12 @@ try {
     await new Promise((r) => setTimeout(r, 500));
     const next = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
     if (next.pid !== state.pid) {
+      assert.equal(next.supervisor.restartCount, 1);
+      assert.equal(next.supervisor.previousExit.reason, 'unrecorded');
+      assert.equal(next.supervisor.runtimeSha256, state.supervisor.runtimeSha256);
+      assert(
+        Date.parse(next.supervisor.startedAt) > Date.parse(state.supervisor.startedAt),
+      );
       restarted = true;
       break;
     }
@@ -96,8 +110,18 @@ try {
   );
 } catch (error) {
   // Keep isolated startup diagnostics before finally removes the test profile.
-  console.error(spawnSync('/bin/launchctl', ['print', `gui/${process.getuid!()}/sh.horus.watch.${profile}`], { encoding: 'utf8' }).stdout.slice(-8_000));
-  console.error(await readFile(join(dir, 'service/service.log'), 'utf8').catch(() => 'No service log was created'));
+  console.error(
+    spawnSync(
+      '/bin/launchctl',
+      ['print', `gui/${process.getuid!()}/sh.horus.watch.${profile}`],
+      { encoding: 'utf8' },
+    ).stdout.slice(-8_000),
+  );
+  console.error(
+    await readFile(join(dir, 'service/service.log'), 'utf8').catch(
+      () => 'No service log was created',
+    ),
+  );
   throw error;
 } finally {
   await runService('remove', { settings, profile }).catch(() => {});

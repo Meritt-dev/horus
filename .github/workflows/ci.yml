@@ -19,6 +19,14 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm lint
+
+      - name: Developer tooling contracts
+        run: node --test scripts/dev-tools.test.mjs
+
+      - name: Current release receipt consistency
+        run: python3 scripts/release-receipt.py check docs/implementation/current-release.json
+
       - run: pnpm typecheck
 
       # The source-intelligence HTTP contract tests (packages/connectors/src/source/contract.test.ts)
@@ -32,24 +40,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
-        run: |
-          if [ -z "$HORUS_RECALL_REVIEW_BUNDLE" ]; then
-            echo 'No private recall review configured; release quality gate remains unverified.'
-            exit 0
-          fi
-          review_dir=$(mktemp -d)
-          export HORUS_RECALL_HISTORY="$review_dir/history.json"
-          export HORUS_RECALL_LABELS="$review_dir/review.json"
-          trap 'rm -rf "$review_dir"' EXIT
-          node <<'NODE'
-          const { gunzipSync } = require('node:zlib');
-          const { writeFileSync } = require('node:fs');
-          const bundle = JSON.parse(gunzipSync(Buffer.from(process.env.HORUS_RECALL_REVIEW_BUNDLE, 'base64'), { maxOutputLength: 2 * 1024 * 1024 }));
-          writeFileSync(process.env.HORUS_RECALL_HISTORY, JSON.stringify(bundle.history), { mode: 0o600 });
-          writeFileSync(process.env.HORUS_RECALL_LABELS, JSON.stringify(bundle.review), { mode: 0o600 });
-          NODE
-          unset HORUS_RECALL_REVIEW_BUNDLE
-          pnpm exec tsx scripts/test-recall-history.ts
+        run: node scripts/run-recall-review.mjs
 
       - run: pnpm build
 

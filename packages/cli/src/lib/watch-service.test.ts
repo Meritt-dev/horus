@@ -1,5 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  chmodSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, acquireDbLock, type DbHandle } from '@horus/db';
@@ -10,6 +18,7 @@ import {
   saveJob,
   writeWatchState,
   type IncidentEvent,
+  type WatchJobData,
 } from './watch-store.js';
 import {
   CLAUDE_ARGS,
@@ -27,6 +36,7 @@ import {
   recordServiceFailure,
   deliverOperationalNotice,
   serviceWebhook,
+  summarizeServiceJobs,
 } from './watch-service.js';
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
@@ -64,26 +74,75 @@ const event = (extra: Partial<IncidentEvent> = {}): IncidentEvent => ({
   ...extra,
 });
 it('keeps Slack delivery in the Cloud app while preserving explicit generic HTTP receivers', () => {
-  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://hooks.slack.com/services/fixture' } })).toBeUndefined();
-  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://hooks.slack-gov.com/services/fixture' } })).toBeUndefined();
-  expect(serviceWebhook({ minConfidence: 0, cloud: false, webhook: { url: 'https://receiver.invalid/notify' } })?.url).toBe('https://receiver.invalid/notify');
+  expect(
+    serviceWebhook({
+      minConfidence: 0,
+      cloud: false,
+      webhook: { url: 'https://hooks.slack.com/services/fixture' },
+    }),
+  ).toBeUndefined();
+  expect(
+    serviceWebhook({
+      minConfidence: 0,
+      cloud: false,
+      webhook: { url: 'https://hooks.slack-gov.com/services/fixture' },
+    }),
+  ).toBeUndefined();
+  expect(
+    serviceWebhook({
+      minConfidence: 0,
+      cloud: false,
+      webhook: { url: 'https://receiver.invalid/notify' },
+    })?.url,
+  ).toBe('https://receiver.invalid/notify');
 });
 it('retains a rate-limited operational notice across DB reopen and retries only delivery under the same scope', async () => {
   const root = temp();
   vi.stubEnv('HORUS_HOME', join(root, 'profile'));
   vi.stubEnv('HORUS_DB_DIR', join(root, 'db'));
-  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'u', email: 'test@example.invalid' } });
-  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'p', slug: 'p' } });
-  const p = { root, config: join(root, 'horus.config.mjs'), project: 'p', environment: 'production', source: 'pagerduty' as const, enabled: true, notifications: 'off' as const, idempotentDestination: false };
+  writeAuth({
+    apiBaseUrl: 'https://cloud.invalid',
+    token: 'fixture',
+    account: { userId: 'u', email: 'test@example.invalid' },
+  });
+  writeCloudConfig(root, {
+    context: 'cloud',
+    workspace: { id: 'w', slug: 'w' },
+    project: { id: 'p', slug: 'p' },
+  });
+  const p = {
+    root,
+    config: join(root, 'horus.config.mjs'),
+    project: 'p',
+    environment: 'production',
+    source: 'pagerduty' as const,
+    enabled: true,
+    notifications: 'off' as const,
+    idempotentDestination: false,
+  };
   let h = await createLocalDb();
-  await writeWatchState(h.db, `scope:${routeKey(p)}`, memorySyncContext(root, 'p')!.scope);
+  await writeWatchState(
+    h.db,
+    `scope:${routeKey(p)}`,
+    memorySyncContext(root, 'p')!.scope,
+  );
   await acceptEvents(h.db, routeKey(p), [event()]);
   const job = (await jobs(h.db))[0]!;
   job.status = 'terminal-failed';
   job.attempts = { engine: 1, ai: 3 };
-  job.notice = { kind: 'terminal', day: '2026-10-03', hint: 'Investigation needs attention', cause: 'Saved evidence is retained.', state: 'pending', retryAt: 0 };
+  job.notice = {
+    kind: 'terminal',
+    day: '2026-10-03',
+    hint: 'Investigation needs attention',
+    cause: 'Saved evidence is retained.',
+    state: 'pending',
+    retryAt: 0,
+  };
   await saveJob(h.db, job);
-  const fetch = vi.fn(async (_url: string, _init: RequestInit): Promise<Response> => new Response('', { status: 429, headers: { 'retry-after': '120' } }));
+  const fetch = vi.fn(
+    async (_url: string, _init: RequestInit): Promise<Response> =>
+      new Response('', { status: 429, headers: { 'retry-after': '120' } }),
+  );
   vi.stubGlobal('fetch', fetch);
   const start = Date.now();
   await deliverOperationalNotice(h.db, p, job);
@@ -96,17 +155,27 @@ it('retains a rate-limited operational notice across DB reopen and retries only 
   expect(restored.attempts).toEqual({ engine: 1, ai: 3 });
   restored.notice!.retryAt = 0;
   fetch.mockImplementation(async (_url: string, init: RequestInit) => {
-    expect(JSON.parse(String(init.body))).toMatchObject({ kind: 'terminal', environment: 'production', jobId: job.id });
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      kind: 'terminal',
+      environment: 'production',
+      jobId: job.id,
+    });
     return new Response(JSON.stringify({ state: 'delivered' }));
   });
   await deliverOperationalNotice(h.db, p, restored);
   expect(restored.notice?.state).toBe('done');
   expect(restored.attempts).toEqual({ engine: 1, ai: 3 });
-  expect(String(fetch.mock.calls[1]?.[0])).toContain('/projects/p/notifications/slack/notices');
+  expect(String(fetch.mock.calls[1]?.[0])).toContain(
+    '/projects/p/notifications/slack/notices',
+  );
   await deliverOperationalNotice(h.db, p, restored);
   expect(fetch).toHaveBeenCalledTimes(2);
   restored.notice!.state = 'pending';
-  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'other', slug: 'other' } });
+  writeCloudConfig(root, {
+    context: 'cloud',
+    workspace: { id: 'w', slug: 'w' },
+    project: { id: 'other', slug: 'other' },
+  });
   await deliverOperationalNotice(h.db, p, restored);
   expect(restored.notice?.error).toContain('scope mismatch');
   expect(fetch).toHaveBeenCalledTimes(2);
@@ -213,18 +282,43 @@ it('retains the ES cursor and jobs after partial HTTP 200 results, then recovers
 }, 60_000);
 it('keeps Cloud liveness during source backoff without clearing failure, budget or account scope', async () => {
   const root = temp();
-  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
-  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'u', email: 'test@example.invalid' } });
-  writeCloudConfig(root, { context: 'cloud', workspace: { id: 'w', slug: 'w' }, project: { id: 'p', slug: 'p' } });
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR'])
+    vi.stubEnv(key, root);
+  writeAuth({
+    apiBaseUrl: 'https://cloud.invalid',
+    token: 'fixture',
+    account: { userId: 'u', email: 'test@example.invalid' },
+  });
+  writeCloudConfig(root, {
+    context: 'cloud',
+    workspace: { id: 'w', slug: 'w' },
+    project: { id: 'p', slug: 'p' },
+  });
   const settings = join(root, 'settings.json');
   const config = serviceConfigSchema.parse({
-    claude: '/usr/bin/true', runtime: process.execPath, entry: '/unused',
-    dailyInvestigations: 1, dailyModelCalls: 1,
-    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
+    claude: '/usr/bin/true',
+    runtime: process.execPath,
+    entry: '/unused',
+    dailyInvestigations: 1,
+    dailyModelCalls: 1,
+    projects: [
+      {
+        root,
+        config: join(root, 'unused.json'),
+        project: 'p',
+        environment: 'production',
+        source: 'elasticsearch',
+        notifications: 'off',
+      },
+    ],
   });
   writeFileSync(settings, JSON.stringify(config));
   const route = routeKey(config.projects[0]!);
-  const health = { failures: 3, error: 'source unavailable', retryAt: Date.now() + 3600_000 };
+  const health = {
+    failures: 3,
+    error: 'source unavailable',
+    retryAt: Date.now() + 3600_000,
+  };
   let h = await createLocalDb();
   await writeWatchState(h.db, `health:${route}`, health);
   await writeWatchState(h.db, `scope:${route}`, memorySyncContext(root, 'p')!.scope);
@@ -239,43 +333,74 @@ it('keeps Cloud liveness during source backoff without clearing failure, budget 
     return deadline.signal;
   });
   const beats: string[] = [];
-  vi.stubGlobal('fetch', vi.fn(async (url: string | URL, options?: RequestInit) => {
-    if (String(url).endsWith('/alert-workers') && options?.method === 'POST') {
-      expect((options.headers as Record<string, string>).authorization).toBe('Bearer fixture');
-      expect(options.signal?.aborted).toBe(false);
-      beats.push(JSON.parse(String(options.body)).state);
-    }
-    return new Response(JSON.stringify({ items: [], hasMore: false, nextRevision: '0' }));
-  }));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL, options?: RequestInit) => {
+      if (String(url).endsWith('/alert-workers') && options?.method === 'POST') {
+        expect((options.headers as Record<string, string>).authorization).toBe(
+          'Bearer fixture',
+        );
+        expect(options.signal?.aborted).toBe(false);
+        beats.push(JSON.parse(String(options.body)).state);
+      }
+      return new Response(
+        JSON.stringify({ items: [], hasMore: false, nextRevision: '0' }),
+      );
+    }),
+  );
   await runWatchService(settings, true);
   expect(beats).toEqual(['degraded']);
   h = await createLocalDb();
   expect(await readWatchState(h.db, `health:${route}`)).toEqual(health);
-  await writeWatchState(h.db, `budget:${new Date().toISOString().slice(0, 10)}`, { investigations: 1, modelCalls: 0 });
+  await writeWatchState(h.db, `budget:${new Date().toISOString().slice(0, 10)}`, {
+    investigations: 1,
+    modelCalls: 0,
+  });
   await h.sql.end();
   await runWatchService(settings, true);
   expect(beats).toEqual(['degraded', 'budget-exhausted']);
-  writeAuth({ apiBaseUrl: 'https://cloud.invalid', token: 'fixture', account: { userId: 'other', email: 'other@example.invalid' } });
+  writeAuth({
+    apiBaseUrl: 'https://cloud.invalid',
+    token: 'fixture',
+    account: { userId: 'other', email: 'other@example.invalid' },
+  });
   await runWatchService(settings, true);
   expect(beats).toHaveLength(2);
 }, 60_000);
 it('supervisor crashes count only attempts the worker has not already journaled', async () => {
   const root = temp();
-  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR'])
+    vi.stubEnv(key, root);
   const worker = join(root, 'worker.mts');
-  writeFileSync(worker, `
+  writeFileSync(
+    worker,
+    `
     import {createLocalDb} from ${JSON.stringify(new URL('../../../db/src/index.ts', import.meta.url).href)};
     import {jobs,saveJob} from ${JSON.stringify(new URL('./watch-store.ts', import.meta.url).href)};
     const h=await createLocalDb();const job=(await jobs(h.db))[0];
     job.attempts.ai=(job.attempts.ai??0)+1;await saveJob(h.db,job);
     await h.sql.end();process.exit(1);
-  `);
+  `,
+  );
   const settings = join(root, 'settings.json');
   const config = serviceConfigSchema.parse({
-    claude: '/usr/bin/true', runtime: process.execPath,
-    runtimeArgs: [resolve('../../node_modules/tsx/dist/cli.mjs')], entry: worker,
-    deadlineSeconds: 10, dailyInvestigations: 1, dailyModelCalls: 1,
-    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
+    claude: '/usr/bin/true',
+    runtime: process.execPath,
+    runtimeArgs: [resolve('../../node_modules/tsx/dist/cli.mjs')],
+    entry: worker,
+    deadlineSeconds: 10,
+    dailyInvestigations: 1,
+    dailyModelCalls: 1,
+    projects: [
+      {
+        root,
+        config: join(root, 'unused.json'),
+        project: 'p',
+        environment: 'production',
+        source: 'elasticsearch',
+        notifications: 'off',
+      },
+    ],
   });
   writeFileSync(settings, JSON.stringify(config));
   const route = routeKey(config.projects[0]!);
@@ -516,7 +641,9 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
   chmodSync(file, 0o700);
   await interpretIncident(file, root, event(), withoutRecall, 2000);
   const prompt = readFileSync(received, 'utf8');
-  const allowed = JSON.parse(prompt.split('ALLOWED_CITATIONS:\n')[1]!.split('\nDATA:\n')[0]!);
+  const allowed = JSON.parse(
+    prompt.split('ALLOWED_CITATIONS:\n')[1]!.split('\nDATA:\n')[0]!,
+  );
   expect(allowed).toEqual({ evidenceIds: ['ev1'], historicalMemoryIds: [] });
   expect(prompt).toContain('report reference, not a memoryId');
   expect(() =>
@@ -538,15 +665,24 @@ it('preserves the caller abort reason before spawn and while killing a running c
   const file = join(root, 'waiting.cjs');
   const pidFile = join(root, 'pid');
   const reason = new Error('Investigation deadline exceeded');
-  writeFileSync(file, `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`);
-  await expect(runProcess(process.execPath, [file], {
-    cwd: root, timeoutMs: 5000, signal: AbortSignal.abort(reason),
-  })).rejects.toBe(reason);
+  writeFileSync(
+    file,
+    `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`,
+  );
+  await expect(
+    runProcess(process.execPath, [file], {
+      cwd: root,
+      timeoutMs: 5000,
+      signal: AbortSignal.abort(reason),
+    }),
+  ).rejects.toBe(reason);
   expect(existsSync(pidFile)).toBe(false);
 
   const controller = new AbortController();
   const running = runProcess(process.execPath, [file], {
-    cwd: root, timeoutMs: 10000, signal: controller.signal,
+    cwd: root,
+    timeoutMs: 10000,
+    signal: controller.signal,
   });
   const rejected = expect(running).rejects.toBe(reason);
   try {
@@ -563,11 +699,36 @@ it('preserves the caller abort reason before spawn and while killing a running c
     await running.catch(() => {});
   }
 });
+it('retains supervisor identity and distinguishes recorded exits from an abrupt restart', async () => {
+  const { beginSupervisor, supervisorMetadata } = await import('./watch-service.js');
+  const root = mkdtempSync(join(tmpdir(), 'horus-supervisor-history-'));
+  dirs.push(root);
+  vi.stubEnv('HORUS_SERVICE_DIR', root);
+  const entry = join(root, 'entry.cjs');
+  writeFileSync(entry, 'runtime-identity');
+  beginSupervisor(entry);
+  const first = supervisorMetadata()!;
+  expect(first.runtimeSha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(first.previousExit).toBeNull();
+  recordServiceFailure(new Error('Authorization: Bearer private-failure'));
+  beginSupervisor(entry);
+  expect(supervisorMetadata()?.previousExit?.reason).toBe('fatal');
+  expect(supervisorMetadata()?.restartCount).toBe(1);
+  beginSupervisor(entry);
+  expect(supervisorMetadata()?.previousExit?.reason).toBe('unrecorded');
+  expect(supervisorMetadata()?.restartCount).toBe(2);
+  expect(supervisorMetadata()?.runtimeSha256).toBe(first.runtimeSha256);
+  const status = readFileSync(join(root, 'service/status.json'), 'utf8');
+  expect(status).not.toContain('private-failure');
+  expect(statSync(join(root, 'service/status.json')).mode & 0o777).toBe(0o600);
+});
 it('records supervisor startup failures before preserving the failing exit', async () => {
   const root = mkdtempSync(join(tmpdir(), 'horus-supervisor-failure-'));
   dirs.push(root);
   vi.stubEnv('HORUS_SERVICE_DIR', root);
-  await expect(runService('run', { settings: join(root, 'missing.json'), once: true })).rejects.toThrow('ENOENT');
+  await expect(
+    runService('run', { settings: join(root, 'missing.json'), once: true }),
+  ).rejects.toThrow('ENOENT');
   const file = join(root, 'service', 'service.log');
   expect(readFileSync(file, 'utf8')).toContain('Supervisor stopped: ENOENT');
   expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -580,7 +741,9 @@ it('redacts fatal diagnostics and bounds current and previous service logs', () 
   const file = join(root, 'service', 'service.log');
   expect(readFileSync(file, 'utf8')).not.toContain('diagnostic-secret-value');
   writeFileSync(file, 'previous\n' + 'x'.repeat(999_950), { mode: 0o600 });
-  recordServiceFailure(new Error(`https://user:${'diagnostic-secret-value'.repeat(100_000)}@host`));
+  recordServiceFailure(
+    new Error(`https://user:${'diagnostic-secret-value'.repeat(100_000)}@host`),
+  );
   expect(readFileSync(file, 'utf8')).toContain('[truncated]');
   expect(readFileSync(file, 'utf8')).not.toContain('diagnostic-secret-value');
   expect(readFileSync(`${file}.1`, 'utf8')).toMatch(/^previous\n/);
@@ -612,10 +775,17 @@ it('launchd uses argument array and explicit auth paths; no shell or API key req
   expect(xml).not.toContain('/bin/sh');
 });
 it('preserves native ES document identity independently of coincident payloads or source-supplied IDs', () => {
-  const hit = { _index: 'logs', _id: 'native-a', _source: {
-    time: '2026-09-27T01:00:00Z', level: 50, message: 'Fetch products error',
-    event_code: 'EMODA_011_04', _id: 'source-spoof',
-  } };
+  const hit = {
+    _index: 'logs',
+    _id: 'native-a',
+    _source: {
+      time: '2026-09-27T01:00:00Z',
+      level: 50,
+      message: 'Fetch products error',
+      event_code: 'EMODA_011_04',
+      _id: 'source-spoof',
+    },
+  };
   const a = elasticEvent(normalizeHit(hit), 'production');
   const b = elasticEvent(normalizeHit({ ...hit, _id: 'native-b' }), 'production');
   expect(a.eventId).toBe('logs:native-a');
@@ -632,7 +802,12 @@ it('normalizes actual ES fields without exporting raw payloads and groups workfl
     index: 'logs',
     eventCode: 'DISPATCH_RETRY',
     service: 'safqa',
-    context: { order_id: '42', workflow: 'supplierDispatch', operation: 'reserve', password: 'secret' },
+    context: {
+      order_id: '42',
+      workflow: 'supplierDispatch',
+      operation: 'reserve',
+      password: 'secret',
+    },
     raw: { large: 'do not retain' },
   } as import('@horus/connectors').LogRecord;
   const e = elasticEvent(record, 'production');
@@ -720,13 +895,31 @@ it('a hard-killed worker cannot leave Claude or its tools running', async () => 
 
 it('controller death closes worker IPC and terminates its detached group', async () => {
   const root = temp();
-  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR']) vi.stubEnv(key, root);
+  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR'])
+    vi.stubEnv(key, root);
   const settings = join(root, 'settings.json');
-  writeFileSync(settings, JSON.stringify(serviceConfigSchema.parse({
-    claude: '/usr/bin/true', runtime: process.execPath, entry: '/unused',
-    dailyInvestigations: 1, dailyModelCalls: 1,
-    projects: [{ root, config: join(root, 'unused.json'), project: 'p', environment: 'production', source: 'elasticsearch', notifications: 'off' }],
-  })));
+  writeFileSync(
+    settings,
+    JSON.stringify(
+      serviceConfigSchema.parse({
+        claude: '/usr/bin/true',
+        runtime: process.execPath,
+        entry: '/unused',
+        dailyInvestigations: 1,
+        dailyModelCalls: 1,
+        projects: [
+          {
+            root,
+            config: join(root, 'unused.json'),
+            project: 'p',
+            environment: 'production',
+            source: 'elasticsearch',
+            notifications: 'off',
+          },
+        ],
+      }),
+    ),
+  );
   // Hold only this test's lock so the real worker stays at its first DB acquisition.
   const release = await acquireDbLock(join(root, 'horus.db'), 100);
   const pidFile = join(root, 'pids.json');
@@ -735,24 +928,50 @@ it('controller death closes worker IPC and terminates its detached group', async
   const supervisor = join(root, 'supervisor.mts');
   // Run in one PID/group like the bundled CLI; the tsx CLI wrapper masks controller death.
   const runtime = resolve('../../node_modules/tsx/dist/loader.mjs');
-  writeFileSync(claude, `const tool=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({worker:Number(process.argv[2]),supervisor:Number(process.argv[3]),claude:process.pid,tool:tool.pid}));setInterval(()=>{},1000);`);
-  writeFileSync(worker, `import {spawn} from 'node:child_process';import {runServiceWorker} from ${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)};spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`);
-  writeFileSync(supervisor, `import {runProcess} from ${JSON.stringify(new URL('./claude-investigation.ts', import.meta.url).href)};await runProcess(process.execPath,['--import',${JSON.stringify(runtime)},${JSON.stringify(worker)}],{cwd:${JSON.stringify(root)},timeoutMs:30000,onMessage:()=>{}});`);
-  const running = runProcess(process.execPath, ['--import', runtime, supervisor], { cwd: root, timeoutMs: 15000 });
-  let pids: {worker: number; supervisor: number; claude: number; tool: number} | undefined;
+  writeFileSync(
+    claude,
+    `const tool=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({worker:Number(process.argv[2]),supervisor:Number(process.argv[3]),claude:process.pid,tool:tool.pid}));setInterval(()=>{},1000);`,
+  );
+  writeFileSync(
+    worker,
+    `import {spawn} from 'node:child_process';import {runServiceWorker} from ${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)};spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`,
+  );
+  writeFileSync(
+    supervisor,
+    `import {runProcess} from ${JSON.stringify(new URL('./claude-investigation.ts', import.meta.url).href)};await runProcess(process.execPath,['--import',${JSON.stringify(runtime)},${JSON.stringify(worker)}],{cwd:${JSON.stringify(root)},timeoutMs:30000,onMessage:()=>{}});`,
+  );
+  const running = runProcess(process.execPath, ['--import', runtime, supervisor], {
+    cwd: root,
+    timeoutMs: 15000,
+  });
+  let pids:
+    | { worker: number; supervisor: number; claude: number; tool: number }
+    | undefined;
   try {
-    await vi.waitFor(() => { pids = JSON.parse(readFileSync(pidFile, 'utf8')); }, { timeout: 10000 });
+    await vi.waitFor(
+      () => {
+        pids = JSON.parse(readFileSync(pidFile, 'utf8'));
+      },
+      { timeout: 10000 },
+    );
     process.kill(pids!.supervisor, 'SIGKILL');
     await expect(running).rejects.toThrow('Subprocess exited');
-    await vi.waitFor(() => {
-      for (const pid of [pids!.worker, pids!.claude, pids!.tool])
-        expect(() => process.kill(pid, 0)).toThrow();
-    }, { timeout: 3000 });
+    await vi.waitFor(
+      () => {
+        for (const pid of [pids!.worker, pids!.claude, pids!.tool])
+          expect(() => process.kill(pid, 0)).toThrow();
+      },
+      { timeout: 3000 },
+    );
   } finally {
     release();
     if (pids) {
-      try { process.kill(-pids.worker, 'SIGKILL'); } catch {}
-      try { process.kill(pids.supervisor, 'SIGKILL'); } catch {}
+      try {
+        process.kill(-pids.worker, 'SIGKILL');
+      } catch {}
+      try {
+        process.kill(pids.supervisor, 'SIGKILL');
+      } catch {}
     }
     await running.catch(() => {});
   }
@@ -811,4 +1030,23 @@ it('reuses an explicit Cloud episode through native child resolutions and starts
     }),
   ]);
   expect(await jobs(h.db)).toHaveLength(2);
+});
+
+it('status retains a bounded job projection while complete results remain in history', () => {
+  const list = Array.from({ length: 200 }, (_, i) => ({
+    id: String(i),
+    reportId: String(i),
+    createdAt: '2026-10-01T00:00:00Z',
+    stage: 'done',
+    status: 'done',
+    ai: { sessionId: 'session', model: 'claude-opus-5-5', result: 'x'.repeat(10000) },
+  })) as WatchJobData[];
+  expect(JSON.stringify(list).length).toBeGreaterThan(1_000_000);
+  const status = summarizeServiceJobs(list);
+  expect(status.jobsTotal).toBe(200);
+  expect(status.jobs).toHaveLength(20);
+  expect(status.jobs[0]?.id).toBe('180');
+  expect(JSON.stringify(status).length).toBeLessThan(10000);
+  expect(status.jobs[0]).not.toHaveProperty('ai');
+  expect(list[0]?.ai?.result).toHaveLength(10000);
 });

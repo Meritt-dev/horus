@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "observedAt": "2026-10-04T00:13:31Z",
+  "cli": {
+    "sourceSha": "820126f865b441d0368ca76ee0cea948ed4dfc50",
+    "artifactSha256": "3787cee7acd26480ffa98561210cd0855d7562dcd7b605367d933fb57c7135e0",
+    "artifactOrigin": "local-build-from-ci-source"
+  },
+  "cloud": {
+    "sourceSha": "918a0d1b39f5e7ef595dee053298b1188037967b",
+    "imageDigest": "sha256:49cf25fefcc60283b0a359df3e562802bcbbc915c0bee8d5d0977d42be814a2d",
+    "version": "0.0.115",
+    "pairedCliSha": "d6380d878a7502eff8ceb0a4210029fc34df70db",
+    "verifiedSha": "7ba2317907132f34f9d813c6f6710244dfd42ceb"
+  },
+  "ci": [
+    {
+      "repo": "Meritt-dev/horus",
+      "runId": 37161746168,
+      "headSha": "820126f865b441d0368ca76ee0cea948ed4dfc50",
+      "conclusion": "success"
+    },
+    {
+      "repo": "Meritt-dev/horus-cloud",
+      "runId": 37162210987,
+      "headSha": "7ba2317907132f34f9d813c6f6710244dfd42ceb",
+      "conclusion": "success"
+    }
+  ],
+  "soak": {
+    "startedAt": "2026-10-03T23:47:57.862748+00:00",
+    "requiredHours": 72
+  },
+  "gates": {
+    "nativeDelivery": false,
+    "measuredRates": false,
+    "scenarioSoak": false
+  }
+}

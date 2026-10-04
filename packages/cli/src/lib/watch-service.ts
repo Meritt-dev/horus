@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import {
   readFileSync,
   writeFileSync,
@@ -12,7 +12,12 @@ import {
 import { resolve, isAbsolute, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import { loadConfig, resolveEnvironment, redactErrorMessage, type NotifyConfig } from '@horus/core';
+import {
+  loadConfig,
+  resolveEnvironment,
+  redactErrorMessage,
+  type NotifyConfig,
+} from '@horus/core';
 import {
   sentryForEnv,
   logsForEnv,
@@ -56,7 +61,14 @@ import {
   redactCloudValue,
 } from './cloud/investigation-sync.js';
 import { dispatchNotify, notificationCause } from './notify-sink.js';
-import { activityEvent, workerRunLogs, activityPath, claudeActivityArgs, readActivity, type WorkerActivity } from './worker-activity.js';
+import {
+  activityEvent,
+  workerRunLogs,
+  activityPath,
+  claudeActivityArgs,
+  readActivity,
+  type WorkerActivity,
+} from './worker-activity.js';
 
 const absolute = z.string().refine(isAbsolute, 'Absolute path required');
 export const serviceConfigSchema = z
@@ -117,40 +129,159 @@ function log(message: string) {
   const file = join(home, 'service.log');
   // Omit oversized diagnostics before regex redaction; cutting a credential
   // mid-value could expose it, and unbounded redaction can stall the supervisor.
-  const safe = message.length > 8192
-    ? '[truncated] Diagnostic exceeded 8192 characters'
-    : redactErrorMessage(new Error(message));
+  const safe =
+    message.length > 8192
+      ? '[truncated] Diagnostic exceeded 8192 characters'
+      : redactErrorMessage(new Error(message));
   const line = `${new Date().toISOString()} ${safe}\n`;
   if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > 1_000_000)
     renameSync(file, `${file}.1`);
-  appendFileSync(
-    file,
-    line,
-    { mode: 0o600 },
-  );
+  appendFileSync(file, line, { mode: 0o600 });
 }
 export function recordServiceFailure(error: unknown): void {
+  try {
+    finishSupervisor('fatal');
+  } catch {
+    /* Keep the failure log even when the status file cannot be written. */
+  }
   log(`Supervisor stopped: ${error instanceof Error ? error.message : String(error)}`);
 }
+const exitSchema = z
+  .object({
+    at: z.string().datetime({ offset: true }),
+    reason: z.enum(['signal', 'completed', 'fatal', 'unrecorded']),
+    signal: z.enum(['SIGTERM', 'SIGINT']).optional(),
+  })
+  .strict();
+const supervisorSchema = z
+  .object({
+    startedAt: z.string().datetime({ offset: true }),
+    runtimeSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    restartCount: z.number().int().min(0).max(1_000_000),
+    previousExit: exitSchema.nullable(),
+    currentExit: exitSchema.optional(),
+  })
+  .strict();
+function readStatus(): Record<string, unknown> {
+  const file = join(serviceHome(), 'status.json');
+  try {
+    if (statSync(file).size > 1_000_000) return {};
+    const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+function writeStatus(status: Record<string, unknown>): void {
+  const home = serviceHome();
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, 'status.tmp'), JSON.stringify(status), { mode: 0o600 });
+  renameSync(join(home, 'status.tmp'), join(home, 'status.json'));
+}
+/** Status is a bounded projection; complete results and history remain in the DB. */
+export function summarizeServiceJobs(list: WatchJobData[]) {
+  return {
+    jobsTotal: list.length,
+    jobs: list.slice(-20).map((job) => ({
+      id: job.id,
+      reportId: job.reportId,
+      createdAt: job.createdAt,
+      stage: job.stage,
+      status: job.status,
+      ...(job.error && { error: redactErrorMessage(job.error).slice(0, 200) }),
+    })),
+  };
+}
+/** Existing status.json owns supervisor history; children only read its projection. */
+export function supervisorMetadata() {
+  const parsed = supervisorSchema.safeParse(readStatus().supervisor);
+  if (!parsed.success) return undefined;
+  const { currentExit: _currentExit, ...metadata } = parsed.data;
+  return metadata;
+}
+export function beginSupervisor(entry: string): void {
+  const prior = readStatus();
+  const parsed = supervisorSchema.safeParse(prior.supervisor);
+  const previous = parsed.success ? parsed.data : undefined;
+  let runtimeSha256: string | undefined;
+  try {
+    runtimeSha256 = createHash('sha256').update(readFileSync(entry)).digest('hex');
+  } catch {
+    /* Missing identity must not prevent diagnostics for a bad entry. */
+  }
+  const at = new Date().toISOString();
+  const previousAt =
+    typeof prior.at === 'string' && Number.isFinite(Date.parse(prior.at))
+      ? new Date(prior.at).toISOString()
+      : at;
+  writeStatus({
+    ...prior,
+    at,
+    pid: process.pid,
+    activeJob: null,
+    supervisor: {
+      startedAt: at,
+      runtimeSha256,
+      restartCount: previous ? Math.min(previous.restartCount + 1, 1_000_000) : 0,
+      previousExit:
+        previous?.currentExit ??
+        (previous ? { at: previousAt, reason: 'unrecorded' } : null),
+    },
+  });
+}
+function finishSupervisor(
+  reason: 'signal' | 'completed' | 'fatal',
+  signal?: 'SIGTERM' | 'SIGINT',
+): void {
+  const prior = readStatus();
+  const parsed = supervisorSchema.safeParse(prior.supervisor);
+  if (!parsed.success || prior.pid !== process.pid) return;
+  writeStatus({
+    ...prior,
+    at: new Date().toISOString(),
+    supervisor: {
+      ...parsed.data,
+      currentExit: { at: new Date().toISOString(), reason, ...(signal && { signal }) },
+    },
+  });
+}
 /** Slack uses Cloud's app; retain explicit generic HTTP receivers for compatibility. */
-export function serviceWebhook(notify: NotifyConfig | undefined): NotifyConfig['webhook'] {
+export function serviceWebhook(
+  notify: NotifyConfig | undefined,
+): NotifyConfig['webhook'] {
   const webhook = notify?.webhook;
   if (!webhook) return undefined;
   const host = new URL(webhook.url).hostname.toLowerCase();
   return ['hooks.slack.com', 'hooks.slack-gov.com'].includes(host) ? undefined : webhook;
 }
 /** Delivery is a checkpoint on the existing job; it never retries engine/AI work. */
-export async function deliverOperationalNotice(db: HorusDb, p: WatchProject, job: WatchJobData): Promise<void> {
+export async function deliverOperationalNotice(
+  db: HorusDb,
+  p: WatchProject,
+  job: WatchJobData,
+): Promise<void> {
   const notice = job.notice;
   if (!notice || notice.state === 'done' || notice.retryAt > Date.now()) return;
   try {
     const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
-    if (!cloud) throw new Error('Cloud sign-in/link required to deliver the worker notice');
-    if (await readWatchState<string>(db, `scope:${job.route}`) !== cloud.scope)
-      throw new Error('Watcher account/project scope mismatch; worker notice retained locally');
+    if (!cloud)
+      throw new Error('Cloud sign-in/link required to deliver the worker notice');
+    if ((await readWatchState<string>(db, `scope:${job.route}`)) !== cloud.scope)
+      throw new Error(
+        'Watcher account/project scope mismatch; worker notice retained locally',
+      );
     const result = await cloud.client.notifyServiceNotice(cloud.config.project!.id, {
-      kind: notice.kind, environment: p.environment, jobId: job.id,
-      day: notice.day, hint: notice.hint, cause: notice.cause,
+      kind: notice.kind,
+      environment: p.environment,
+      jobId: job.id,
+      day: notice.day,
+      hint: notice.hint,
+      cause: notice.cause,
     });
     if (!result || !['off', 'delivered'].includes(result.state))
       throw new Error(result?.error ?? 'Invalid worker notice response');
@@ -158,7 +289,9 @@ export async function deliverOperationalNotice(db: HorusDb, p: WatchProject, job
     notice.error = undefined;
   } catch (error) {
     notice.error = redactErrorMessage(error).slice(0, 2000);
-    notice.retryAt = Date.now() + Math.max(60_000, error instanceof CloudError ? (error.retryAfterMs ?? 0) : 0);
+    notice.retryAt =
+      Date.now() +
+      Math.max(60_000, error instanceof CloudError ? (error.retryAfterMs ?? 0) : 0);
   }
   await saveJob(db, job);
 }
@@ -281,6 +414,7 @@ export async function pollProject(
       environment: p.environment,
       workerId,
       state: exhausted ? 'budget-exhausted' : 'idle',
+      supervisor: supervisorMetadata(),
     })
     .catch((error) => {
       if (p.source === 'pagerduty') throw error;
@@ -493,33 +627,61 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       environment: p.environment,
       ...job!.cloudRequest,
     });
-    const addActivity = (kind: WorkerActivity['kind'], action: WorkerActivity['action']) => {
-      job!.activity = [...(job!.activity ?? []), activityEvent(job!.id, kind, action)].slice(-100);
+    const addActivity = (
+      kind: WorkerActivity['kind'],
+      action: WorkerActivity['action'],
+    ) => {
+      job!.activity = [
+        ...(job!.activity ?? []),
+        activityEvent(job!.id, kind, action),
+      ].slice(-100);
     };
     const collectActivity = () => {
       if (!hookFile) return;
       try {
-        const events = new Map((job!.activity ?? []).map(event => [event.id, event]));
+        const events = new Map((job!.activity ?? []).map((event) => [event.id, event]));
         for (const event of readActivity(hookFile, job!.id)) events.set(event.id, event);
-        job!.activity = [...events.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-100);
-      } catch { /* A damaged activity file cannot fail evidence gathering. */ }
+        job!.activity = [...events.values()]
+          .sort((a, b) => a.at.localeCompare(b.at))
+          .slice(-100);
+      } catch {
+        /* A damaged activity file cannot fail evidence gathering. */
+      }
     };
     const publishActivity = (): Promise<void> => {
       if (activitySend) return activitySend;
       activitySend = (async () => {
         try {
           collectActivity();
-          const telemetry = memorySyncContext(p.root, p.project, AbortSignal.timeout(3000));
+          const telemetry = memorySyncContext(
+            p.root,
+            p.project,
+            AbortSignal.timeout(3000),
+          );
           if (!telemetry || telemetry.scope !== cloud.scope) return;
           await telemetry.client.workerHeartbeat(cloud.config.workspace!.id, {
-            projectId: cloud.config.project!.id, environment: p.environment,
+            projectId: cloud.config.project!.id,
+            environment: p.environment,
             workerId: job!.cloudRequest?.workerId ?? localWorkerId,
             state: job!.status === 'done' ? 'idle' : 'running',
-            activeJob: job!.status === 'done' ? null : { jobId: job!.id, reportId: job!.reportId, cloudReportId: job!.cloudReportId, stage: job!.stage },
+            activeJob:
+              job!.status === 'done'
+                ? null
+                : {
+                    jobId: job!.id,
+                    reportId: job!.reportId,
+                    cloudReportId: job!.cloudReportId,
+                    stage: job!.stage,
+                  },
             activity: job!.activity ?? [],
+            supervisor: supervisorMetadata(),
           });
-        } catch { /* Activity transport never fails or retries the investigation. */ }
-      })().finally(() => { activitySend = undefined; });
+        } catch {
+          /* Activity transport never fails or retries the investigation. */
+        }
+      })().finally(() => {
+        activitySend = undefined;
+      });
       return activitySend;
     };
     const beat = async () => {
@@ -555,7 +717,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     }, 25_000);
     addActivity('stage', job.stage);
     void publishActivity();
-    activityTimer = setInterval(() => { void publishActivity(); }, 2000);
+    activityTimer = setInterval(() => {
+      void publishActivity();
+    }, 2000);
     // No source host auto-start or re-index in the unattended path.
     context = await buildInvestigationContext(env, {
       databaseUrl: loaded.database.url,
@@ -575,7 +739,9 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     const save = async () => {
       controller.signal.throwIfAborted();
       collectActivity();
-      const lastStage = [...(job!.activity ?? [])].reverse().find(a => a.kind === 'stage' && !['recall', 'collect'].includes(a.action));
+      const lastStage = [...(job!.activity ?? [])]
+        .reverse()
+        .find((a) => a.kind === 'stage' && !['recall', 'collect'].includes(a.action));
       if (lastStage?.action !== job!.stage) addActivity('stage', job!.stage);
       await saveJob(db, job!);
       void publishActivity();
@@ -607,7 +773,13 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             service: job.event.service,
           },
           context,
-          { timeoutMs: config.deadlineSeconds * 1000 + 60_000, onActivity: action => { addActivity('stage', action); void publishActivity(); } },
+          {
+            timeoutMs: config.deadlineSeconds * 1000 + 60_000,
+            onActivity: (action) => {
+              addActivity('stage', action);
+              void publishActivity();
+            },
+          },
         );
         if (!report.persisted) throw new Error('Engine report was not durably saved');
       }
@@ -632,8 +804,16 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             try {
               hookFile = activityPath(serviceHome(), sessionId);
               writeFileSync(hookFile, '', { mode: 0o600, flag: 'wx' });
-              activityArgs = claudeActivityArgs(config.runtime, config.runtimeArgs, config.entry, sessionId, job.id);
-            } catch { hookFile = undefined; }
+              activityArgs = claudeActivityArgs(
+                config.runtime,
+                config.runtimeArgs,
+                config.entry,
+                sessionId,
+                job.id,
+              );
+            } catch {
+              hookFile = undefined;
+            }
             job.ai = await interpretIncident(
               config.claude,
               p.root,
@@ -652,7 +832,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             if ((job.attempts.ai ?? 0) < 3) throw error;
           } finally {
             collectActivity();
-            try { if (hookFile && existsSync(hookFile)) unlinkSync(hookFile); } catch { /* private bounded metadata only */ }
+            try {
+              if (hookFile && existsSync(hookFile)) unlinkSync(hookFile);
+            } catch {
+              /* private bounded metadata only */
+            }
             hookFile = undefined;
           }
         }
@@ -716,28 +900,57 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
           throw new Error('Cloud report link missing; notification deferred');
         if (!job.notified) {
           job.attempts.notify = (job.attempts.notify ?? 0) + 1;
-          const webhook = p.notifications === 'configured' ? serviceWebhook(env.notify) : undefined;
+          const webhook =
+            p.notifications === 'configured' ? serviceWebhook(env.notify) : undefined;
           // Legacy direct webhook safety remains independent of Cloud's durable receipt.
           if (webhook && job.notificationKey && !p.idempotentDestination)
-            throw new Error('DELIVERY_UNKNOWN: inspect destination before service retry --delivery-checked');
+            throw new Error(
+              'DELIVERY_UNKNOWN: inspect destination before service retry --delivery-checked',
+            );
           job.notificationKey ??= `${job.id}:${digest([job.cloudReportId, (job.latestEvent ?? job.event).severity, (job.latestEvent ?? job.event).eventId, job.aiFailure])}`;
           await save();
           const ai = job.ai ? incidentResultSchema.parse(job.ai.result) : undefined;
-          const cause = notificationCause(report, ai, Boolean(job.aiFailure)).slice(0, 4000);
+          const cause = notificationCause(report, ai, Boolean(job.aiFailure)).slice(
+            0,
+            4000,
+          );
           const headline = {
             notificationKey: job.notificationKey,
             confidence: ai?.confidence ?? report.confidence,
-            hint: redactCloudValue(`${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`).slice(0, 1000),
+            hint: redactCloudValue(
+              `${p.project}/${p.environment}${report.input.service ? ` / ${report.input.service}` : ''} [${(job.latestEvent ?? job.event).severity}]: ${(job.latestEvent ?? job.event).hint}`,
+            ).slice(0, 1000),
             cause,
           };
           // Cloud owns the Slack app and project channel. This explicit checkpoint,
           // after upload, cannot notify from historical sync or repeat engine/AI work.
-          const delivered = await cloud.client.notifyInvestigation(cloud.config.project!.id, job.cloudReportId!, headline);
+          const delivered = await cloud.client.notifyInvestigation(
+            cloud.config.project!.id,
+            job.cloudReportId!,
+            headline,
+          );
           if (!delivered || !['off', 'delivered'].includes(delivered.state))
-            throw new Error(`Cloud notification failed: ${delivered?.error ?? 'invalid delivery response'}`);
+            throw new Error(
+              `Cloud notification failed: ${delivered?.error ?? 'invalid delivery response'}`,
+            );
           if (webhook) {
-            const result = await dispatchNotify({ id: report.id, ...headline, reportUrl: job.cloudUrl }, { ...env.notify, webhook, cloud: env.notify?.cloud ?? false, minConfidence: 0 }, { timeoutMs: Math.min(5000, remaining()) });
-            if (result.some(r => !r.ok)) throw new Error(`Notification failed: ${result.filter(r => !r.ok).map(r => r.detail).join('; ')}`);
+            const result = await dispatchNotify(
+              { id: report.id, ...headline, reportUrl: job.cloudUrl },
+              {
+                ...env.notify,
+                webhook,
+                cloud: env.notify?.cloud ?? false,
+                minConfidence: 0,
+              },
+              { timeoutMs: Math.min(5000, remaining()) },
+            );
+            if (result.some((r) => !r.ok))
+              throw new Error(
+                `Notification failed: ${result
+                  .filter((r) => !r.ok)
+                  .map((r) => r.detail)
+                  .join('; ')}`,
+              );
           }
           job.notified = true;
         }
@@ -748,8 +961,12 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     if (job.stage === 'complete') {
       // Retry delivery of the saved timeline, never inference, if Cloud is unavailable.
       if (job.cloudAgentRunId && job.cloudReportId)
-        await cloud.client.updateAgentRun(cloud.config.project!.id, job.cloudReportId, job.cloudAgentRunId,
-          workerRunLogs(job.activity ?? [], report?.aiJudgment));
+        await cloud.client.updateAgentRun(
+          cloud.config.project!.id,
+          job.cloudReportId,
+          job.cloudAgentRunId,
+          workerRunLogs(job.activity ?? [], report?.aiJudgment),
+        );
       if (job.cloudRequest) {
         const complete = () =>
           cloud.client.alertRequest(
@@ -789,16 +1006,26 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
       await activitySend;
       await publishActivity();
       if (job.cloudAgentRunId && job.cloudReportId) {
-        try { await cloud.client.updateAgentRun(cloud.config.project!.id, job.cloudReportId, job.cloudAgentRunId,
-          workerRunLogs(job.activity ?? [], report?.aiJudgment)); }
-        catch { /* The durable pre-completion timeline is already saved; completion remains authoritative. */ }
+        try {
+          await cloud.client.updateAgentRun(
+            cloud.config.project!.id,
+            job.cloudReportId,
+            job.cloudAgentRunId,
+            workerRunLogs(job.activity ?? [], report?.aiJudgment),
+          );
+        } catch {
+          /* The durable pre-completion timeline is already saved; completion remains authoritative. */
+        }
       }
     }
   } catch (error) {
     if (activityTimer) clearInterval(activityTimer);
     await activitySend;
     if (job) {
-      job.activity = [...(job.activity ?? []), activityEvent(job.id, 'error', job.stage)].slice(-100);
+      job.activity = [
+        ...(job.activity ?? []),
+        activityEvent(job.id, 'error', job.stage),
+      ].slice(-100);
       job.error = redactErrorMessage(error);
       job.pid = undefined;
       const budget = job.error.includes('DAILY_BUDGET');
@@ -840,25 +1067,42 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             environment: p.environment,
             workerId: job.cloudRequest?.workerId ?? localWorkerId,
             state: budget ? 'budget-exhausted' : 'degraded',
-            activeJob: { jobId: job.id, reportId: job.reportId, cloudReportId: job.cloudReportId, stage: job.stage },
+            activeJob: {
+              jobId: job.id,
+              reportId: job.reportId,
+              cloudReportId: job.cloudReportId,
+              stage: job.stage,
+            },
             activity: job.activity ?? [],
+            supervisor: supervisorMetadata(),
           })
           .catch(() => {});
       }
       if ((budget || job.status === 'terminal-failed') && p) {
         const kind = budget ? 'budget' : 'terminal';
         const day = new Date().toISOString().slice(0, 10);
-        if (!job.notice || job.notice.kind !== kind || (budget && job.notice.day !== day)) {
+        if (
+          !job.notice ||
+          job.notice.kind !== kind ||
+          (budget && job.notice.day !== day)
+        ) {
           job.notice = {
-            kind, day, state: 'pending', retryAt: 0,
-            hint: redactCloudValue(`${p.project}/${p.environment}: ${budget ? 'Daily budget reached' : 'Investigation needs attention'}`).slice(0, 1000),
-            cause: redactCloudValue(`${job.error}. Inspect horus service status${budget ? '; work remains queued until UTC tomorrow' : `; retry job ${job.id} after fixing the cause`}`).slice(0, 4000),
+            kind,
+            day,
+            state: 'pending',
+            retryAt: 0,
+            hint: redactCloudValue(
+              `${p.project}/${p.environment}: ${budget ? 'Daily budget reached' : 'Investigation needs attention'}`,
+            ).slice(0, 1000),
+            cause: redactCloudValue(
+              `${job.error}. Inspect horus service status${budget ? '; work remains queued until UTC tomorrow' : `; retry job ${job.id} after fixing the cause`}`,
+            ).slice(0, 4000),
           };
           if (context) await saveJob(context.dbHandle.db, job);
-          else await withDb(db => saveJob(db, job!));
+          else await withDb((db) => saveJob(db, job!));
         }
         if (context) await deliverOperationalNotice(context.dbHandle.db, p, job);
-        else await withDb(db => deliverOperationalNotice(db, p, job!));
+        else await withDb((db) => deliverOperationalNotice(db, p, job!));
       }
       log(`${job.id} ${job.stage}: ${job.error}`);
     } else throw error;
@@ -868,7 +1112,11 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     if (heartbeat) clearInterval(heartbeat);
     if (activityTimer) clearInterval(activityTimer);
     await activitySend;
-    try { if (hookFile && existsSync(hookFile)) unlinkSync(hookFile); } catch { /* private bounded metadata only */ }
+    try {
+      if (hookFile && existsSync(hookFile)) unlinkSync(hookFile);
+    } catch {
+      /* private bounded metadata only */
+    }
     if (context) await disposeInvestigationContext(context);
     process.removeListener('SIGTERM', stopBySignal);
     process.removeListener('SIGINT', stopBySignal);
@@ -883,10 +1131,18 @@ export async function runWatchService(settings: string, once = false): Promise<v
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const release = await acquireDbLock(join(home, 'worker'), 100);
   const controller = new AbortController();
-  const stop = () => controller.abort(new Error('Service interrupted by signal'));
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
+  let stoppedBy: 'SIGTERM' | 'SIGINT' | undefined;
+  const stop = (signal: 'SIGTERM' | 'SIGINT') => {
+    stoppedBy = signal;
+    controller.abort(new Error('Service interrupted by signal'));
+  };
+  const stopTerm = () => stop('SIGTERM');
+  const stopInt = () => stop('SIGINT');
+  process.once('SIGTERM', stopTerm);
+  process.once('SIGINT', stopInt);
+  let failed = false;
   try {
+    beginSupervisor(config.entry);
     const workerId = await withDb(async (db) => {
       const id =
         (await readWatchState<string>(db, 'worker:id')) ?? `local-${randomUUID()}`;
@@ -900,27 +1156,40 @@ export async function runWatchService(settings: string, once = false): Promise<v
         const route = routeKey(p);
         try {
           const health = await withDb((db) =>
-            readWatchState<{ retryAt?: number; failures?: number }>(db, `health:${route}`),
+            readWatchState<{ retryAt?: number; failures?: number }>(
+              db,
+              `health:${route}`,
+            ),
           );
           if (!health?.retryAt || health.retryAt <= Date.now())
             await pollProject(p, workerId, config);
           else {
             // Source backoff must not make a live worker appear offline in Cloud.
-            const { scope, usage } = await withDb(async db => ({
+            const { scope, usage } = await withDb(async (db) => ({
               scope: await readWatchState<string>(db, `scope:${route}`),
               usage: await readWatchState<{ investigations: number; modelCalls: number }>(
-                db, `budget:${new Date().toISOString().slice(0, 10)}`,
+                db,
+                `budget:${new Date().toISOString().slice(0, 10)}`,
               ),
             }));
             const cloud = memorySyncContext(p.root, p.project, AbortSignal.timeout(5000));
             if (cloud && scope === cloud.scope)
-              await cloud.client.workerHeartbeat(cloud.config.workspace!.id, {
-                projectId: cloud.config.project!.id,
-                environment: p.environment,
-                workerId,
-                state: usage && (usage.investigations >= config.dailyInvestigations || usage.modelCalls >= config.dailyModelCalls)
-                  ? 'budget-exhausted' : (health.failures ?? 0) >= 3 ? 'degraded' : 'idle',
-              }).catch(error => log(`Cloud heartbeat: ${redactErrorMessage(error)}`));
+              await cloud.client
+                .workerHeartbeat(cloud.config.workspace!.id, {
+                  projectId: cloud.config.project!.id,
+                  environment: p.environment,
+                  workerId,
+                  state:
+                    usage &&
+                    (usage.investigations >= config.dailyInvestigations ||
+                      usage.modelCalls >= config.dailyModelCalls)
+                      ? 'budget-exhausted'
+                      : (health.failures ?? 0) >= 3
+                        ? 'degraded'
+                        : 'idle',
+                  supervisor: supervisorMetadata(),
+                })
+                .catch((error) => log(`Cloud heartbeat: ${redactErrorMessage(error)}`));
           }
         } catch (error) {
           await withDb(async (db) => {
@@ -953,8 +1222,10 @@ export async function runWatchService(settings: string, once = false): Promise<v
         }
         const pending = await withDb((db) => jobs(db, route));
         // Retry one due notice per route independently of deferred/terminal analysis.
-        const noticeJob = pending.find(j => j.notice?.state === 'pending' && j.notice.retryAt <= Date.now());
-        if (noticeJob) await withDb(db => deliverOperationalNotice(db, p, noticeJob));
+        const noticeJob = pending.find(
+          (j) => j.notice?.state === 'pending' && j.notice.retryAt <= Date.now(),
+        );
+        if (noticeJob) await withDb((db) => deliverOperationalNotice(db, p, noticeJob));
         const job = pending.find(
           (j) =>
             !['done', 'cancelled', 'terminal-failed'].includes(j.status) &&
@@ -979,6 +1250,7 @@ export async function runWatchService(settings: string, once = false): Promise<v
               ...prior,
               at: new Date().toISOString(),
               pid: process.pid,
+              supervisor: readStatus().supervisor,
               activeJob: {
                 id: job.id,
                 project: p.project,
@@ -1034,8 +1306,12 @@ export async function runWatchService(settings: string, once = false): Promise<v
             current.pid = undefined;
             current.error = redactErrorMessage(error);
             // The child journals a stage attempt before work; only count an unrecorded crash here.
-            if ((current.attempts[current.stage] ?? 0) === (job.attempts[current.stage] ?? 0))
-              current.attempts[current.stage] = (current.attempts[current.stage] ?? 0) + 1;
+            if (
+              (current.attempts[current.stage] ?? 0) ===
+              (job.attempts[current.stage] ?? 0)
+            )
+              current.attempts[current.stage] =
+                (current.attempts[current.stage] ?? 0) + 1;
             current.status =
               current.attempts[current.stage]! >= 5 ? 'terminal-failed' : 'retry-wait';
             current.nextAttemptAt = Date.now() + 60_000;
@@ -1053,6 +1329,7 @@ export async function runWatchService(settings: string, once = false): Promise<v
         activeJob: null,
         at: new Date().toISOString(),
         pid: process.pid,
+        supervisor: readStatus().supervisor,
         database: localDbPath(),
         projects: await Promise.all(
           config.projects.map(async (p) => ({
@@ -1061,7 +1338,7 @@ export async function runWatchService(settings: string, once = false): Promise<v
             enabled: p.enabled,
             health: await readWatchState(db, `health:${routeKey(p)}`),
             sync: await readWatchState(db, `sync:${routeKey(p)}`),
-            jobs: await jobs(db, routeKey(p)),
+            ...summarizeServiceJobs(await jobs(db, routeKey(p))),
           })),
         ),
       }));
@@ -1082,9 +1359,20 @@ export async function runWatchService(settings: string, once = false): Promise<v
         controller.signal.addEventListener('abort', done, { once: true });
       });
     } while (!controller.signal.aborted);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
+    try {
+      finishSupervisor(
+        failed ? 'fatal' : stoppedBy ? 'signal' : 'completed',
+        failed ? undefined : stoppedBy,
+      );
+    } catch (error) {
+      console.error(`Could not save supervisor exit: ${redactErrorMessage(error)}`);
+    }
     release();
-    process.removeListener('SIGTERM', stop);
-    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stopTerm);
+    process.removeListener('SIGINT', stopInt);
   }
 }

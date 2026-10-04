@@ -29,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
 
@@ -64,6 +66,25 @@ jobs:
       - name: Typecheck
         if: steps.check.outputs.exists == 'false'
         run: pnpm typecheck
+
+      - name: Lint
+        if: steps.check.outputs.exists == 'false'
+        run: pnpm lint
+
+      - name: Required recall release evidence
+        if: steps.check.outputs.exists == 'false'
+        env:
+          HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
+          HORUS_REQUIRE_RECALL_REVIEW: '1'
+        run: node scripts/run-recall-review.mjs
+
+      - name: Current paired Cloud contract
+        if: steps.check.outputs.exists == 'false'
+        run: python3 scripts/check-paired-contract.py
+
+      - name: Public service acceptance gates
+        if: steps.check.outputs.exists == 'false'
+        run: python3 scripts/release-receipt.py release docs/implementation/current-release.json
 
       - name: Test
         if: steps.check.outputs.exists == 'false'

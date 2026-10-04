@@ -1,5 +1,8 @@
 # Incident memory and the macOS investigation service
 
+Current deployed source, artifact, Cloud image, CI and soak identity are generated
+from [the current receipt](implementation/current-release.md). Dated observations below retain their original scope.
+
 This release extends the engine memory store, shared investigation runner, watcher,
 Cloud memory service, and Cloud alert queue. Cloud accepts work; your Mac executes
 it. PRD 03, Azure/AWS/Grafana trigger adapters, Linux packaging, managed execution,
@@ -384,17 +387,17 @@ The Cloud browser job uses a temporary Clerk test user, real JWT verification an
 a disposable API/database; cleanup deletes only that run's tagged user.
 Inspect its Playwright step because the browser workflow is non-blocking.
 
-| PRD requirement | Existing verification | Remaining release evidence |
-| --- | --- | --- |
-| 01 M1 / A1–A3: startup recall and current evidence | Hosted chronological holdout: 12/12 recurring top-three matches, 3/3 unrelated no-matches, no false matches; earlier reports only | Small, operation-context sample; broader coverage improves confidence but is not a separate PRD gate |
-| 01 M2: dispositions vs accuracy | Three real EMODA annotations imported through memory add and read back from production Cloud as private/inferred, with evidence, checks and report links; the unchanged Mac worker automatically restored them (153 memories, zero pending/failures) | A future confirmed outcome still requires actual attestation or an authoritative source; no cause confirmation was invented |
-| 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
-| 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
-| 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
-| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts; owner confirms earlier manual sleep/wake and logout/login on faf3172 | Pending-job wake recovery and full scenario coverage remain unobserved; no repeat physical actions requested |
-| 02 S2–S3 / A3–A9: cursors, grouping and claims | Hosted PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and crash-safe database ownership | Maison PagerDuty subscription active; fresh native acceptance and upstream retention under an outage remain unmeasured |
-| 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Fresh native incident delivery under the configured destination policy remains unverified; one dated saved report reached the Cloud-selected app channel after reload. CI uses controlled Claude output |
-| 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
+| PRD requirement                                    | Existing verification                                                                                                                                                                                                                                | Remaining release evidence                                                                                                                                                                              |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 01 M1 / A1–A3: startup recall and current evidence | Hosted chronological holdout: 12/12 recurring top-three matches, 3/3 unrelated no-matches, no false matches; earlier reports only                                                                                                                    | Small, operation-context sample; broader coverage improves confidence but is not a separate PRD gate                                                                                                    |
+| 01 M2: dispositions vs accuracy                    | Three real EMODA annotations imported through memory add and read back from production Cloud as private/inferred, with evidence, checks and report links; the unchanged Mac worker automatically restored them (153 memories, zero pending/failures) | A future confirmed outcome still requires actual attestation or an authoritative source; no cause confirmation was invented                                                                             |
+| 01 M3–M4 / A4–A10: sync and restoration            | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation                                                                                                                  | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised                                                                                 |
+| 01 M5 / A11: visible failure                       | Local persistence/sync failure checks and bounded refresh                                                                                                                                                                                            | Production latency percentiles                                                                                                                                                                          |
+| 01 M6: attributed AI context                       | Worker prompt/citation checks; historical real local Opus sessions                                                                                                                                                                                   | Jev stays disabled without measured improvement                                                                                                                                                         |
+| 02 S1 / A1–A2: lifecycle                           | Hosted macOS launchd check; durable queue/heartbeat contracts; owner confirms earlier manual sleep/wake and logout/login on faf3172                                                                                                                  | Pending-job wake recovery and full scenario coverage remain unobserved; no repeat physical actions requested                                                                                            |
+| 02 S2–S3 / A3–A9: cursors, grouping and claims     | Hosted PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and crash-safe database ownership                                                                                                             | Maison PagerDuty subscription active; fresh native acceptance and upstream retention under an outage remain unmeasured                                                                                  |
+| 02 S4 / A10, A13–A15: investigate and deliver      | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication                                                                                                                 | Fresh native incident delivery under the configured destination policy remains unverified; one dated saved report reached the Cloud-selected app channel after reload. CI uses controlled Claude output |
+| 02 S5–S6 / A11–A12: scope, budgets and health      | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day                                      | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes                                                                                                  |
 
 The selected Maison PagerDuty service's September 26–October 2 UTC history contains
 ten triggers, eleven acknowledgements and ten resolutions, all on September 27.
@@ -490,7 +493,6 @@ pull-request runs do not decode the private dataset. Missing data leaves the
 quality gate unverified. Small or operation-only samples remain exploratory,
 even when their measured rates exceed the targets.
 
-
 ## Live worker activity in Cloud
 
 Open **Agent Runs** for live workers, unfinished queue requests and searchable run history. The same worker panel is available in workspace **Settings**. The Mac makes
@@ -527,7 +529,6 @@ be run.
 New background runs enrich the same run record created by durable memory sync with the validated model and measured execution timing. Missing/reversed legacy timing stays “Not recorded”; captured output is distinct from the saved investigation’s evidence and findings.
 
 Each new background run also saves its latest 100 stage/tool events and the redacted validated final answer in the existing AgentRun logs (`application/vnd.horus.activity+json`, version 1). Run details render an ordered UTC timeline. The completion checkpoint retries logs delivery without repeating inference; a final best-effort update includes the done event. This is bounded history, not a full transcript. Older sessions can be recovered from actual Claude tool timestamps with source `claude-session`; missing worker stages remain explicitly unrecorded. Plain-text logs remain readable. No raw prompts, tool content or private reasoning are uploaded.
-
 
 ### Real second-host restoration
 
