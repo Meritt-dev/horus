@@ -121,6 +121,10 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: pnpm --filter ./apps/horus build
 
+      - name: Verify accepted CLI artifact
+        if: steps.check.outputs.exists == 'false'
+        run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
+
       - name: Assert bundled wheel is in dist
         if: steps.check.outputs.exists == 'false'
         run: test -f apps/horus/dist/horus_source.whl

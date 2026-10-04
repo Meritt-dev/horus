@@ -62,6 +62,9 @@ jobs:
       - name: Build CLI package
         run: pnpm --filter ./apps/horus build
 
+      - name: Verify accepted CLI artifact
+        run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
+
       - name: Pack dry-run
         working-directory: apps/horus
         run: npm pack --dry-run

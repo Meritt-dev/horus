@@ -2,6 +2,7 @@
 """Validate one current release receipt and derive its acceptance summary."""
 import argparse
 import json
+import hashlib
 import re
 import subprocess
 from datetime import datetime, timedelta
@@ -77,8 +78,9 @@ def summary(data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["render", "check", "release"])
+    parser.add_argument("action", choices=["render", "check", "release", "artifact"])
     parser.add_argument("receipt", type=Path)
+    parser.add_argument("--artifact", type=Path, default=Path("apps/horus/dist/index.cjs"))
     args = parser.parse_args()
     data = json.loads(args.receipt.read_text())
     generated = args.receipt.with_suffix(".md")
@@ -88,6 +90,9 @@ def main():
     else:
         if not (generated.read_text() == text):
             raise ValueError("Current summary differs from receipt; render it")
+    if args.action == "artifact":
+        if hashlib.sha256(args.artifact.read_bytes()).hexdigest() != data["cli"]["artifactSha256"]:
+            raise ValueError("Built artifact differs from accepted runtime")
     if args.action == "release":
         if not (all(data["gates"].values())):
             raise ValueError("Public service release gates remain unverified")

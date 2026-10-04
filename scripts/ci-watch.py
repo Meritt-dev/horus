@@ -2,6 +2,7 @@
 """Bounded GitHub CI observer: state changes only, one failed-log fetch per run."""
 import argparse
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -9,6 +10,13 @@ from pathlib import Path
 
 def gh(*args):
     return subprocess.check_output(["gh", *args], text=True, timeout=30)
+
+
+def save_state(path, state):
+    if path:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(state) + "\n")
+        os.replace(temporary, path)
 
 
 def main():
@@ -45,19 +53,16 @@ def main():
             if run["conclusion"] != "success" and not state["logsFetched"]:
                 # Mark first: a lost continuation must not repeatedly dump logs.
                 state["logsFetched"] = True
-                if args.state:
-                    args.state.write_text(json.dumps(state) + "\n")
+                save_state(args.state, state)
                 try:
                     print(gh("run", "view", str(args.run), "--repo", args.repo,
                              "--log-failed")[-12000:], flush=True)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                     print("Failed logs unavailable; run conclusion remains authoritative.", flush=True)
-            if args.state:
-                args.state.write_text(json.dumps(state) + "\n")
+            save_state(args.state, state)
             print(json.dumps({k: run[k] for k in ["url", "headSha", "conclusion"]}), flush=True)
             return 0 if run["conclusion"] == "success" else 1
-        if args.state:
-            args.state.write_text(json.dumps(state) + "\n")
+        save_state(args.state, state)
         time.sleep(min(args.interval, max(0, end - time.monotonic())))
     print(f"CI still running after {args.deadline}s; retained state, no failure inferred.", flush=True)
     return 3
