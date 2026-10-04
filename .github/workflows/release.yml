@@ -75,23 +75,25 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # Service tags must pass acceptance again when repairing a partial release.
+      # Legacy connector tags predate these gates and remain repairable.
       - name: Lint
-        if: steps.check.outputs.exists == 'false'
+        if: hashFiles('scripts/release-receipt.py') != ''
         run: pnpm lint
 
       - name: Required recall release evidence
-        if: steps.check.outputs.exists == 'false'
+        if: hashFiles('scripts/release-receipt.py') != ''
         env:
           HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
           HORUS_REQUIRE_RECALL_REVIEW: '1'
         run: node scripts/run-recall-review.mjs
 
       - name: Current paired Cloud contract
-        if: steps.check.outputs.exists == 'false'
+        if: hashFiles('scripts/release-receipt.py') != ''
         run: python3 scripts/check-paired-contract.py
 
       - name: Public service acceptance gates
-        if: steps.check.outputs.exists == 'false'
+        if: hashFiles('scripts/release-receipt.py') != ''
         run: python3 scripts/release-receipt.py release docs/implementation/current-release.json
 
       - name: Test
@@ -125,7 +127,7 @@ jobs:
         run: pnpm --filter ./apps/horus build
 
       - name: Verify accepted CLI artifact
-        if: steps.check.outputs.exists == 'false'
+        if: hashFiles('scripts/release-receipt.py') != ''
         run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
 
       - name: Assert bundled wheel is in dist

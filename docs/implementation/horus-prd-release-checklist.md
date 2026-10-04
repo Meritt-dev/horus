@@ -3,8 +3,8 @@
 Current deployed source, artifact, Cloud image, CI and soak identity are generated
 from [the current receipt](current-release.md). Dated observations below retain their original scope.
 
-Current private pilot: locally compiled CLI source `820126f` and Cloud API `0.0.115`.
-Documentation commits do not change that executable or restart its soak. This
+The current private pilot is identified by the generated receipt above.
+Documentation commits do not change the executable or restart its soak. This
 checklist covers PRD 01 and PRD 02's first usable release; subsequent trigger
 providers, managed execution, Linux packaging and PRD 03 remain deferred.
 
@@ -13,7 +13,7 @@ production incident. The 15 chronological recall labels measure source-reviewed
 operation relevance, not human-confirmed causes. The preserved broad primary
 checkpoint has not itself run in CI or been deployed.
 
-## Verified source and contracts
+## Historical verification before the retrospective upgrade
 
 - Horus source `820126f`: [push CI 37161742881](https://github.com/Meritt-dev/horus/actions/runs/37161742881) and [PR CI 37161746168](https://github.com/Meritt-dev/horus/actions/runs/37161746168), including workspace suites, chronological recall, build/smoke, hosted macOS launchd recovery and 1,406 Python checks.
 - Cloud: [paired/unit/build CI 37161577626](https://github.com/Meritt-dev/horus-cloud/actions/runs/37161577626) and [51 browser cases 37161577657](https://github.com/Meritt-dev/horus-cloud/actions/runs/37161577657). The paired job pins `d6380d8`; final `820126f` differs only in a test fixture, with identical production code.
@@ -61,7 +61,7 @@ checkpoint has not itself run in CI or been deployed.
 ## Open public-release gates
 
 - Fresh native PagerDuty acceptance → local worker → validated report → Cloud-selected `#maison-agent-runs`, then measured start latency, failure and duplicate rates. October 4 reads show an active subscription, no open incidents, newest displayed incidents dated September 27, and no Cloud-native requests.
-- Full 72-hour scenario soak for the final combination, including recovery and delivery scenarios. Earliest elapsed cutoff: October 7, 02:47:57 Istanbul. Time alone is insufficient. Earlier manual sleep/wake and logout/login are accepted; no repetition is requested.
+- Full 72-hour scenario soak for the final combination, including recovery and delivery scenarios. The current anchor and earliest elapsed cutoff are in the generated receipt. Time alone is insufficient. Earlier manual sleep/wake and logout/login are accepted; no repetition is requested.
 
 The worker remains installed for normal real-project operation. No local unit,
 end-to-end, integration, replay or lifecycle scripts run. Private current-state

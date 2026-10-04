@@ -193,3 +193,23 @@ test('publication artifact identity rejects a different built bundle', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Deterministic protection for publication recovery, exercised only in hosted CI.
+test('partial service tag repairs retain release gates', () => {
+  const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
+  for (const name of [
+    'Lint',
+    'Required recall release evidence',
+    'Current paired Cloud contract',
+    'Public service acceptance gates',
+    'Verify accepted CLI artifact',
+  ]) {
+    assert.ok(
+      workflow.includes(
+        `- name: ${name}\n        if: hashFiles('scripts/release-receipt.py') != ''`,
+      ),
+      `${name} must apply to existing service tags as well as new releases`,
+    );
+  }
+  assert.match(workflow, /Check out existing release tag/);
+});

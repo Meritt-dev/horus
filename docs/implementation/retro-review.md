@@ -22,8 +22,10 @@ models and the authenticated local Claude CLI supplied the review.
 - Sol found unbounded job history could erase diagnostics at the snapshot size cap.
   Status now projects the latest 20 job summaries; database history is retained.
 - Opus found observer failures shared CI-failure exit status and existing releases
-  lost their no-op behavior. Observer errors now exit 2 and publication gates keep
-  the existing-tag condition. Fatal exits no longer carry a misleading signal.
+  needed safe recovery. Observer errors now exit 2. The existing immutable-tag
+  recovery flow remains; service tags require acceptance on repair as well as first
+  publication, while legacy connector tags remain repairable. Fatal exits no longer
+  carry a misleading signal.
 
 ## Consider / noted
 
@@ -43,3 +45,7 @@ models and the authenticated local Claude CLI supplied the review.
 
 Agreement was strongest around release freshness and cross-repository authentication.
 Only the concrete correctness findings were applied; existing architectures were retained.
+
+The first public-main CI run exposed cold CLI test contention; package concurrency
+is now bounded to two. Full failure logs are saved once by the observer, with a
+focused excerpt, so early failures are not lost in later job output.

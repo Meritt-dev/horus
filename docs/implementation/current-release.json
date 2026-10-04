@@ -1,34 +1,34 @@
 {
   "version": 1,
-  "observedAt": "2026-10-04T00:13:31Z",
+  "observedAt": "2026-10-04T14:43:13.293183+00:00",
   "cli": {
-    "sourceSha": "820126f865b441d0368ca76ee0cea948ed4dfc50",
-    "artifactSha256": "3787cee7acd26480ffa98561210cd0855d7562dcd7b605367d933fb57c7135e0",
+    "sourceSha": "2365301a6391df25608c96afb3321330a3003e10",
+    "artifactSha256": "066629cbfa49286f79cd3c3500831d85ea4b8ba39b43c20c9ec3a9f2fa0ac9de",
     "artifactOrigin": "local-build-from-ci-source"
   },
   "cloud": {
-    "sourceSha": "918a0d1b39f5e7ef595dee053298b1188037967b",
-    "imageDigest": "sha256:49cf25fefcc60283b0a359df3e562802bcbbc915c0bee8d5d0977d42be814a2d",
-    "version": "0.0.115",
-    "pairedCliSha": "d6380d878a7502eff8ceb0a4210029fc34df70db",
-    "verifiedSha": "7ba2317907132f34f9d813c6f6710244dfd42ceb"
+    "sourceSha": "23bcbe10138eb28f08ba2c3396e220528204d81e",
+    "verifiedSha": "f2d0bd7a636d7f08faaec19d4e3ffefbc39eef38",
+    "imageDigest": "sha256:490340c886d74607404649f5efac32f533fc456670f77fc284aa3cfb7e2b7a38",
+    "version": "0.0.116",
+    "pairedCliSha": "070f8860041b2c8983f20bb88eedc8514e470c92"
   },
   "ci": [
     {
       "repo": "Meritt-dev/horus",
-      "runId": 37161746168,
-      "headSha": "820126f865b441d0368ca76ee0cea948ed4dfc50",
+      "runId": 37208396385,
+      "headSha": "2365301a6391df25608c96afb3321330a3003e10",
       "conclusion": "success"
     },
     {
       "repo": "Meritt-dev/horus-cloud",
-      "runId": 37162210987,
-      "headSha": "7ba2317907132f34f9d813c6f6710244dfd42ceb",
+      "runId": 37208967398,
+      "headSha": "f2d0bd7a636d7f08faaec19d4e3ffefbc39eef38",
       "conclusion": "success"
     }
   ],
   "soak": {
-    "startedAt": "2026-10-03T23:47:57.862748+00:00",
+    "startedAt": "2026-10-04T14:42:01.787Z",
     "requiredHours": 72
   },
   "gates": {
