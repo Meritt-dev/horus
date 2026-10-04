@@ -37,6 +37,7 @@ import {
   deliverOperationalNotice,
   serviceWebhook,
   summarizeServiceJobs,
+  summarizeServiceSync,
 } from './watch-service.js';
 import { writeAuth } from './cloud/auth-store.js';
 import { writeCloudConfig } from './cloud/context-store.js';
@@ -1049,4 +1050,24 @@ it('status retains a bounded job projection while complete results remain in his
   expect(JSON.stringify(status).length).toBeLessThan(10000);
   expect(status.jobs[0]).not.toHaveProperty('ai');
   expect(list[0]?.ai?.result).toHaveLength(10000);
+});
+
+it('status retains only sync counts rather than large conflict records', () => {
+  const sync = {
+    state: 'Pending sync' as const,
+    eligible: 1,
+    synced: 0,
+    pending: 1,
+    excluded: 0,
+    failed: 1,
+    conflicts: [
+      { memoryId: 'memory', operationId: 'operation', detail: 'x'.repeat(1_100_000) },
+    ],
+  };
+  const projection = summarizeServiceSync(sync);
+  expect(projection?.conflictsTotal).toBe(1);
+  expect(projection?.pending).toBe(1);
+  expect(projection).not.toHaveProperty('conflicts');
+  expect(JSON.stringify(projection).length).toBeLessThan(1000);
+  expect(sync.conflicts[0]?.detail).toHaveLength(1_100_000);
 });

@@ -55,7 +55,11 @@ import {
   incidentResultSchema,
 } from './claude-investigation.js';
 import { CloudError } from './cloud/api.js';
-import { memorySyncContext, syncLinkedMemory } from './cloud/memory-sync.js';
+import {
+  memorySyncContext,
+  syncLinkedMemory,
+  type MemorySyncStatus,
+} from './cloud/memory-sync.js';
 import {
   uploadInvestigationToCloud,
   redactCloudValue,
@@ -182,6 +186,22 @@ function writeStatus(status: Record<string, unknown>): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   writeFileSync(join(home, 'status.tmp'), JSON.stringify(status), { mode: 0o600 });
   renameSync(join(home, 'status.tmp'), join(home, 'status.json'));
+}
+export function summarizeServiceSync(status: MemorySyncStatus | undefined) {
+  if (!status) return undefined;
+  return {
+    state: status.state,
+    eligible: status.eligible,
+    synced: status.synced,
+    pending: status.pending,
+    excluded: status.excluded,
+    failed: status.failed,
+    lastPull: status.lastPull,
+    lastPush: status.lastPush,
+    oldestPending: status.oldestPending,
+    conflictsTotal: status.conflicts?.length ?? 0,
+    ...(status.error && { error: redactErrorMessage(status.error).slice(0, 200) }),
+  };
 }
 /** Status is a bounded projection; complete results and history remain in the DB. */
 export function summarizeServiceJobs(list: WatchJobData[]) {
@@ -1337,7 +1357,9 @@ export async function runWatchService(settings: string, once = false): Promise<v
             environment: p.environment,
             enabled: p.enabled,
             health: await readWatchState(db, `health:${routeKey(p)}`),
-            sync: await readWatchState(db, `sync:${routeKey(p)}`),
+            sync: summarizeServiceSync(
+              await readWatchState<MemorySyncStatus>(db, `sync:${routeKey(p)}`),
+            ),
             ...summarizeServiceJobs(await jobs(db, routeKey(p))),
           })),
         ),
