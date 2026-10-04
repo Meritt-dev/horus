@@ -9,12 +9,36 @@ Extends the existing database ownership function, durable memory outbox/Cloud sy
 
 ## Verification and scope
 
-No local unit, end-to-end, integration, replay or service lifecycle suites ran. Local checks are TypeScript compilation and whitespace checks. Hosted CI is the execution gate. The frozen Maison worker is unchanged during implementation and review; a source commit does not claim it is running these fixes.
+No local unit, end-to-end, integration, replay or service lifecycle suites ran. Local checks were TypeScript compilation, build and whitespace checks. Hosted CI was the execution gate. The frozen Maison worker remained unchanged during implementation and review, then was upgraded after hosted checks passed, as recorded below.
 
 HOR-CLI/HOR-CORE own memory replication and database use; HOR-CONNECTORS owns Prometheus. Existing service PR #43 owns the CLI work. The available Linear connector returns Zaigo issues and no Horus issues; prior Horus mappings remain historical. No new ticket was created, as requested.
 
-## Interrogate disposition
+## Interim Interrogate disposition (superseded by final verification below)
 
-Reviewers A and C independently caught mixed-version partial publication; acted on by making old Cloud reject the revision protocol. C's PostgreSQL parameter limit finding was acted on by batching target/report lookups and inserts. Both reread the corrections and reported no remaining findings. These were available Codex reviewers; configured Claude aliases are unavailable and family diversity is limited. Reviewer B identified unbounded aggregate/pull work and missing OpenAPI fields. Acted on by bounding total staging before loading it, paginating history on the existing endpoints, bounding inline responses, and regenerating the public contract. The changed bounds/pull path is under re-review; hosted execution is pending.
+Reviewers A and C independently caught mixed-version partial publication; acted on by making old Cloud reject the revision protocol. C's PostgreSQL parameter limit finding was acted on by batching target/report lookups and inserts. Both reread the corrections and reported no remaining findings. These were available Codex reviewers; configured Claude aliases are unavailable and family diversity is limited. Reviewer B identified unbounded aggregate/pull work and missing OpenAPI fields. Acted on by bounding total staging before loading it, paginating history on the existing endpoints, bounding inline responses, and regenerating the public contract. At this interim checkpoint, the changed bounds/pull path awaited re-review and hosted execution; both subsequently passed.
 
-Hosted run 37161153321 caught a missing parent sync-state row in the new upload fixture. Corrected the fixture; the lock/process and connector checks passed in that run. Final retry and clean-profile restore checks remain gated on the next hosted runs.
+Hosted run 37161153321 caught a missing parent sync-state row in the new upload fixture. Corrected the fixture; the lock/process and connector checks passed in that run. Final retry and clean-profile restore checks passed in the final hosted runs below.
+
+## Final review and hosted execution
+
+Reviewers A and B cleared the durable pull changes. C explicitly confirmed no findings on durable pull commit d6380d8 and separately on fixture correction 820126f. No Act on findings remain within those reviewed scopes. Review remains limited to the available Codex family. Hosted CLI push run 37161742881 and PR run 37161746168 passed all jobs: workspace tests, build/smoke, private chronological recall review, isolated macOS launchd recovery, and 1,406 Python tests. The initial upload fixture needed its parent sync state and the generation reread after the add-audit trigger; these fixture fixes did not alter production behavior. The deadline/process-reopen regression passed in hosted CI.
+
+Cloud PR #45 merged as 7ba2317907132f34f9d813c6f6710244dfd42ceb after run 37161577626 passed 746 unit checks, lint/typecheck, image build and paired memory/worker/provider contracts; browser run 37161577657 passed 51 cases. Paired restoration retained 2,101 links and 2,102 audit rows after interruption and restart. Receipts: `~/.horus/deployments/review-fixes-20261004/`. Snyk was unavailable because its private-test quota was exhausted. Merge used the normal command without an override; the configured verification and release workflow gates passed.
+
+The primary checkout contains the scoped fixes as d0b6b06, cf894fa and 5a4b491. The temporary managed worktree was recoverably archived, its temporary branch removed, and the new frozen build's dependency directories removed after compilation. No unrelated worktree, credential, chat history, source checkpoint or running worker database was deleted.
+
+## Activation
+
+Cloud API 0.0.115 is deployed from release source 918a0d1b39f5e7ef595dee053298b1188037967b; image digest 49cf25fefcc60283b0a359df3e562802bcbbc915c0bee8d5d0977d42be814a2d and source checksum match the checked release. Pipeline 37162210987 and post-merge browser run 37162210977 passed. The API briefly returned 502 while starting after the normal image swap, then `/v1/health` and container health returned healthy. Vercel deployment completed.
+
+The idle Maison Mac worker was normally upgraded to frozen 820126f, SHA256 3787cee7acd26480ffa98561210cd0855d7562dcd7b605367d933fb57c7135e0, with settings/plist rollback copies retained privately. PID 12086 is running; normal status shows 154 synced memories, zero pending/failed sync or source failures, and the same three completed jobs. No local automated tests or synthetic incidents ran. This observation does not prove fresh native delivery or worst-case history size in production.
+
+The final combination began October 3 23:47:57 UTC / October 4 02:47:57 Istanbul. Earliest elapsed 72 hours is October 6 23:47:57 UTC / October 7 02:47:57 Istanbul. Elapsed time alone does not certify scenario coverage. The owner accepts prior sleep/wake/logout exercises as complete; no repeat is requested. Public unattended-service release remains gated on fresh native delivery, measured latency/duplicate/failure rates and the scenario soak. Human-confirmed cause quality remains unverified; the hosted 12/12 recurrence and 3/3 unrelated results use a small independent source-review sample.
+
+The installed bundle was compiled locally from the exact CI-tested source archive; it is not a downloaded CI artifact. Direct process arguments confirm the new entry, and the running container image ID resolves to the published digest. The broad primary checkpoint contains the preserved cherry-picks but has not itself run in CI or been deployed. Direct live DB schema queries were not run while the worker owns PGlite; migration application is inferred from normal startup and successful new-source sync. The paired Cloud job pins d6380d8; final head 820126f changes only a test fixture, and its production code is identical.
+
+## Decision-trail audit
+
+Local Claude Opus 5.5 completed two read-only trail audits. The final packet substantiates hosted counts, prior cleanup authorization, direct process/image identity, and the canonical bundled dependency layout. C's subsequent scope clarification confirms both completed reviews. Interim wording above is explicitly superseded; the append-only trail records these corrections without rewriting historical checkpoints.
+
+The audit raised a permission-evidence gap because its truncated packet lacked the full ongoing deployment context. Existing user authorization covers Cloud deployment and normal Mac operation, and the current request completes fixes within those same PRDs; no new scope or repeated approval is required. Material limitations remain the untested broad primary checkpoint, fresh native delivery/rates and scenario soak, source-reviewed rather than human-attested recall labels, unavailable Snyk scan, and inferred live migration application. Private audit evidence and dispositions are retained in the deployment receipt directory.

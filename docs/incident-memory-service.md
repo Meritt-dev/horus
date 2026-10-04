@@ -13,7 +13,9 @@ Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
 `0040_project_operational_notices` before activating this CLI. Use the repository's
 existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
-and `0014_watch_jobs` apply automatically when the embedded database opens.
+and `0014_watch_jobs`, followed by `0015_memory_pull_pages`, apply automatically
+when the embedded database opens. Bounded history upload requires Cloud API
+0.0.115 or newer; deploy that compatible server contract before upgrading the CLI.
 
 Configure Cloud's existing private object storage before adopting large histories:
 `STORAGE_BUCKET`, `STORAGE_REGION`, and the server's AWS credentials or workload role.
@@ -63,8 +65,12 @@ Set `HORUS_STARTUP_RECALL=0` to disable startup recall while keeping stored hist
 
 The local dirty generation and frozen outbox survive process exit and a lost HTTP
 response. Server revisions order updates independently of laptop clocks. Private
-replicas remain editable on a second machine. Team promotions use the existing
-read-only cache. Local memories are bound to the selected account/project on their
+replicas remain editable on a second machine. Growing link/audit histories use
+bounded upload pages (500 rows and about 1 MiB per page). Downloaded pages and
+cursors persist across short sync deadlines and process restarts; only complete
+histories enter recall. Operations above the server's 32 MiB staging cap are
+rejected visibly without publishing or truncating a partial history. Team
+promotions use the existing read-only cache. Local memories are bound to the selected account/project on their
 first sync; another account cannot export that bound history.
 
 ```sh
@@ -385,8 +391,8 @@ Inspect its Playwright step because the browser workflow is non-blocking.
 | 01 M3–M4 / A4–A10: sync and restoration | Authenticated paired memory contract: two profiles, lost replies, revisions, conflicts, deletion/restoration and identity isolation | Real second-host initial restore and large report read verified; fresh interactive login/live corrections not exercised |
 | 01 M5 / A11: visible failure | Local persistence/sync failure checks and bounded refresh | Production latency percentiles |
 | 01 M6: attributed AI context | Worker prompt/citation checks; historical real local Opus sessions | Jev stays disabled without measured improvement |
-| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts | Physical sleep/wake and logout/login |
-| 02 S2–S3 / A3–A9: cursors, grouping and claims | PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and database ownership | Actual production alert subscriptions and retention |
+| 02 S1 / A1–A2: lifecycle | Hosted macOS launchd check; durable queue/heartbeat contracts; owner confirms manual sleep/wake and logout/login | Pending-job wake recovery and full scenario coverage remain unobserved; no repeat physical actions requested |
+| 02 S2–S3 / A3–A9: cursors, grouping and claims | Hosted PagerDuty, Sentry and Elasticsearch contracts; two claimants, stale leases, partial checkpoints and crash-safe database ownership | Maison PagerDuty subscription active; fresh native acceptance and upstream retention under an outage remain unmeasured |
 | 02 S4 / A10, A13–A15: investigate and deliver | Checkpointed engine/AI/report/delivery contracts; invalid output, cancellation and descendants; historical local Opus authentication | Fresh native incident delivery under the configured destination policy remains unverified; one dated saved report reached the Cloud-selected app channel after reload. CI uses controlled Claude output |
 | 02 S5–S6 / A11–A12: scope, budgets and health | Native provider replay, queue limits, deadline/budget checks, offline/expired-claim browser check; three actual Claude estimates total USD 4.6917826; seven-day native PagerDuty history: peak ten triggers/day | Fresh delivery rates and healthy-path latency; temporary caps remain reviewable as live volume changes |
 
@@ -416,26 +422,42 @@ labels are source-reviewed operation relevance, not human-attested causes; the
 PRD does not require a human reviewer or prescribe a minimum sample size.
 No local automated test or fault-injection scripts ran during the window.
 
-Before release, verify production rules/subscriptions and destination policies,
-private report storage and migrations, then complete the labeled recall holdout
-and 72-hour selected-project soak including physical lifecycle and network loss.
-The selected Maison Safqa private Mac pilot runs frozen CLI `faf3172` against
-production Cloud API `0.0.114`. Its local legacy notifications are off; Cloud app
-reports are enabled for `#maison-agent-runs`. The channel setting persisted after
-a full reload, and one dated saved EMODA report was acknowledged and observed in
-Slack after a successful Slack API response. That establishes app delivery, not
-fresh native ingress or automatic
-worker-to-Slack delivery.
+### Current private pilot — October 4, 2026
 
-The final CLI/Cloud combination began October 3, 2026 at 19:38:50 UTC. Its earliest
-72-hour elapsed point is October 6 at 19:38:50 UTC (22:38:50 Istanbul). Public
-release still requires the actual scenario soak, physical sleep/wake and
-logout/login recovery, fresh accepted PagerDuty incidents with automatic report
-delivery, and observed latency, failure and duplicate rates. Elapsed time alone
-is insufficient; no native requests had been accepted at the October 3 checkpoint.
-The three earlier Elasticsearch bootstrap reports do not substitute for that
-sample. This documentation update does not restart the worker or change its
-frozen executable.
+The selected Maison Safqa Mac pilot runs a bundle compiled locally from the exact
+hosted-CI-passing CLI source `820126f`, against production Cloud API `0.0.115`.
+This is not a downloaded CI artifact. Cloud migrations through `0040` are deployed;
+the history-paging server change requires no further Cloud migration.
+Latest hosted verification and deployment proof are in
+[the runtime review-fix record](implementation/review-fixes-2026-10-04.md).
+The broad primary source checkpoint is preserved separately and has not itself
+run in CI or been deployed.
+
+Cloud app reports are enabled for `#maison-agent-runs`; local legacy webhook
+notifications are off. The channel setting survived a full reload, and one dated
+saved EMODA report received a successful Slack delivery receipt. That establishes
+app delivery, while fresh automatic worker-to-Slack delivery remains unverified.
+An authenticated October 4 read confirms the destination still enabled and
+connected, with that same single successful delivery receipt.
+
+The updated CLI/Cloud combination began October 3 at 23:47:57 UTC. Its earliest
+72-hour elapsed point is October 6 at 23:47:57 UTC / October 7 at 02:47:57 Istanbul.
+This supersedes earlier runtime anchors. The owner confirms the manual sleep/wake
+and logout/login exercises; no repetition is requested. The full scenario soak,
+fresh accepted PagerDuty incidents with automatic report delivery, and measured
+latency, failure and duplicate rates remain release gates. Elapsed time alone
+does not prove those scenarios.
+
+At the October 4 read-only checkpoint, launchd PID 12086 is running, Cloud reports
+the worker online/idle, and normal status has 154 synced memories, zero pending
+sync/source failures, and the same three completed Elasticsearch bootstrap jobs.
+The actual PagerDuty webhook is active for SAFQA GraphQL API with six incident
+event types. Its service has no open incidents and the latest displayed resolved
+incidents are still dated September 27; Cloud has no native requests. Those
+bootstrap reports and a historical Slack delivery do not substitute for a fresh
+native incident sample. This documentation update does not restart the worker.
+Private observations: `~/.horus/deployments/prd-continuation-20261004/`.
+
 Azure/AWS/Grafana triggers, managed execution, Linux packaging and PRD 03 remain
 later scope. Cloud ingestion does not imply always-on investigation execution.
 
