@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -206,10 +206,55 @@ test('partial service tag repairs retain release gates', () => {
   ]) {
     assert.ok(
       workflow.includes(
-        `- name: ${name}\n        if: hashFiles('scripts/release-receipt.py') != ''`,
+        `- name: ${name}\n        if: steps.publication.outputs.require-gates == 'true'`,
       ),
       `${name} must apply to existing service tags as well as new releases`,
     );
   }
   assert.match(workflow, /Check out existing release tag/);
+});
+
+test('missing release tooling never exempts a new or existing service release', () => {
+  const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
+  const block = workflow
+    .split('      - name: Classify publication gates\n')[1]
+    .split('      - name: Typecheck\n')[0];
+  const script = block
+    .split('        run: |\n')[1]
+    .split('\n')
+    .map((line) => line.replace(/^          /, ''))
+    .join('\n');
+  for (const scenario of [
+    { existing: 'false', service: false, receipt: false, required: true },
+    { existing: 'true', service: true, receipt: false, required: true },
+    { existing: 'true', service: false, receipt: true, required: true },
+    { existing: 'true', service: false, receipt: false, required: false },
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), 'horus-publication-'));
+    try {
+      if (scenario.service) {
+        mkdirSync(join(dir, 'packages/cli/src/commands'), { recursive: true });
+        writeFileSync(join(dir, 'packages/cli/src/commands/service.ts'), '');
+      }
+      if (scenario.receipt) {
+        mkdirSync(join(dir, 'scripts'));
+        writeFileSync(join(dir, 'scripts/release-receipt.py'), '');
+      }
+      const output = join(dir, 'output');
+      execFileSync('bash', ['-c', script], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          EXISTING_RELEASE: scenario.existing,
+          GITHUB_OUTPUT: output,
+        },
+      });
+      assert.equal(
+        readFileSync(output, 'utf8').trim(),
+        `require-gates=${scenario.required}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });

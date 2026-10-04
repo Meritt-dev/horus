@@ -49,3 +49,10 @@ Only the concrete correctness findings were applied; existing architectures were
 The first public-main CI run exposed cold CLI test contention; package concurrency
 is now bounded to two. Full failure logs are saved once by the observer, with a
 focused excerpt, so early failures are not lost in later job output.
+
+Final Opus trail review found that file-presence classification could skip new
+release gates when tooling is absent. Classification now always requires gates
+for new releases and for existing service tags, even without receipt tooling.
+Hosted fixtures execute that classification for new, service and legacy tags.
+The paired CLI revision 070f886 and installed revision 2365301 have identical
+production inputs; Cloud f2d0bd7 to 23bcbe1 changes only package version metadata.

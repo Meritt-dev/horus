@@ -72,28 +72,39 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Classify publication gates
+        id: publication
+        env:
+          EXISTING_RELEASE: ${{ steps.check.outputs.exists }}
+        run: |
+          if [ "$EXISTING_RELEASE" != true ] || [ -f packages/cli/src/commands/service.ts ] || [ -f scripts/release-receipt.py ]; then
+            echo "require-gates=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "require-gates=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Typecheck
         run: pnpm typecheck
 
       # Service tags must pass acceptance again when repairing a partial release.
       # Legacy connector tags predate these gates and remain repairable.
       - name: Lint
-        if: hashFiles('scripts/release-receipt.py') != ''
+        if: steps.publication.outputs.require-gates == 'true'
         run: pnpm lint
 
       - name: Required recall release evidence
-        if: hashFiles('scripts/release-receipt.py') != ''
+        if: steps.publication.outputs.require-gates == 'true'
         env:
           HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
           HORUS_REQUIRE_RECALL_REVIEW: '1'
         run: node scripts/run-recall-review.mjs
 
       - name: Current paired Cloud contract
-        if: hashFiles('scripts/release-receipt.py') != ''
+        if: steps.publication.outputs.require-gates == 'true'
         run: python3 scripts/check-paired-contract.py
 
       - name: Public service acceptance gates
-        if: hashFiles('scripts/release-receipt.py') != ''
+        if: steps.publication.outputs.require-gates == 'true'
         run: python3 scripts/release-receipt.py release docs/implementation/current-release.json
 
       - name: Test
@@ -127,7 +138,7 @@ jobs:
         run: pnpm --filter ./apps/horus build
 
       - name: Verify accepted CLI artifact
-        if: hashFiles('scripts/release-receipt.py') != ''
+        if: steps.publication.outputs.require-gates == 'true'
         run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
 
       - name: Assert bundled wheel is in dist
