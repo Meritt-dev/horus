@@ -33,7 +33,8 @@ jobs:
       # The source-intelligence HTTP contract tests (packages/connectors/src/source/contract.test.ts)
       # auto-skip when no host is reachable at HORUS_SOURCE_HOST_URL, so CI passes without a
       # live source-intelligence backend; to exercise them, run with a backend and HORUS_SOURCE_HOST_URL set.
-      - run: pnpm test
+      # Keep cold CLI subprocesses from competing with every package suite.
+      - run: pnpm test --concurrency=2
 
       - run: pnpm build
 
