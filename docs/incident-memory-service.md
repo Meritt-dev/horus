@@ -13,7 +13,8 @@ and Jev ranking are outside this change.
 Deploy Horus Cloud with migrations `0034_memory_revisions`, `0035_alert_leases`,
 `0036_pagerduty_details`, `0037_worker_activity`,
 `0038_project_slack_notifications`, `0039_shared_repository_settings`, and
-`0040_project_operational_notices` before activating this CLI. Use the repository's
+`0040_project_operational_notices`, and `0041_worker_supervisor` before activating
+this CLI. Worker diagnostics require Cloud API 0.0.116 or newer. Use the repository's
 existing migration and deployment
 process; do not point the CLI at Cloud Postgres. Local migrations `0013_memory_sync`
 and `0014_watch_jobs`, followed by `0015_memory_pull_pages`, apply automatically
@@ -426,9 +427,10 @@ labels are source-reviewed operation relevance, not human-attested causes; the
 PRD does not require a human reviewer or prescribe a minimum sample size.
 No local automated test or fault-injection scripts ran during the window.
 
-### Current private pilot — October 4, 2026
+### Historical private pilot — before the October 4 retrospective upgrade
 
-The selected Maison Safqa Mac pilot runs a bundle compiled locally from the exact
+At this earlier checkpoint, the selected Maison Safqa Mac pilot ran a bundle
+compiled locally from the exact
 hosted-CI-passing CLI source `820126f`, against production Cloud API `0.0.115`.
 This is not a downloaded CI artifact. Cloud migrations through `0040` are deployed;
 the history-paging server change requires no further Cloud migration.
@@ -446,9 +448,9 @@ app delivery, while fresh automatic worker-to-Slack delivery remains unverified.
 An authenticated October 4 read confirms the destination still enabled and
 connected, with that same single successful delivery receipt.
 
-The updated CLI/Cloud combination began October 3 at 23:47:57 UTC. Its earliest
+That earlier CLI/Cloud combination began October 3 at 23:47:57 UTC. Its historical
 72-hour elapsed point is October 6 at 23:47:57 UTC / October 7 at 02:47:57 Istanbul.
-This supersedes earlier runtime anchors. On October 3 at 22:24 and 22:44 UTC, the owner confirmed the earlier manual
+The current runtime and soak anchor are in the generated receipt above. On October 3 at 22:24 and 22:44 UTC, the owner confirmed the earlier manual
 sleep/wake and logout/login exercises on prior runtime `faf3172`; no repetition
 is requested. This does not establish those scenarios on the new runtime. The full scenario soak,
 fresh accepted PagerDuty incidents with automatic report delivery, and measured
