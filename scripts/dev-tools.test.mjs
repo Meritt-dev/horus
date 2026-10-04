@@ -167,3 +167,26 @@ test('CI observer distinguishes network errors from a concluded CI failure', () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('publication artifact identity rejects a different built bundle', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'horus-artifact-'));
+  try {
+    const receipt = join(dir, 'receipt.json');
+    const artifact = join(dir, 'index.cjs');
+    const source = JSON.parse(
+      readFileSync('docs/implementation/current-release.json', 'utf8'),
+    );
+    writeFileSync(receipt, JSON.stringify(source));
+    execFileSync('python3', ['scripts/release-receipt.py', 'render', receipt]);
+    writeFileSync(artifact, 'a different executable');
+    const result = spawnSync(
+      'python3',
+      ['scripts/release-receipt.py', 'artifact', receipt, '--artifact', artifact],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Built artifact differs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
