@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,7 +41,6 @@ jobs:
 
       # Private report projections and independently reviewed labels stay out of Git.
       - name: Chronological recall review
-        if: github.event_name == 'push'
         env:
           HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
         run: node scripts/run-recall-review.mjs

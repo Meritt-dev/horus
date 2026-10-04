@@ -13,7 +13,8 @@ Do not regenerate that baseline to hide a new failure.
 Run `python3 scripts/ci-watch.py OWNER/REPO RUN_ID --deadline 600` once. It prints
 only changed job states, reads failed logs once, and exits 3 at the deadline if
 still running; exit 2 means the observer is unavailable, not a failed run. Its optional `--state PATH` retains observed states across bounded
-continuations. Stop checking a completed run. For unchanged external state, record
+continuations. CI cancels superseded runs for the same branch, including duplicate push/PR triggers.
+Stop checking a completed run. For unchanged external state, record
 the blocker and resume only on a meaningful change or the stated time gate.
 
 ## Release evidence
