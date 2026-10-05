@@ -25,6 +25,11 @@ from observed source/artifact/image/CI evidence. Run
 to update its generated Markdown summary. The historical acceptance journal keeps
 dated observations; it is not the current runtime state.
 
+The hosted build records the CLI SHA-256 in its **Record publication-runner CLI
+digest** step. Compare that observed Ubuntu/Node 22 digest with the installed
+artifact in the receipt; a build passing alone does not establish equality.
+The release workflow also rejects a rebuilt bundle that differs from the receipt.
+
 Release workflows require the private recall bundle and the current paired Cloud
 contract reported by the deployed public version endpoint. Ordinary PR CI can report an unavailable private holdout explicitly.
 Neither mode bypasses open native-delivery or scenario-soak gates.

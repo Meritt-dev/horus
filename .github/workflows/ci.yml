@@ -47,6 +47,11 @@ jobs:
 
       - run: pnpm build
 
+      # Record the Ubuntu/Node 22 bundle used by the publication runner. Compare
+      # this observed digest with the accepted runtime before public release.
+      - name: Record publication-runner CLI digest
+        run: sha256sum apps/horus/dist/index.cjs
+
       # CLI smoke gate (HOR-96): verify the built artifact starts correctly and
       # outputs expected content without requiring live Postgres or a source-intelligence backend.
       # Run with bash to avoid relying on execute permission in CI checkout.
