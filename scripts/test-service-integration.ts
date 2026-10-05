@@ -82,19 +82,17 @@ globalThis.fetch = async (input, init) => {
   }
   return originalFetch(input, init);
 };
-await db
-  .insert(notificationTargets)
-  .values({
-    organizationId: tenant.orgId,
-    workspaceId: tenant.workspaceId,
-    projectId: tenant.projectId,
-    type: 'slack',
-    name: 'Project app reports',
-    oauth: { accessToken: 'fixture-bot-token' },
-    config: { channelId: 'C123' },
-    enabled: true,
-    minConfidence: 0,
-  });
+await db.insert(notificationTargets).values({
+  organizationId: tenant.orgId,
+  workspaceId: tenant.workspaceId,
+  projectId: tenant.projectId,
+  type: 'slack',
+  name: 'Project app reports',
+  oauth: { accessToken: 'fixture-bot-token' },
+  config: { channelId: 'C123' },
+  enabled: true,
+  minConfidence: 0,
+});
 const deliveries = new Set<string>();
 const deliveryTexts: string[] = [];
 let sends = 0;
@@ -257,6 +255,15 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
       body: raw,
     });
   assert.equal((await ingest()).status, 202);
+  assert.equal((await ingest()).status, 202);
+  // A real trigger is already durable. Resolution before the first worker poll
+  // must still yield exactly one inference, saved report, timeline and Slack post.
+  const resolvedBeforeClaim = JSON.parse(raw);
+  resolvedBeforeClaim.event.id = 'resolved-before-claim';
+  resolvedBeforeClaim.event.event_type = 'incident.resolved';
+  resolvedBeforeClaim.event.occurred_at = new Date(Date.now() + 1000).toISOString();
+  resolvedBeforeClaim.event.data.status = 'resolved';
+  raw = JSON.stringify(resolvedBeforeClaim);
   assert.equal((await ingest()).status, 202);
   duringFirstDelivery = async () => {
     const update = JSON.parse(raw);
@@ -465,7 +472,7 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   await h.sql.end();
   await runWatchService(settings, true);
   h = await createLocalDb();
-  const recoveredNotice = (await jobs(h.db)).find(j => j.id === deferred.id)!;
+  const recoveredNotice = (await jobs(h.db)).find((j) => j.id === deferred.id)!;
   assert.equal(recoveredNotice.notice?.state, 'done');
   assert.deepEqual(recoveredNotice.attempts, priorAttempts);
   assert.equal(budgetNotices, 1, 'Cloud receipt suppresses a repeated operational send');
@@ -695,7 +702,12 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   await db.$client.end();
   const { getDb } = await cloudImport('apps/api/src/db.ts');
   await getDb().$client.end();
-  for (const key of ['HORUS_HOME', 'HORUS_DB_DIR', 'HORUS_SERVICE_DIR', 'LENS_DASHBOARD_ORIGIN']) {
+  for (const key of [
+    'HORUS_HOME',
+    'HORUS_DB_DIR',
+    'HORUS_SERVICE_DIR',
+    'LENS_DASHBOARD_ORIGIN',
+  ]) {
     if (originalEnv[key]) process.env[key] = originalEnv[key];
     else delete process.env[key];
   }

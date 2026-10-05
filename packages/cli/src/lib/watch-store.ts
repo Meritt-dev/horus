@@ -15,6 +15,7 @@ export const incidentEventSchema = z.object({
   service: z.string().optional(),
   sourceUrl: z.string().url().optional(),
   state: z.enum(['active', 'resolved']),
+  investigationRequired: z.boolean().optional(),
   severity: z.string(),
   episode: z.string().optional(),
   orderId: z.string().optional(),
@@ -109,10 +110,11 @@ export async function acceptEvents(
       a.occurredAt.localeCompare(b.occurredAt),
     )) {
       const event = redactCloudValue(incidentEventSchema.parse(raw));
+      const storedEventId = cloud ? `${cloud.requestId}:${event.eventId}` : event.eventId;
       const [seen] = await tx
         .select()
         .from(watchEvent)
-        .where(and(eq(watchEvent.route, route), eq(watchEvent.eventId, event.eventId)));
+        .where(and(eq(watchEvent.route, route), eq(watchEvent.eventId, storedEventId)));
       if (seen) {
         if (cloud) {
           const [row] = await tx
@@ -138,13 +140,14 @@ export async function acceptEvents(
         : (event.correlationId ??
           `${event.source}:${event.incidentId}:${event.fingerprint}`);
       const prior = (await jobs(d, route))
-        .filter(
-          (j) =>
-            (j.event.orderId
-              ? `${j.event.workflow ?? 'workflow'}:${j.event.orderId}`
-              : (j.event.correlationId ??
-                `${j.event.source}:${j.event.incidentId}:${j.event.fingerprint}`)) ===
-            family,
+        .filter((j) =>
+          cloud
+            ? j.id === cloud.requestId || j.cloudRequest?.id === cloud.requestId
+            : (j.event.orderId
+                ? `${j.event.workflow ?? 'workflow'}:${j.event.orderId}`
+                : (j.event.correlationId ??
+                  `${j.event.source}:${j.event.incidentId}:${j.event.fingerprint}`)) ===
+              family,
         )
         .at(-1);
       const isLater =
@@ -175,22 +178,40 @@ export async function acceptEvents(
           stage: 'engine',
           attempts: {},
           nextAttemptAt: 0,
-          status: event.state === 'resolved' ? 'cancelled' : 'pending',
+          status:
+            event.state === 'resolved' && !event.investigationRequired
+              ? 'cancelled'
+              : 'pending',
           ...(event.state === 'resolved' ? { resolvedAt: event.occurredAt } : {}),
         };
         await tx.insert(watchJob).values({
           id,
           route,
-          episode: digest([family, event.episode ?? event.eventId]),
+          episode: cloud
+            ? digest([cloud.requestId])
+            : digest([family, event.episode ?? event.eventId]),
           data: job,
         });
       } else if (isLater) {
+        if (
+          event.investigationRequired &&
+          !job.attempts.engine &&
+          ['cancelled', 'done'].includes(job.status)
+        ) {
+          job.stage = 'engine';
+          job.status = 'pending';
+          job.nextAttemptAt = 0;
+        }
         const previousSeverity = (job.latestEvent ?? job.event).severity;
         job.latestEvent = event;
         if (event.state === 'resolved') job.resolvedAt = event.occurredAt;
         else {
           // A resolved-only episode has no report; its first active event still needs the engine.
-          if (job.resolvedAt && !job.attempts.engine && ['cancelled', 'done'].includes(job.status)) {
+          if (
+            job.resolvedAt &&
+            !job.attempts.engine &&
+            ['cancelled', 'done'].includes(job.status)
+          ) {
             job.stage = 'engine';
             job.status = 'pending';
             job.nextAttemptAt = 0;
@@ -222,7 +243,7 @@ export async function acceptEvents(
       await saveJob(d, job);
       await tx
         .insert(watchEvent)
-        .values({ route, eventId: event.eventId, jobId: job.id });
+        .values({ route, eventId: storedEventId, jobId: job.id });
     }
     if (cursor) await writeWatchState(d, `cursor:${route}`, cursor);
   });

@@ -1071,3 +1071,83 @@ it('status retains only sync counts rather than large conflict records', () => {
   expect(JSON.stringify(projection).length).toBeLessThan(1000);
   expect(sync.conflicts[0]?.detail).toHaveLength(1_100_000);
 });
+
+it('investigates a triggered Cloud episode that resolved before claim and keeps later requests separate', async () => {
+  const root = temp();
+  vi.stubEnv('HORUS_DB_DIR', join(root, 'db'));
+  const h = await createLocalDb();
+  handles.push(h);
+  const first = {
+    requestId: '11111111-1111-4111-8111-111111111111',
+    reportId: '22222222-2222-4222-8222-222222222222',
+    claimToken: '33333333-3333-4333-8333-333333333333',
+    workerId: 'mac',
+  };
+  const resolved = event({
+    source: 'pagerduty',
+    eventId: 'resolved',
+    episode: 'episode-a',
+    state: 'resolved',
+    investigationRequired: true,
+  });
+  await acceptEvents(h.db, 'route', [resolved], undefined, first);
+  const job = (await jobs(h.db))[0]!;
+  expect(job).toMatchObject({
+    id: first.requestId,
+    reportId: first.reportId,
+    status: 'pending',
+    stage: 'engine',
+    resolvedAt: resolved.occurredAt,
+  });
+  job.status = 'done';
+  job.stage = 'done';
+  job.attempts.engine = 1;
+  await saveJob(h.db, job);
+  await acceptEvents(h.db, 'route', [resolved], undefined, {
+    ...first,
+    claimToken: '44444444-4444-4444-8444-444444444444',
+  });
+  expect((await jobs(h.db))[0]?.stage).toBe('complete');
+  const second = {
+    ...first,
+    requestId: '55555555-5555-4555-8555-555555555555',
+    reportId: '66666666-6666-4666-8666-666666666666',
+  };
+  await acceptEvents(
+    h.db,
+    'route',
+    [
+      event({
+        ...resolved,
+        eventId: 'reopened-resolved',
+        episode: 'episode-b',
+        occurredAt: '2026-09-27T01:10:00Z',
+      }),
+    ],
+    undefined,
+    second,
+  );
+  expect(await jobs(h.db)).toHaveLength(2);
+  expect((await jobs(h.db))[1]).toMatchObject({
+    id: second.requestId,
+    reportId: second.reportId,
+    stage: 'engine',
+    status: 'pending',
+  });
+  // Two native subscriptions may deliver the same event to the same local route.
+  const third = {
+    ...first,
+    requestId: '77777777-7777-4777-8777-777777777777',
+    reportId: '88888888-8888-4888-8888-888888888888',
+  };
+  await acceptEvents(h.db, 'route', [resolved], undefined, third);
+  expect(await jobs(h.db)).toHaveLength(3);
+  expect((await jobs(h.db)).find((j) => j.id === third.requestId)).toMatchObject({
+    reportId: third.reportId,
+    stage: 'engine',
+    status: 'pending',
+  });
+  expect((await jobs(h.db)).find((j) => j.id === first.requestId)?.cloudRequest?.id).toBe(
+    first.requestId,
+  );
+});

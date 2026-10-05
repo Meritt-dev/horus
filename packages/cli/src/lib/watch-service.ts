@@ -481,13 +481,8 @@ export async function pollProject(
       if (ingressError) throw ingressError;
       return;
     }
-    const event = incidentEventSchema.parse({
-      ...request.payload,
-      hint: request.hint,
-      state: request.payload.state === 'resolved' ? 'resolved' : 'active',
-    });
     if (
-      event.environment !== p.environment ||
+      request.environment !== p.environment ||
       request.projectId !== ctx.config.project!.id
     )
       throw new Error('Cloud event route mismatch');
@@ -497,6 +492,14 @@ export async function pollProject(
       'claim',
       { projectId: ctx.config.project!.id, environment: p.environment, workerId },
     );
+    const payload = claim.payload ?? request.payload;
+    const event = incidentEventSchema.parse({
+      ...payload,
+      hint: claim.hint ?? request.hint,
+      state: payload.state === 'resolved' ? 'resolved' : 'active',
+    });
+    if (event.environment !== p.environment)
+      throw new Error('Cloud event route mismatch');
     await withDb((db) =>
       acceptEvents(db, route, [event], undefined, {
         requestId: request.id,

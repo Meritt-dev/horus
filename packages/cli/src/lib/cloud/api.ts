@@ -3,7 +3,7 @@
  * cloud ONLY through this contract — it never holds DB credentials (HOR-221).
  */
 
-export const DEFAULT_API_BASE_URL = "https://api.horus.sh";
+export const DEFAULT_API_BASE_URL = 'https://api.horus.sh';
 
 export class CloudError extends Error {
   constructor(
@@ -13,7 +13,7 @@ export class CloudError extends Error {
     public readonly retryAfterMs?: number,
   ) {
     super(message);
-    this.name = "CloudError";
+    this.name = 'CloudError';
   }
 }
 
@@ -21,13 +21,17 @@ export class CloudError extends Error {
 export class CloudOfflineError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "CloudOfflineError";
+    this.name = 'CloudOfflineError';
   }
 }
 
 export interface MeResponse {
   user: { id: string; primaryEmail: string; displayName?: string | null };
-  memberships: { organizationId: string; role: "owner" | "admin" | "member"; workspaceIds: string[] }[];
+  memberships: {
+    organizationId: string;
+    role: 'owner' | 'admin' | 'member';
+    workspaceIds: string[];
+  }[];
 }
 
 /** Response from POST /v1/cli-sessions/start (device-login init). */
@@ -42,7 +46,7 @@ export interface CliSessionStart {
 
 /** Response from POST /v1/cli-sessions/poll. `token` is present only once, on approval. */
 export interface CliSessionPoll {
-  status: "pending" | "slow_down" | "approved" | "denied" | "expired";
+  status: 'pending' | 'slow_down' | 'approved' | 'denied' | 'expired';
   interval?: number;
   token?: string;
   account?: { userId: string; email: string };
@@ -50,7 +54,12 @@ export interface CliSessionPoll {
 
 export interface ContextResponse {
   user: { id: string; primaryEmail: string; displayName?: string | null };
-  organizations: { id: string; slug: string; name: string; role: "owner" | "admin" | "member" }[];
+  organizations: {
+    id: string;
+    slug: string;
+    name: string;
+    role: 'owner' | 'admin' | 'member';
+  }[];
   workspaces: { id: string; slug: string; name: string; organizationId: string }[];
   // A project IS the repository/codebase (HOR-280). The cloud `/v1/context`
   // returns repo/sync metadata on each project (HOR-277); the fields are optional
@@ -105,10 +114,10 @@ export interface InvestigationDetail extends InvestigationRecord {
  * investigation payload as the rest of the sync; it is distinct from the anonymous vendor telemetry.
  */
 export interface InvestigationOutcome {
-  resolved: "yes" | "partly" | "no";
+  resolved: 'yes' | 'partly' | 'no';
   note?: string;
   confirmedCause?: string;
-  source: "feedback" | "confirm";
+  source: 'feedback' | 'confirm';
   /** ISO-8601 attestation time of the label. */
   labeledAt: string;
 }
@@ -149,19 +158,19 @@ export interface AgentRunRecord {
  * `finding`s, the cited `evidence` leaves, and (future) confirmed `outcome`s.
  */
 export type CitationNodeType =
-  | "investigation"
-  | "cause"
-  | "hypothesis"
-  | "finding"
-  | "evidence"
-  | "outcome";
+  | 'investigation'
+  | 'cause'
+  | 'hypothesis'
+  | 'finding'
+  | 'evidence'
+  | 'outcome';
 
 /**
  * The relationship a citation edge asserts. NOTE: `contradicts` is part of the
  * frozen vocabulary but is NOT emitted yet (no backing data) — the writer cuts
  * contradicting edges rather than fabricate them.
  */
-export type CitationRole = "derives" | "supports" | "contradicts" | "cites" | "explains";
+export type CitationRole = 'derives' | 'supports' | 'contradicts' | 'cites' | 'explains';
 
 /**
  * One endpoint of a citation edge. `ref` is the node's stable identity:
@@ -297,7 +306,7 @@ export interface MemoryItemSyncInput {
   status?: string;
   confidence?: number;
   /** Server CLAMPS confirmed-outcome → 'private'; the CLI only ever sends 'private' in M3. */
-  visibility?: "private" | "team";
+  visibility?: 'private' | 'team';
   /** Evidence refs (NOT vectors). Optional — the cloud may ignore it in the minimal cut. */
   evidence?: unknown;
   lastVerifiedAt?: string | null;
@@ -360,7 +369,7 @@ export interface MemoryItemRecord {
   workspaceId: string;
   projectId: string | null;
   createdByUserId: string | null;
-  visibility: "private" | "team";
+  visibility: 'private' | 'team';
   kind: string;
   claim: string;
   scope: string;
@@ -484,36 +493,102 @@ export class CloudClient {
     private readonly signal?: AbortSignal,
   ) {}
 
-  listAlertSources(workspaceId: string): Promise<Array<{ provider: string; projectId: string | null; environment: string | null; enabled: boolean; serviceId: string | null; hasApiToken?: boolean; apiRegion?: string; lastError?: string | null }>> {
+  listAlertSources(workspaceId: string): Promise<
+    Array<{
+      provider: string;
+      projectId: string | null;
+      environment: string | null;
+      enabled: boolean;
+      serviceId: string | null;
+      hasApiToken?: boolean;
+      apiRegion?: string;
+      lastError?: string | null;
+    }>
+  > {
     return this.request('GET', `/v1/workspaces/${workspaceId}/alert-sources`);
   }
-  listAlertRequests(workspaceId: string, projectId: string, environment: string): Promise<Array<{ id: string; localReportId: string; hint: string; payload: Record<string, unknown>; projectId: string; environment: string }>> {
-    return this.request('GET', `/v1/workspaces/${workspaceId}/investigation-requests?${new URLSearchParams({ projectId, environment, ready: 'true' })}`);
+  listAlertRequests(
+    workspaceId: string,
+    projectId: string,
+    environment: string,
+  ): Promise<
+    Array<{
+      id: string;
+      localReportId: string;
+      hint: string;
+      payload: Record<string, unknown>;
+      projectId: string;
+      environment: string;
+    }>
+  > {
+    return this.request(
+      'GET',
+      `/v1/workspaces/${workspaceId}/investigation-requests?${new URLSearchParams({ projectId, environment, ready: 'true' })}`,
+    );
   }
-  alertRequest(workspaceId: string, requestId: string, action: 'claim' | 'heartbeat' | 'complete' | 'fail' | 'retry', body: Record<string, unknown>): Promise<{ id: string; claimToken: string; localReportId: string }> {
-    return this.request('POST', `/v1/workspaces/${workspaceId}/investigation-requests/${requestId}/${action}`, body);
+  alertRequest(
+    workspaceId: string,
+    requestId: string,
+    action: 'claim' | 'heartbeat' | 'complete' | 'fail' | 'retry',
+    body: Record<string, unknown>,
+  ): Promise<{
+    id: string;
+    claimToken: string;
+    localReportId: string;
+    hint?: string;
+    payload?: Record<string, unknown>;
+  }> {
+    return this.request(
+      'POST',
+      `/v1/workspaces/${workspaceId}/investigation-requests/${requestId}/${action}`,
+      body,
+    );
   }
   workerHeartbeat(workspaceId: string, body: Record<string, unknown>): Promise<unknown> {
     return this.request('POST', `/v1/workspaces/${workspaceId}/alert-workers`, body);
   }
 
-  notifyInvestigation(projectId: string, investigationId: string, input: { notificationKey: string; hint: string; cause: string; confidence: number }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
-    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/investigations/${encodeURIComponent(investigationId)}/notify`, input);
+  notifyInvestigation(
+    projectId: string,
+    investigationId: string,
+    input: { notificationKey: string; hint: string; cause: string; confidence: number },
+  ): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request(
+      'POST',
+      `/v1/projects/${encodeURIComponent(projectId)}/investigations/${encodeURIComponent(investigationId)}/notify`,
+      input,
+    );
   }
-  notifyServiceNotice(projectId: string, input: { kind: 'budget' | 'terminal'; environment: string; jobId: string; day: string; hint: string; cause: string }): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
-    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/notifications/slack/notices`, input);
+  notifyServiceNotice(
+    projectId: string,
+    input: {
+      kind: 'budget' | 'terminal';
+      environment: string;
+      jobId: string;
+      day: string;
+      hint: string;
+      cause: string;
+    },
+  ): Promise<{ state: 'off' | 'delivered' | 'failed'; error?: string }> {
+    return this.request(
+      'POST',
+      `/v1/projects/${encodeURIComponent(projectId)}/notifications/slack/notices`,
+      input,
+    );
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
     if (this.token) headers.authorization = `Bearer ${this.token}`;
-    if (body !== undefined) headers["content-type"] = "application/json";
+    if (body !== undefined) headers['content-type'] = 'application/json';
 
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl.replace(/\/$/, "")}${path}`, {
+      res = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
         method,
-        signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+        signal: this.signal
+          ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
@@ -527,17 +602,26 @@ export class CloudClient {
 
     const text = await res.text();
     let json: unknown;
-    try { json = text ? JSON.parse(text) : undefined; }
-    catch (error) { if (res.ok) throw error; }
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch (error) {
+      if (res.ok) throw error;
+    }
 
     if (!res.ok) {
-      const envelope = json as { error?: { code?: string; message?: string } } | undefined;
+      const envelope = json as
+        | { error?: { code?: string; message?: string } }
+        | undefined;
       const retryAfter = res.headers.get('retry-after');
-      const retryAfterMs = retryAfter === null ? NaN : /^\d+$/.test(retryAfter)
-        ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+      const retryAfterMs =
+        retryAfter === null
+          ? NaN
+          : /^\d+$/.test(retryAfter)
+            ? Number(retryAfter) * 1000
+            : Date.parse(retryAfter) - Date.now();
       throw new CloudError(
         res.status,
-        envelope?.error?.code ?? "http_error",
+        envelope?.error?.code ?? 'http_error',
         envelope?.error?.message ?? `Request failed (${res.status}).`,
         Number.isFinite(retryAfterMs) ? Math.max(0, retryAfterMs) : undefined,
       );
@@ -546,21 +630,21 @@ export class CloudClient {
   }
 
   me(): Promise<MeResponse> {
-    return this.request<MeResponse>("GET", "/v1/me");
+    return this.request<MeResponse>('GET', '/v1/me');
   }
 
   /** Begin a browser device-login session (no auth required). */
   startCliSession(): Promise<CliSessionStart> {
-    return this.request<CliSessionStart>("POST", "/v1/cli-sessions/start");
+    return this.request<CliSessionStart>('POST', '/v1/cli-sessions/start');
   }
 
   /** Poll a device-login session until it is approved, denied, or expires. */
   pollCliSession(deviceCode: string): Promise<CliSessionPoll> {
-    return this.request<CliSessionPoll>("POST", "/v1/cli-sessions/poll", { deviceCode });
+    return this.request<CliSessionPoll>('POST', '/v1/cli-sessions/poll', { deviceCode });
   }
 
   context(): Promise<ContextResponse> {
-    return this.request<ContextResponse>("GET", "/v1/context");
+    return this.request<ContextResponse>('GET', '/v1/context');
   }
 
   /** Create a workspace in an org (HOR-307 — used by `cloud link` create-from-repo). */
@@ -568,7 +652,7 @@ export class CloudClient {
     organizationId: string,
     body: { name: string; slug?: string },
   ): Promise<{ id: string; slug: string; name: string; organizationId: string }> {
-    return this.request("POST", `/v1/organizations/${organizationId}/workspaces`, body);
+    return this.request('POST', `/v1/organizations/${organizationId}/workspaces`, body);
   }
 
   /** Create a project in a workspace, optionally with its repo identity (HOR-307). */
@@ -576,20 +660,26 @@ export class CloudClient {
     organizationId: string,
     workspaceId: string,
     body: { name: string; slug?: string; remoteUrl?: string; provider?: string },
-  ): Promise<{ id: string; slug: string; name: string; workspaceId: string; organizationId: string }> {
+  ): Promise<{
+    id: string;
+    slug: string;
+    name: string;
+    workspaceId: string;
+    organizationId: string;
+  }> {
     return this.request(
-      "POST",
+      'POST',
       `/v1/organizations/${organizationId}/workspaces/${workspaceId}/projects`,
       body,
     );
   }
 
   listTokens(): Promise<{ tokens: TokenSummary[] }> {
-    return this.request<{ tokens: TokenSummary[] }>("GET", "/v1/cli/tokens");
+    return this.request<{ tokens: TokenSummary[] }>('GET', '/v1/cli/tokens');
   }
 
   revokeToken(id: string): Promise<void> {
-    return this.request<void>("DELETE", `/v1/cli/tokens/${id}`);
+    return this.request<void>('DELETE', `/v1/cli/tokens/${id}`);
   }
 
   createInvestigation(
@@ -603,21 +693,28 @@ export class CloudClient {
       outcome?: InvestigationOutcome;
     },
   ): Promise<InvestigationRecord> {
-    return this.request<InvestigationRecord>("POST", `/v1/projects/${projectId}/investigations`, body);
+    return this.request<InvestigationRecord>(
+      'POST',
+      `/v1/projects/${projectId}/investigations`,
+      body,
+    );
   }
 
   listInvestigations(
     projectId: string,
   ): Promise<{ investigations: InvestigationRecord[]; nextCursor?: string }> {
     return this.request<{ investigations: InvestigationRecord[]; nextCursor?: string }>(
-      "GET",
+      'GET',
       `/v1/projects/${projectId}/investigations`,
     );
   }
 
-  getInvestigation(projectId: string, investigationId: string): Promise<InvestigationDetail> {
+  getInvestigation(
+    projectId: string,
+    investigationId: string,
+  ): Promise<InvestigationDetail> {
     return this.request<InvestigationDetail>(
-      "GET",
+      'GET',
       `/v1/projects/${projectId}/investigations/${investigationId}`,
     );
   }
@@ -628,7 +725,7 @@ export class CloudClient {
     body: { title?: string; hint?: string; status?: string },
   ): Promise<InvestigationRecord> {
     return this.request<InvestigationRecord>(
-      "PATCH",
+      'PATCH',
       `/v1/projects/${projectId}/investigations/${investigationId}`,
       body,
     );
@@ -640,7 +737,7 @@ export class CloudClient {
     repositoryIds: string[],
   ): Promise<InvestigationDetail> {
     return this.request<InvestigationDetail>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/investigations/${investigationId}/repositories`,
       { repositoryIds },
     );
@@ -660,7 +757,7 @@ export class CloudClient {
     },
   ): Promise<EvidenceRecord> {
     return this.request<EvidenceRecord>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/investigations/${investigationId}/evidence`,
       body,
     );
@@ -668,7 +765,7 @@ export class CloudClient {
 
   listEvidence(projectId: string, investigationId: string): Promise<EvidenceRecord[]> {
     return this.request<EvidenceRecord[]>(
-      "GET",
+      'GET',
       `/v1/projects/${projectId}/investigations/${investigationId}/evidence`,
     );
   }
@@ -684,7 +781,7 @@ export class CloudClient {
     body: { items: ProvenanceEvidenceInput[] },
   ): Promise<{ evidence: EvidenceBatchRecord[] }> {
     return this.request<{ evidence: EvidenceBatchRecord[] }>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/investigations/${investigationId}/evidence/batch`,
       body,
     );
@@ -701,7 +798,7 @@ export class CloudClient {
     body: { edges: CitationEdgeInput[] },
   ): Promise<{ created: number }> {
     return this.request<{ created: number }>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/investigations/${investigationId}/citations`,
       body,
     );
@@ -723,7 +820,7 @@ export class CloudClient {
     },
   ): Promise<AgentRunRecord> {
     return this.request<AgentRunRecord>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs`,
       body,
     );
@@ -731,10 +828,24 @@ export class CloudClient {
 
   /** Complete metadata for a run already created by durable memory/report sync. */
   updateAgentRun(
-    projectId: string, investigationId: string, runId: string,
-    body: { agent?: string; model?: string; startedAt?: string; endedAt?: string; summary?: string; logs?: string; logsFormat?: string },
+    projectId: string,
+    investigationId: string,
+    runId: string,
+    body: {
+      agent?: string;
+      model?: string;
+      startedAt?: string;
+      endedAt?: string;
+      summary?: string;
+      logs?: string;
+      logsFormat?: string;
+    },
   ): Promise<AgentRunRecord> {
-    return this.request<AgentRunRecord>("PATCH", `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs/${runId}`, body);
+    return this.request<AgentRunRecord>(
+      'PATCH',
+      `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs/${runId}`,
+      body,
+    );
   }
 
   // ── Knowledge snapshots (HOR-296) ──────────────────────────────────────────
@@ -745,7 +856,7 @@ export class CloudClient {
     body: PushKnowledgeSnapshotBody,
   ): Promise<KnowledgeSnapshotRecord> {
     return this.request<KnowledgeSnapshotRecord>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/knowledge-snapshots`,
       body,
     );
@@ -754,7 +865,7 @@ export class CloudClient {
   /** Fetch the latest (non-archived) knowledge snapshot for a project. */
   getLatestKnowledgeSnapshot(projectId: string): Promise<KnowledgeSnapshotRecord> {
     return this.request<KnowledgeSnapshotRecord>(
-      "GET",
+      'GET',
       `/v1/projects/${projectId}/knowledge-snapshots/latest`,
     );
   }
@@ -765,7 +876,7 @@ export class CloudClient {
     body: ChangeReportBody,
   ): Promise<ChangeReportRecord> {
     return this.request<ChangeReportRecord>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/changes`,
       body,
     );
@@ -792,7 +903,7 @@ export class CloudClient {
     },
   ): Promise<MemorySyncResult> {
     return this.request<MemorySyncResult>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/memory-items/sync`,
       body,
     );
@@ -802,32 +913,60 @@ export class CloudClient {
   listMemoryItems(
     projectId: string,
     q?: MemoryListQuery,
-  ): Promise<{ items: MemoryItemRecord[]; nextCursor?: string; nextRevision?: string; hasMore?: boolean }> {
+  ): Promise<{
+    items: MemoryItemRecord[];
+    nextCursor?: string;
+    nextRevision?: string;
+    hasMore?: boolean;
+  }> {
     const params = new URLSearchParams();
-    if (q?.includeHistory !== undefined) params.set("includeHistory", String(q.includeHistory));
-    if (q?.afterRevision !== undefined) params.set("afterRevision", q.afterRevision);
-    if (q?.status) params.set("status", q.status);
-    if (q?.kind) params.set("kind", q.kind);
-    if (q?.search) params.set("search", q.search);
-    if (q?.limit !== undefined) params.set("limit", String(q.limit));
-    if (q?.cursor) params.set("cursor", q.cursor);
+    if (q?.includeHistory !== undefined)
+      params.set('includeHistory', String(q.includeHistory));
+    if (q?.afterRevision !== undefined) params.set('afterRevision', q.afterRevision);
+    if (q?.status) params.set('status', q.status);
+    if (q?.kind) params.set('kind', q.kind);
+    if (q?.search) params.set('search', q.search);
+    if (q?.limit !== undefined) params.set('limit', String(q.limit));
+    if (q?.cursor) params.set('cursor', q.cursor);
     const qs = params.toString();
-    return this.request<{ items: MemoryItemRecord[]; nextCursor?: string; nextRevision?: string; hasMore?: boolean }>(
-      "GET",
-      `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ""}`,
-    );
+    return this.request<{
+      items: MemoryItemRecord[];
+      nextCursor?: string;
+      nextRevision?: string;
+      hasMore?: boolean;
+    }>('GET', `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ''}`);
   }
 
   /** Existing paginated history endpoints; pin every page to the item revision. */
-  listMemoryLinks(projectId: string, q: { memoryItemId: string; expectedRevision: string; cursor?: string }) {
-    const params = new URLSearchParams({ memoryItemId: q.memoryItemId, expectedRevision: q.expectedRevision, limit: '100' });
+  listMemoryLinks(
+    projectId: string,
+    q: { memoryItemId: string; expectedRevision: string; cursor?: string },
+  ) {
+    const params = new URLSearchParams({
+      memoryItemId: q.memoryItemId,
+      expectedRevision: q.expectedRevision,
+      limit: '100',
+    });
     if (q.cursor) params.set('cursor', q.cursor);
-    return this.request<{ links: NonNullable<MemoryItemRecord['links']>; nextCursor?: string }>('GET', `/v1/projects/${projectId}/memory-links?${params}`);
+    return this.request<{
+      links: NonNullable<MemoryItemRecord['links']>;
+      nextCursor?: string;
+    }>('GET', `/v1/projects/${projectId}/memory-links?${params}`);
   }
-  listMemoryAudit(projectId: string, q: { memoryItemId: string; expectedRevision: string; cursor?: string }) {
-    const params = new URLSearchParams({ memoryItemId: q.memoryItemId, expectedRevision: q.expectedRevision, limit: '100' });
+  listMemoryAudit(
+    projectId: string,
+    q: { memoryItemId: string; expectedRevision: string; cursor?: string },
+  ) {
+    const params = new URLSearchParams({
+      memoryItemId: q.memoryItemId,
+      expectedRevision: q.expectedRevision,
+      limit: '100',
+    });
     if (q.cursor) params.set('cursor', q.cursor);
-    return this.request<{ audit: NonNullable<MemoryItemRecord['audit']>; nextCursor?: string }>('GET', `/v1/projects/${projectId}/memory-audit?${params}`);
+    return this.request<{
+      audit: NonNullable<MemoryItemRecord['audit']>;
+      nextCursor?: string;
+    }>('GET', `/v1/projects/${projectId}/memory-audit?${params}`);
   }
 
   // ── Team memory (HOR-464 / M4) ────────────────────────────────────────────
@@ -842,7 +981,7 @@ export class CloudClient {
     body: { items: TeamMemoryPromoteInput[] },
   ): Promise<TeamMemoryPromoteResult> {
     return this.request<TeamMemoryPromoteResult>(
-      "POST",
+      'POST',
       `/v1/projects/${projectId}/team-memory/promote`,
       body,
     );
@@ -858,12 +997,12 @@ export class CloudClient {
     q: TeamMemoryListQuery,
   ): Promise<TeamMemoryListResult> {
     const params = new URLSearchParams();
-    params.set("since", q.since);
-    if (q.limit !== undefined) params.set("limit", String(q.limit));
-    if (q.includeDeleted) params.set("includeDeleted", "true");
-    if (q.search) params.set("search", q.search);
+    params.set('since', q.since);
+    if (q.limit !== undefined) params.set('limit', String(q.limit));
+    if (q.includeDeleted) params.set('includeDeleted', 'true');
+    if (q.search) params.set('search', q.search);
     return this.request<TeamMemoryListResult>(
-      "GET",
+      'GET',
       `/v1/projects/${projectId}/team-memory?${params.toString()}`,
     );
   }
