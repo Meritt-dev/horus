@@ -452,7 +452,10 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
   await writeFile(settings, JSON.stringify(serviceConfig));
   const nextEvent = JSON.parse(raw);
   nextEvent.event.id = 'delivery-2';
+  nextEvent.event.event_type = 'incident.triggered';
   nextEvent.event.data.id = 'native-incident-2';
+  nextEvent.event.data.status = 'triggered';
+  nextEvent.event.data.created_at = new Date().toISOString();
   nextEvent.event.occurred_at = new Date().toISOString();
   raw = JSON.stringify(nextEvent);
   assert.equal((await ingest()).status, 202);
