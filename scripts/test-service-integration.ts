@@ -509,23 +509,29 @@ console.log(JSON.stringify({type:'result',is_error:false,session_id:session,mode
     }
     await h.sql.end();
   }
+  // A resolution without any known trigger remains cancelled. The owed
+  // trigger-then-resolution journey was verified above with a real report.
   const cancelledEvent = JSON.parse(raw);
-  cancelledEvent.event.data.id = 'resolved-before-start';
-  cancelledEvent.event.id = 'resolved-before-start-trigger';
-  raw = JSON.stringify(cancelledEvent);
-  assert.equal((await ingest()).status, 202);
-  cancelledEvent.event.id = 'resolved-before-start-resolve';
+  cancelledEvent.event.data.id = 'resolved-without-trigger';
+  cancelledEvent.event.id = 'resolved-without-trigger-resolve';
   cancelledEvent.event.event_type = 'incident.resolved';
   cancelledEvent.event.data.status = 'resolved';
   raw = JSON.stringify(cancelledEvent);
-  assert.equal((await ingest()).status, 202);
+  const cancelledResponse = await ingest();
+  assert.equal(cancelledResponse.status, 202);
+  const cancelledId = (await cancelledResponse.json()).id;
+  const [cancelledRequest] = await db
+    .select()
+    .from(investigationRequests)
+    .where(eq(investigationRequests.id, cancelledId));
+  assert.equal(cancelledRequest!.status, 'cancelled');
+  assert.equal(cancelledRequest!.payload.investigationRequired, false);
   await runWatchService(settings, true);
   h = await createLocalDb();
   const cancelled = (await jobs(h.db)).find(
-    (j) => j.event.incidentId === 'resolved-before-start',
-  )!;
-  assert.equal(cancelled.stage, 'done', JSON.stringify(cancelled));
-  assert.equal(cancelled.attempts.engine, undefined);
+    (j) => j.event.incidentId === 'resolved-without-trigger',
+  );
+  assert.equal(cancelled, undefined, 'A resolved-only event must not start a worker job');
   assert.equal((await h.db.select().from(investigations)).length, 2);
   await h.sql.end();
   // Exercise the actual routed API and local episode contract with separate native incidents.
