@@ -942,15 +942,18 @@ it('controller death closes worker IPC and terminates its detached group', async
   const claude = join(root, 'claude.cjs');
   const worker = join(root, 'worker.mts');
   const supervisor = join(root, 'supervisor.mts');
+  const workerPidFile = join(root, 'worker.pid');
   // Run in one PID/group like the bundled CLI; the tsx CLI wrapper masks controller death.
   const runtime = resolve('../../node_modules/tsx/dist/loader.mjs');
   writeFileSync(
     claude,
     `const tool=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({worker:Number(process.argv[2]),supervisor:Number(process.argv[3]),claude:process.pid,tool:tool.pid}));setInterval(()=>{},1000);`,
   );
+  // Record the detached group before cold imports. The bootstrap guard is removed
+  // before runServiceWorker installs the production handler tested by the assertions.
   writeFileSync(
     worker,
-    `import {spawn} from 'node:child_process';import {runServiceWorker} from ${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)};spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`,
+    `import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';if(!process.connected) process.exit(1);const bootParentGone=()=>process.kill(-process.pid,'SIGKILL');process.once('disconnect',bootParentGone);writeFileSync(${JSON.stringify(workerPidFile)},String(process.pid));const {runServiceWorker}=await import(${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)});process.removeListener('disconnect',bootParentGone);spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`,
   );
   writeFileSync(
     supervisor,
@@ -990,6 +993,18 @@ it('controller death closes worker IPC and terminates its detached group', async
       } catch {}
     }
     await running.catch(() => {});
+    // The supervisor and worker have separate groups; readiness failures still own a PID.
+    if (existsSync(workerPidFile)) {
+      const workerPid = Number(readFileSync(workerPidFile, 'utf8'));
+      if (!Number.isInteger(workerPid) || workerPid <= 1)
+        throw new Error('Invalid fixture worker PID');
+      try {
+        process.kill(-workerPid, 'SIGKILL');
+      } catch {}
+      await vi.waitFor(() => expect(() => process.kill(workerPid, 0)).toThrow(), {
+        timeout: 3000,
+      });
+    }
     // Keep the DB locked until the child group has exited, including readiness failures.
     release();
   }
