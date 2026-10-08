@@ -142,7 +142,8 @@ service name remains on the saved alert.
 
 Before interpretation the worker collects errors in a twelve-minute window
 around the alert. Claude reads source and can request up to four structured checks
-per round: bounded logs, projected equality-only Mongo records, or Shopify variant
+per round: bounded logs, projected equality-only Mongo records from an explicitly
+configured collection allowlist, or Shopify variant
 inventory at a location. Horus executes these through the existing configured
 providers and saves their results, including unavailable and empty results, as new
 citable evidence on the same report. It allows two follow-up rounds. These checks

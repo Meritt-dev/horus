@@ -197,8 +197,14 @@ export async function repairIncident(options: {
   const worktree = join(directory, 'worktree');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (!job.repair) {
-    await git(['fetch', 'origin', config.baseBranch]);
-    const baseSha = (await git(['rev-parse', 'FETCH_HEAD'])).trim();
+    const baseRef = `refs/horus/repairs/${report.id}/base`;
+    await git([
+      'fetch',
+      '--no-write-fetch-head',
+      'origin',
+      `refs/heads/${config.baseBranch}:${baseRef}`,
+    ]);
+    const baseSha = (await git(['rev-parse', baseRef])).trim();
     job.repair = { baseSha, worktree };
     // Save the intended identity before worktree creation so retries use the same checkout.
     await options.checkpoint();
@@ -292,8 +298,8 @@ export async function repairIncident(options: {
   if (!patch.changes.length) return { status: 'blocked', branch, summary: patch.summary };
   if ((await git(['rev-parse', 'HEAD'], worktree)).trim() === job.repair.baseSha) {
     applyRepairPatch(worktree, patch, files, originals);
-    await git(['diff', '--check'], worktree);
     await git(['add', '--', ...patch.changes.map((c) => c.path)], worktree);
+    await git(['diff', '--cached', '--check'], worktree);
     await git(['commit', '-m', `fix: incident ${report.id}`], worktree);
   }
   // Only recover our single exact commit; never publish unrelated work left in a checkout.
@@ -351,7 +357,13 @@ export async function repairIncident(options: {
         bodyFile,
       ])
     ).trim();
-  if (!url.startsWith(`https://github.com/${config.repository}/pull/`))
+  const parsedUrl = new URL(url);
+  if (
+    parsedUrl.origin !== 'https://github.com' ||
+    !parsedUrl.pathname
+      .toLowerCase()
+      .startsWith(`/${config.repository.toLowerCase()}/pull/`)
+  )
     throw new Error('Unexpected repair PR URL');
   return {
     status:

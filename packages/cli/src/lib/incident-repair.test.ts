@@ -175,7 +175,9 @@ it('runs a tool-free coding call in a separate checkout and recovers a lost PR r
         if (command[0] === 'remote') return 'git@github.com:owner/repo.git\n';
         if (command[0] === 'rev-parse')
           return (
-            (['FETCH_HEAD', 'HEAD^'].includes(command[1]!) ? 'a'.repeat(40) : head) + '\n'
+            (command[1]!.endsWith('/base') || command[1] === 'HEAD^'
+              ? 'a'.repeat(40)
+              : head) + '\n'
           );
         if (command[0] === 'log') return `fix: incident ${report.id}`;
         if (command[0] === 'diff' && command[1] === '--name-only')

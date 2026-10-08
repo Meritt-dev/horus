@@ -337,3 +337,15 @@ it('redacts sensitive descendants when a parent field is projected', async () =>
     },
   ]);
 });
+
+it('does not use aggregate auto-discovery authority for projected document reads', async () => {
+  await expect(
+    makeClient().records({
+      collection: 'workflow_runs',
+      where: [{ field: 'status', value: 'FAILED' }],
+      fields: ['status'],
+      limit: 1,
+    }),
+  ).rejects.toThrow('explicit collection allowlist');
+  expect(driver.connectCalls).toBe(0);
+});

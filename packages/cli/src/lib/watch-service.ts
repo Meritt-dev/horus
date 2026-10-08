@@ -978,7 +978,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
                 reserveModelCall: async () => {
                   if (budget.modelCalls >= config.dailyModelCalls)
                     throw new Error(
-                      'DAILY_BUDGET: model calls exhausted; repair deferred until UTC tomorrow',
+                      'DAILY_BUDGET: model calls exhausted; draft PR blocked',
                     );
                   budget.modelCalls++;
                   await writeWatchState(db, `budget:${day}`, budget);

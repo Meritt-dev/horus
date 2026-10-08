@@ -54,9 +54,11 @@ export class MongoStateClient {
     return this.client.db(this.opts.database);
   }
 
-  /** Exact document count for a collection (optionally filtered). */
+  /** Bounded projected equality reads from an explicitly allowlisted collection. */
   async records(input: StateRecordQuery): Promise<Document[]> {
     const query = stateRecordQuerySchema.parse(input);
+    if (!this.opts.allowlist.length)
+      throw new Error('Projected record reads require an explicit collection allowlist');
     this.assertAllowed(query.collection);
     const filter = Object.fromEntries(
       query.where.map(({ field, value }) => [
