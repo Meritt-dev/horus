@@ -956,9 +956,10 @@ it('controller death closes worker IPC and terminates its detached group', async
     supervisor,
     `import {runProcess} from ${JSON.stringify(new URL('./claude-investigation.ts', import.meta.url).href)};await runProcess(process.execPath,['--import',${JSON.stringify(runtime)},${JSON.stringify(worker)}],{cwd:${JSON.stringify(root)},timeoutMs:30000,onMessage:()=>{}});`,
   );
+  // Cold source imports compete with the workspace suites; termination checks below stay tight.
   const running = runProcess(process.execPath, ['--import', runtime, supervisor], {
     cwd: root,
-    timeoutMs: 15000,
+    timeoutMs: 25000,
   });
   let pids:
     | { worker: number; supervisor: number; claude: number; tool: number }
@@ -968,7 +969,7 @@ it('controller death closes worker IPC and terminates its detached group', async
       () => {
         pids = JSON.parse(readFileSync(pidFile, 'utf8'));
       },
-      { timeout: 10000 },
+      { timeout: 20000 },
     );
     process.kill(pids!.supervisor, 'SIGKILL');
     await expect(running).rejects.toThrow('Subprocess exited');
@@ -980,7 +981,6 @@ it('controller death closes worker IPC and terminates its detached group', async
       { timeout: 3000 },
     );
   } finally {
-    release();
     if (pids) {
       try {
         process.kill(-pids.worker, 'SIGKILL');
@@ -990,6 +990,8 @@ it('controller death closes worker IPC and terminates its detached group', async
       } catch {}
     }
     await running.catch(() => {});
+    // Keep the DB locked until the child group has exited, including readiness failures.
+    release();
   }
 });
 
