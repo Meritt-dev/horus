@@ -5,8 +5,9 @@ from [the current receipt](implementation/current-release.md). Dated observation
 
 This release extends the engine memory store, shared investigation runner, watcher,
 Cloud memory service, and Cloud alert queue. Cloud accepts work; your Mac executes
-it. PRD 03, Azure/AWS/Grafana trigger adapters, Linux packaging, managed execution,
-and Jev ranking are outside this change.
+it. The bounded draft-PR proposal path below covers part of PRD 03; autonomous
+merging and deployment, Azure/AWS/Grafana trigger adapters, Linux packaging,
+managed execution, and Jev ranking remain outside this change.
 
 ## Deploy the paired versions
 
@@ -131,6 +132,65 @@ AI result stays uncertain even when the engine has a ranked hypothesis.
 
 ## Activate a local service
 
+### Evidence follow-ups and draft fix PRs
+
+PagerDuty's service name is a display name, not a runtime log filter. For
+PagerDuty requests the worker uses the route's optional `runtimeService`, then
+the Elasticsearch connector's `serviceName`. When neither is configured, the
+project/environment connector's index scope remains authoritative. The native
+service name remains on the saved alert.
+
+Before interpretation the worker collects errors in a twelve-minute window
+around the alert. Claude reads source and can request up to four structured checks
+per round: bounded logs, projected equality-only Mongo records, or Shopify variant
+inventory at a location. Horus executes these through the existing configured
+providers and saves their results, including unavailable and empty results, as new
+citable evidence on the same report. It allows two follow-up rounds. These checks
+never change deterministic scores or confirmed memory dispositions. Delivery,
+`diagnosis: supported`, and a human-confirmed incident remain distinct.
+
+Claude now requires a CLI supporting `--restricted`; the investigation enables
+only Read/Grep/Glob, disables skills and MCP, and performs runtime reads through
+Horus. The coding call has no tools. Each invocation counts against the existing
+daily model budget and worker deadline. Coding is capped at two minutes and reserves
+thirty seconds for diagnosis delivery; an exhausted coding budget is reported as
+blocked. Existing service settings remain valid.
+
+To authorize draft fix PRs for a route, add:
+
+```json
+{
+  "fixPr": {
+    "repository": "owner/repository",
+    "baseBranch": "master"
+  }
+}
+```
+
+Use the repository's real default branch. The configured repository must match
+the target checkout's GitHub origin. Horus does not execute model-edited code or
+verification commands locally; automated suites and required reviews run in
+hosted CI and human review.
+Without this setting the worker reports that PR publication is not configured.
+
+A supported code diagnosis must cite targeted runtime evidence and have at least
+0.7 model confidence before the coding stage runs. This is a PR eligibility
+threshold, not proof of a root cause. Claude receives bounded source files from
+the freshly fetched base revision and proposes exact replacements. Horus applies
+them to a separate Git worktree, checks whitespace and commit scope, and opens a
+draft PR. It never merges, deploys, resolves alerts or replays
+production operations. The saved report and notification retain the PR URL.
+Historical variant IDs that return null do not establish deletion or stocking
+state.
+
+The branch is tied to the report ID. Retries recover the same checkout, saved
+original source, patch and existing PR, including a lost creation response.
+Recovered PRs retain their actual open, closed or merged status. Unresolved diagnoses
+skip coding. Insufficient source produces a blocked PR result; repeated repair
+failures remain visible without preventing delivery of the diagnosis. Repair
+worktrees and private patch artifacts are retained under the service's
+`repairs/REPORT_ID/` directory for review.
+
 Use an absolute, stable installed CLI path, Node path, and Claude executable path.
 Verify that the configured local user can invoke Opus 5.5 through Claude Code before
 activation; executable discovery does not prove model access or provider access.
@@ -221,7 +281,7 @@ secrets: keep both private and outside Git.
 Each incident invokes exactly:
 
 ```sh
-claude -p --model claude-opus-5-5 --permission-mode bypassPermissions --output-format json
+claude -p --model claude-opus-5-5 --restricted --tools Read,Grep,Glob --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --output-format json
 ```
 
 The redacted prompt goes through stdin. It contains the alert, current evidence and
@@ -512,7 +572,7 @@ current snapshot. Two minutes without a heartbeat means offline. This is a live
 snapshot feed, not a complete audit log or a guarantee of subsecond delivery.
 
 The required local invocation still uses `claude -p --model claude-opus-5-5
---permission-mode bypassPermissions --output-format json`, stdin for the incident,
+--restricted --tools Read,Grep,Glob --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --output-format json`, stdin for the incident,
 and the configured user’s login. Session-specific `--session-id` and `--settings`
 add documented Claude command hooks (SessionStart, PreToolUse, PostToolUse,
 PostToolUseFailure, Stop). Only finite event/tool categories leave the Mac; hook

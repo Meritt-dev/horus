@@ -66,6 +66,12 @@ import {
 } from './cloud/investigation-sync.js';
 import { dispatchNotify, notificationCause } from './notify-sink.js';
 import {
+  collectIncidentCheck,
+  incidentWindowCheck,
+  checkKey,
+} from './incident-followups.js';
+import { fixPrConfigSchema, repairEligible, repairIncident } from './incident-repair.js';
+import {
   activityEvent,
   workerRunLogs,
   activityPath,
@@ -99,6 +105,10 @@ export const serviceConfigSchema = z
           enabled: z.boolean().default(true),
           notifications: z.enum(['off', 'configured']),
           idempotentDestination: z.boolean().default(false),
+          /** Runtime identity is scoped to this project/environment; PagerDuty display names are not log services. */
+          runtimeService: z.string().min(1).max(200).optional(),
+          /** Presence explicitly authorizes draft PR publication in this repository only. */
+          fixPr: fixPrConfigSchema.optional(),
         }),
       )
       .min(1)
@@ -746,6 +756,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     // No source host auto-start or re-index in the unattended path.
     context = await buildInvestigationContext(env, {
       databaseUrl: loaded.database.url,
+      service: p.runtimeService ?? env.connectors.elasticsearch?.serviceName,
       unattended: true,
       log,
     });
@@ -793,7 +804,10 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             reportId: job.reportId,
             hint: job.event.hint,
             incident: job.event,
-            service: job.event.service,
+            service:
+              job.event.source === 'pagerduty'
+                ? (p.runtimeService ?? env.connectors.elasticsearch?.serviceName)
+                : job.event.service,
           },
           context,
           {
@@ -812,56 +826,101 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
     if (job.stage !== 'complete') {
       if (!report) throw new Error('Saved engine report is missing');
       if (job.stage === 'ai') {
-        if (!job.ai && (job.attempts.ai ?? 0) < 3) {
-          if (budget.modelCalls >= config.dailyModelCalls)
-            throw new Error(
-              'DAILY_BUDGET: model calls exhausted; deferred until UTC tomorrow',
-            );
-          budget.modelCalls++;
-          await writeWatchState(db, `budget:${day}`, budget);
-          job.attempts.ai = (job.attempts.ai ?? 0) + 1;
-          await save();
-          try {
-            const sessionId = randomUUID();
-            let activityArgs: string[] = [];
-            try {
-              hookFile = activityPath(serviceHome(), sessionId);
-              writeFileSync(hookFile, '', { mode: 0o600, flag: 'wx' });
-              activityArgs = claudeActivityArgs(
-                config.runtime,
-                config.runtimeArgs,
-                config.entry,
-                sessionId,
-                job.id,
+        const persistReport = async () => {
+          await db.transaction(async (tx) => {
+            await tx
+              .update(investigations)
+              .set({ report })
+              .where(eq(investigations.id, job!.reportId));
+            await saveJob(tx as unknown as HorusDb, job!);
+          });
+        };
+        if (!job.initialEvidenceCollected) {
+          addActivity('stage', 'collect');
+          const evidence = await collectIncidentCheck(
+            incidentWindowCheck(job.event),
+            context,
+            job.event,
+          );
+          report.evidence = [
+            ...report.evidence.filter((e) => e.id !== evidence.id),
+            evidence,
+          ];
+          job.initialEvidenceCollected = true;
+          await persistReport();
+        }
+        while (true) {
+          if (!job.ai && (job.attempts.ai ?? 0) < 3) {
+            if (budget.modelCalls >= config.dailyModelCalls)
+              throw new Error(
+                'DAILY_BUDGET: model calls exhausted; deferred until UTC tomorrow',
               );
-            } catch {
+            budget.modelCalls++;
+            await writeWatchState(db, `budget:${day}`, budget);
+            job.attempts.ai = (job.attempts.ai ?? 0) + 1;
+            await save();
+            try {
+              const sessionId = randomUUID();
+              let activityArgs: string[] = [];
+              try {
+                hookFile = activityPath(serviceHome(), sessionId);
+                writeFileSync(hookFile, '', { mode: 0o600, flag: 'wx' });
+                activityArgs = claudeActivityArgs(
+                  config.runtime,
+                  config.runtimeArgs,
+                  config.entry,
+                  sessionId,
+                  job.id,
+                );
+              } catch {
+                hookFile = undefined;
+              }
+              job.ai = await interpretIncident(
+                config.claude,
+                p.root,
+                job.latestEvent ?? job.event,
+                report,
+                remaining(),
+                controller.signal,
+                true, // Keep Claude/tools in the worker group so supervisor cleanup survives SIGKILL.
+                activityArgs,
+              );
+              job.aiFailure = undefined;
+              // Persist inference before report annotation: recovery reuses the validated result.
+              await save();
+            } catch (error) {
+              job.aiFailure = redactErrorMessage(error);
+              if ((job.attempts.ai ?? 0) < 3) throw error;
+            } finally {
+              collectActivity();
+              try {
+                if (hookFile && existsSync(hookFile)) unlinkSync(hookFile);
+              } catch {
+                /* private bounded metadata only */
+              }
               hookFile = undefined;
             }
-            job.ai = await interpretIncident(
-              config.claude,
-              p.root,
-              job.latestEvent ?? job.event,
-              report,
-              remaining(),
-              controller.signal,
-              true, // Keep Claude/tools in the worker group so supervisor cleanup survives SIGKILL.
-              activityArgs,
-            );
-            job.aiFailure = undefined;
-            // Persist inference before report annotation: recovery reuses the validated result.
-            await save();
-          } catch (error) {
-            job.aiFailure = redactErrorMessage(error);
-            if ((job.attempts.ai ?? 0) < 3) throw error;
-          } finally {
-            collectActivity();
-            try {
-              if (hookFile && existsSync(hookFile)) unlinkSync(hookFile);
-            } catch {
-              /* private bounded metadata only */
-            }
-            hookFile = undefined;
           }
+          if (!job.ai) break;
+          const interpreted = incidentResultSchema.parse(job.ai.result);
+          const seen = new Set(report.evidence.map((e) => e.id));
+          const requested = interpreted.checks.filter((check) => {
+            const id = `ev_followup_${checkKey(check)}`;
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+          if (!requested.length || (job.aiRound ?? 0) >= 2) break;
+          addActivity('stage', 'collect');
+          for (const check of requested) {
+            controller.signal.throwIfAborted();
+            report.evidence.push(await collectIncidentCheck(check, context, job.event));
+          }
+          job.aiRound = (job.aiRound ?? 0) + 1;
+          report.followupRounds = job.aiRound;
+          job.ai = undefined;
+          job.attempts.ai = 0;
+          await persistReport();
         }
         report = {
           ...report,
@@ -876,6 +935,7 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
         };
         if (job.ai) {
           const result = incidentResultSchema.parse(job.ai.result);
+          report.diagnosis = result.diagnosis;
           report.aiJudgment = {
             what: result.summary,
             why: `${result.likelyCause ?? 'Cause uncertain'}. ${result.uncertainty}`,
@@ -886,10 +946,69 @@ export async function runServiceWorker(settings: string, jobId: string): Promise
             generatedAt: new Date().toISOString(),
           };
         }
-        await db
-          .update(investigations)
-          .set({ report })
-          .where(eq(investigations.id, job.reportId));
+        report.diagnosis ??= 'unresolved';
+        await persistReport();
+        if (!report.fixPr) {
+          const result = job.ai ? incidentResultSchema.parse(job.ai.result) : undefined;
+          if (p.fixPr && result && repairEligible(report, result)) {
+            job.repairAttempts = (job.repairAttempts ?? 0) + 1;
+            await save();
+            // Leave time for diagnosis upload and notification even if coding stalls.
+            const repairMs = Math.min(120000, remaining() - 30000);
+            const repairDeadline = Date.now() + Math.max(1, repairMs);
+            const repairSignal = AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(Math.max(1, repairMs)),
+            ]);
+            try {
+              if (repairMs < 1000)
+                throw new Error(
+                  'Insufficient repair time; diagnosis delivery takes priority',
+                );
+              report.fixPr = await repairIncident({
+                root: p.root,
+                home: serviceHome(),
+                claude: config.claude,
+                config: p.fixPr,
+                report,
+                job,
+                signal: repairSignal,
+                remaining: () => Math.max(1, repairDeadline - Date.now()),
+                checkpoint: save,
+                reserveModelCall: async () => {
+                  if (budget.modelCalls >= config.dailyModelCalls)
+                    throw new Error(
+                      'DAILY_BUDGET: model calls exhausted; repair deferred until UTC tomorrow',
+                    );
+                  budget.modelCalls++;
+                  await writeWatchState(db, `budget:${day}`, budget);
+                },
+              });
+            } catch (error) {
+              if (controller.signal.aborted) throw error;
+              const message = redactErrorMessage(error);
+              if (
+                job.repairAttempts < 3 &&
+                !repairSignal.aborted &&
+                repairMs >= 1000 &&
+                !message.includes('DAILY_BUDGET')
+              )
+                throw error;
+              report.fixPr = {
+                status: 'blocked',
+                summary: `Draft PR could not be prepared: ${message.slice(0, 2000)}`,
+              };
+            }
+          } else {
+            report.fixPr = {
+              status: 'skipped',
+              summary: p.fixPr
+                ? 'No supported code fix with current targeted evidence'
+                : 'Draft PR publication is not configured for this route',
+            };
+          }
+          await persistReport();
+        }
         job.stage = 'upload';
         await save();
       }

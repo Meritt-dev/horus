@@ -46,6 +46,10 @@ export interface WatchJobData {
   cloudRequest?: { id: string; claimToken: string; workerId: string };
   ai?: { sessionId: string; model: string; result: unknown };
   aiFailure?: string;
+  aiRound?: number;
+  initialEvidenceCollected?: boolean;
+  repair?: { baseSha: string; worktree: string };
+  repairAttempts?: number;
   notified?: boolean;
   notificationKey?: string;
   notice?: {

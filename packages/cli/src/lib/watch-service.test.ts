@@ -509,8 +509,18 @@ it('atomic event/cursor durability, EMODA retry grouping, changed severity, recu
   const current = (await jobs(h.db)).at(-1)!;
   current.stage = 'upload';
   current.ai = { sessionId: 'session', model: 'claude-opus-5-5', result: {} };
+  current.aiRound = 2;
+  current.initialEvidenceCollected = true;
+  current.repairAttempts = 1;
+  current.repair = { baseSha: 'a'.repeat(40), worktree: '/private/repair/worktree' };
   await saveJob(h.db, current);
-  expect((await jobs(h.db)).at(-1)?.stage).toBe('upload');
+  expect((await jobs(h.db)).at(-1)).toMatchObject({
+    stage: 'upload',
+    aiRound: 2,
+    initialEvidenceCollected: true,
+    repairAttempts: 1,
+    repair: current.repair,
+  });
   await expect(
     acceptEvents(
       h.db,
@@ -637,10 +647,15 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
   const noHistory = { ...result, historicalMemoryIds: [] };
   writeFileSync(
     file,
-    `#!${process.execPath}\nlet s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(received)},s);console.log(${JSON.stringify(envelope(noHistory))})});`,
+    `#!${process.execPath}\nlet s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(received)},s);require('fs').writeFileSync(${JSON.stringify(join(root, 'claude-args.json'))},JSON.stringify(process.argv.slice(2)));console.log(${JSON.stringify(envelope(noHistory))})});`,
   );
   chmodSync(file, 0o700);
   await interpretIncident(file, root, event(), withoutRecall, 2000);
+  const actualArgs = JSON.parse(readFileSync(join(root, 'claude-args.json'), 'utf8'));
+  expect(actualArgs).toContain('--restricted');
+  expect(actualArgs[actualArgs.indexOf('--tools') + 1]).toBe('Read,Grep,Glob');
+  expect(actualArgs).not.toContain('bypassPermissions');
+  expect(actualArgs).toContain('--strict-mcp-config');
   const prompt = readFileSync(received, 'utf8');
   const allowed = JSON.parse(
     prompt.split('ALLOWED_CITATIONS:\n')[1]!.split('\nDATA:\n')[0]!,
