@@ -6,7 +6,12 @@
  * with a read preference. There is no write surface on this client.
  */
 
-import { MongoClient, type Document } from 'mongodb';
+import { MongoClient, ObjectId, type Document } from 'mongodb';
+import {
+  stateRecordQuerySchema,
+  redactRecordValue,
+  type StateRecordQuery,
+} from '../state/record-query.js';
 import type { HealthStatus } from '@horus/core';
 import { redactErrorMessage } from '@horus/core';
 
@@ -49,7 +54,32 @@ export class MongoStateClient {
     return this.client.db(this.opts.database);
   }
 
-  /** Exact document count for a collection (optionally filtered). */
+  /** Bounded projected equality reads from an explicitly allowlisted collection. */
+  async records(input: StateRecordQuery): Promise<Document[]> {
+    const query = stateRecordQuerySchema.parse(input);
+    if (!this.opts.allowlist.length)
+      throw new Error('Projected record reads require an explicit collection allowlist');
+    this.assertAllowed(query.collection);
+    const filter = Object.fromEntries(
+      query.where.map(({ field, value }) => [
+        field,
+        field === '_id' && typeof value === 'string' && /^[a-f0-9]{24}$/i.test(value)
+          ? new ObjectId(value)
+          : value,
+      ]),
+    );
+    const projection = Object.fromEntries(query.fields.map((field) => [field, 1]));
+    if (!query.fields.includes('_id')) projection['_id'] = 0;
+    const rows = await (await this.db())
+      .collection(query.collection)
+      .find(filter, { projection, maxTimeMS: 5000 })
+      .limit(query.limit)
+      .toArray();
+    if (Buffer.byteLength(JSON.stringify(rows)) > 64000)
+      throw new Error('Record evidence exceeds 64 KB; request fewer fields');
+    return redactRecordValue(JSON.parse(JSON.stringify(rows))) as Document[];
+  }
+
   async count(collection: string, filter: Document = {}): Promise<number> {
     this.assertAllowed(collection);
     return (await this.db()).collection(collection).countDocuments(filter);
@@ -71,7 +101,9 @@ export class MongoStateClient {
     limit = 25,
   ): Promise<Array<{ value: string; count: number }>> {
     this.assertAllowed(collection);
-    const rows = await (await this.db())
+    const rows = await (
+      await this.db()
+    )
       .collection(collection)
       .aggregate([
         { $group: { _id: `$${field}`, count: { $sum: 1 } } },
@@ -88,7 +120,9 @@ export class MongoStateClient {
   /** ISO timestamp of the newest value of a date field, or null. */
   async maxDate(collection: string, field: string): Promise<string | null> {
     this.assertAllowed(collection);
-    const doc = await (await this.db())
+    const doc = await (
+      await this.db()
+    )
       .collection(collection)
       .find({ [field]: { $type: 'date' } })
       .project({ [field]: 1 })

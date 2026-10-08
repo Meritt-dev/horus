@@ -20,7 +20,8 @@ const driver = vi.hoisted(() => ({
   collections: new Map<string, unknown>(),
 }));
 
-vi.mock('mongodb', () => {
+vi.mock('mongodb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('mongodb')>();
   class MongoClient {
     constructor(url: string, options: Record<string, unknown>) {
       driver.constructed.push({ url, options });
@@ -44,7 +45,7 @@ vi.mock('mongodb', () => {
       driver.closeCalls += 1;
     }
   }
-  return { MongoClient };
+  return { ...actual, MongoClient };
 });
 
 beforeEach(() => {
@@ -64,12 +65,15 @@ function fakeCollection(spec: {
   latestDoc?: Record<string, unknown> | null;
   groupRows?: Array<Record<string, unknown>>;
   newestDateDoc?: Record<string, unknown> | null;
+  records?: Record<string, unknown>[];
 }) {
   const calls: {
     countFilter?: unknown;
     findOneOpts?: Record<string, unknown>;
     pipeline?: unknown[];
     findFilter?: unknown;
+    findOptions?: unknown;
+    limit?: number;
     sort?: unknown;
   } = {};
   const cursor = {
@@ -78,7 +82,11 @@ function fakeCollection(spec: {
       calls.sort = s;
       return cursor;
     },
-    limit: (_n: number) => cursor,
+    limit: (n: number) => {
+      calls.limit = n;
+      return cursor;
+    },
+    toArray: async () => spec.records ?? [],
     next: async () => spec.newestDateDoc ?? null,
   };
   return {
@@ -95,14 +103,17 @@ function fakeCollection(spec: {
       calls.pipeline = pipeline;
       return { toArray: async () => spec.groupRows ?? [] };
     },
-    find: (filter: unknown) => {
+    find: (filter: unknown, options?: unknown) => {
       calls.findFilter = filter;
+      calls.findOptions = options;
       return cursor;
     },
   };
 }
 
-function makeClient(over: Partial<{ url: string; database: string; allowlist: string[] }> = {}) {
+function makeClient(
+  over: Partial<{ url: string; database: string; allowlist: string[] }> = {},
+) {
   return new MongoStateClient({
     url: over.url ?? 'mongodb://mongo.local:27017',
     database: over.database ?? 'app',
@@ -174,9 +185,15 @@ describe('StateClient seam (what analyzeStateWith relies on)', () => {
   });
 
   it('sampleFields() returns the newest document field names (sorted by _id desc)', async () => {
-    const coll = fakeCollection({ latestDoc: { _id: 1, status: 'ok', updatedAt: new Date() } });
+    const coll = fakeCollection({
+      latestDoc: { _id: 1, status: 'ok', updatedAt: new Date() },
+    });
     driver.collections.set('jobs', coll);
-    expect(await makeClient().sampleFields('jobs')).toEqual(['_id', 'status', 'updatedAt']);
+    expect(await makeClient().sampleFields('jobs')).toEqual([
+      '_id',
+      'status',
+      'updatedAt',
+    ]);
     expect(coll.calls.findOneOpts).toEqual({ sort: { _id: -1 }, projection: {} });
   });
 
@@ -186,9 +203,13 @@ describe('StateClient seam (what analyzeStateWith relies on)', () => {
   });
 
   it('maxDate() queries only date-typed values, newest first, and returns an ISO string', async () => {
-    const coll = fakeCollection({ newestDateDoc: { updatedAt: new Date('2026-06-20T10:00:00Z') } });
+    const coll = fakeCollection({
+      newestDateDoc: { updatedAt: new Date('2026-06-20T10:00:00Z') },
+    });
     driver.collections.set('jobs', coll);
-    expect(await makeClient().maxDate('jobs', 'updatedAt')).toBe('2026-06-20T10:00:00.000Z');
+    expect(await makeClient().maxDate('jobs', 'updatedAt')).toBe(
+      '2026-06-20T10:00:00.000Z',
+    );
     expect(coll.calls.findFilter).toEqual({ updatedAt: { $type: 'date' } });
     expect(coll.calls.sort).toEqual({ updatedAt: -1 });
   });
@@ -227,14 +248,19 @@ describe('StateClient seam (what analyzeStateWith relies on)', () => {
 
 describe('health()', () => {
   it('is ok with a database-reachable detail when ping succeeds', async () => {
-    expect(await makeClient().health()).toEqual({ ok: true, detail: 'mongodb app reachable' });
+    expect(await makeClient().health()).toEqual({
+      ok: true,
+      detail: 'mongodb app reachable',
+    });
   });
 
   it('is ok:false with a redacted detail when connect echoes URI credentials', async () => {
     driver.connectError = new Error(
       'MongoServerSelectionError: connect ECONNREFUSED mongodb://user:s3cret@mongo.internal:27017/app',
     );
-    const health = await makeClient({ url: 'mongodb://user:s3cret@mongo.internal:27017' }).health();
+    const health = await makeClient({
+      url: 'mongodb://user:s3cret@mongo.internal:27017',
+    }).health();
     expect(health.ok).toBe(false);
     expect(health.detail).not.toContain('s3cret');
     expect(health.detail).toContain('mongodb://[REDACTED]@mongo.internal:27017/app');
@@ -244,4 +270,82 @@ describe('health()', () => {
     driver.pingError = new Error('not primary');
     expect(await makeClient().health()).toEqual({ ok: false, detail: 'not primary' });
   });
+});
+
+it('reads only requested fields on one allowlisted record with an ObjectId and server deadline', async () => {
+  const collection = fakeCollection({ records: [{ status: 'FAILED' }] });
+  driver.collections.set('workflow_runs', collection);
+  const client = new MongoStateClient({
+    url: 'mongodb://localhost',
+    database: 'test',
+    allowlist: ['workflow_runs'],
+  });
+  const rows = await client.records({
+    collection: 'workflow_runs',
+    where: [{ field: '_id', value: '6ac6a13cdd510965bffb708d' }],
+    fields: ['status'],
+    limit: 1,
+  });
+  expect(rows).toEqual([{ status: 'FAILED' }]);
+  expect(String((collection.calls.findFilter as Record<string, unknown>)['_id'])).toBe(
+    '6ac6a13cdd510965bffb708d',
+  );
+  expect(collection.calls.findOptions).toEqual({
+    projection: { status: 1, _id: 0 },
+    maxTimeMS: 5000,
+  });
+  expect(collection.calls.limit).toBe(1);
+  await expect(
+    client.records({
+      collection: 'generalsettings',
+      where: [{ field: 'key', value: 'GENERAL_SETTINGS' }],
+      fields: ['status'],
+      limit: 1,
+    }),
+  ).rejects.toThrow('allowlisted');
+  await client.close();
+});
+
+it('redacts sensitive descendants when a parent field is projected', async () => {
+  driver.collections.set(
+    'workflow_runs',
+    fakeCollection({
+      records: [
+        {
+          settings: {
+            store_access_token: 'shopify-private',
+            status: 'FAILED',
+            nested: [{ api_key: 'key-private', message: 'Not stocked' }],
+          },
+        },
+      ],
+    }),
+  );
+  const rows = await makeClient({ allowlist: ['workflow_runs'] }).records({
+    collection: 'workflow_runs',
+    where: [{ field: 'status', value: 'FAILED' }],
+    fields: ['settings'],
+    limit: 1,
+  });
+  expect(rows).toEqual([
+    {
+      settings: {
+        store_access_token: '[REDACTED]',
+        status: 'FAILED',
+        nested: [{ api_key: '[REDACTED]', message: 'Not stocked' }],
+      },
+    },
+  ]);
+});
+
+it('does not use aggregate auto-discovery authority for projected document reads', async () => {
+  await expect(
+    makeClient().records({
+      collection: 'workflow_runs',
+      where: [{ field: 'status', value: 'FAILED' }],
+      fields: ['status'],
+      limit: 1,
+    }),
+  ).rejects.toThrow('explicit collection allowlist');
+  expect(driver.connectCalls).toBe(0);
 });

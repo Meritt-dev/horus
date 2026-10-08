@@ -509,8 +509,18 @@ it('atomic event/cursor durability, EMODA retry grouping, changed severity, recu
   const current = (await jobs(h.db)).at(-1)!;
   current.stage = 'upload';
   current.ai = { sessionId: 'session', model: 'claude-opus-5-5', result: {} };
+  current.aiRound = 2;
+  current.initialEvidenceCollected = true;
+  current.repairAttempts = 1;
+  current.repair = { baseSha: 'a'.repeat(40), worktree: '/private/repair/worktree' };
   await saveJob(h.db, current);
-  expect((await jobs(h.db)).at(-1)?.stage).toBe('upload');
+  expect((await jobs(h.db)).at(-1)).toMatchObject({
+    stage: 'upload',
+    aiRound: 2,
+    initialEvidenceCollected: true,
+    repairAttempts: 1,
+    repair: current.repair,
+  });
   await expect(
     acceptEvents(
       h.db,
@@ -637,10 +647,15 @@ it('Claude exact argv/stdin, fresh result validation, timeout kills grandchildre
   const noHistory = { ...result, historicalMemoryIds: [] };
   writeFileSync(
     file,
-    `#!${process.execPath}\nlet s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(received)},s);console.log(${JSON.stringify(envelope(noHistory))})});`,
+    `#!${process.execPath}\nlet s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(received)},s);require('fs').writeFileSync(${JSON.stringify(join(root, 'claude-args.json'))},JSON.stringify(process.argv.slice(2)));console.log(${JSON.stringify(envelope(noHistory))})});`,
   );
   chmodSync(file, 0o700);
   await interpretIncident(file, root, event(), withoutRecall, 2000);
+  const actualArgs = JSON.parse(readFileSync(join(root, 'claude-args.json'), 'utf8'));
+  expect(actualArgs).toContain('--restricted');
+  expect(actualArgs[actualArgs.indexOf('--tools') + 1]).toBe('Read,Grep,Glob');
+  expect(actualArgs).not.toContain('bypassPermissions');
+  expect(actualArgs).toContain('--strict-mcp-config');
   const prompt = readFileSync(received, 'utf8');
   const allowed = JSON.parse(
     prompt.split('ALLOWED_CITATIONS:\n')[1]!.split('\nDATA:\n')[0]!,
@@ -927,23 +942,27 @@ it('controller death closes worker IPC and terminates its detached group', async
   const claude = join(root, 'claude.cjs');
   const worker = join(root, 'worker.mts');
   const supervisor = join(root, 'supervisor.mts');
+  const workerPidFile = join(root, 'worker.pid');
   // Run in one PID/group like the bundled CLI; the tsx CLI wrapper masks controller death.
   const runtime = resolve('../../node_modules/tsx/dist/loader.mjs');
   writeFileSync(
     claude,
     `const tool=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({worker:Number(process.argv[2]),supervisor:Number(process.argv[3]),claude:process.pid,tool:tool.pid}));setInterval(()=>{},1000);`,
   );
+  // Record the detached group before cold imports. The bootstrap guard is removed
+  // before runServiceWorker installs the production handler tested by the assertions.
   writeFileSync(
     worker,
-    `import {spawn} from 'node:child_process';import {runServiceWorker} from ${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)};spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`,
+    `import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';if(!process.connected) process.exit(1);const bootParentGone=()=>process.kill(-process.pid,'SIGKILL');process.once('disconnect',bootParentGone);writeFileSync(${JSON.stringify(workerPidFile)},String(process.pid));const {runServiceWorker}=await import(${JSON.stringify(new URL('./watch-service.ts', import.meta.url).href)});process.removeListener('disconnect',bootParentGone);spawn(process.execPath,[${JSON.stringify(claude)},String(process.pid),String(process.ppid)],{stdio:'ignore'});await runServiceWorker(${JSON.stringify(settings)},'fixture');`,
   );
   writeFileSync(
     supervisor,
     `import {runProcess} from ${JSON.stringify(new URL('./claude-investigation.ts', import.meta.url).href)};await runProcess(process.execPath,['--import',${JSON.stringify(runtime)},${JSON.stringify(worker)}],{cwd:${JSON.stringify(root)},timeoutMs:30000,onMessage:()=>{}});`,
   );
+  // Cold source imports compete with the workspace suites; termination checks below stay tight.
   const running = runProcess(process.execPath, ['--import', runtime, supervisor], {
     cwd: root,
-    timeoutMs: 15000,
+    timeoutMs: 25000,
   });
   let pids:
     | { worker: number; supervisor: number; claude: number; tool: number }
@@ -953,7 +972,7 @@ it('controller death closes worker IPC and terminates its detached group', async
       () => {
         pids = JSON.parse(readFileSync(pidFile, 'utf8'));
       },
-      { timeout: 10000 },
+      { timeout: 20000 },
     );
     process.kill(pids!.supervisor, 'SIGKILL');
     await expect(running).rejects.toThrow('Subprocess exited');
@@ -965,7 +984,6 @@ it('controller death closes worker IPC and terminates its detached group', async
       { timeout: 3000 },
     );
   } finally {
-    release();
     if (pids) {
       try {
         process.kill(-pids.worker, 'SIGKILL');
@@ -975,6 +993,20 @@ it('controller death closes worker IPC and terminates its detached group', async
       } catch {}
     }
     await running.catch(() => {});
+    // The supervisor and worker have separate groups; readiness failures still own a PID.
+    if (existsSync(workerPidFile)) {
+      const workerPid = Number(readFileSync(workerPidFile, 'utf8'));
+      if (!Number.isInteger(workerPid) || workerPid <= 1)
+        throw new Error('Invalid fixture worker PID');
+      try {
+        process.kill(-workerPid, 'SIGKILL');
+      } catch {}
+      await vi.waitFor(() => expect(() => process.kill(workerPid, 0)).toThrow(), {
+        timeout: 3000,
+      });
+    }
+    // Keep the DB locked until the child group has exited, including readiness failures.
+    release();
   }
 });
 

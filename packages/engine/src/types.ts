@@ -3,7 +3,13 @@
  * No AI/LLM yet — every field is computed from typed provider evidence.
  */
 
-import type { Evidence, Symbol, Flow, EvidenceSubject, ShopifyQuerySpec } from '@horus/core';
+import type {
+  Evidence,
+  Symbol,
+  Flow,
+  EvidenceSubject,
+  ShopifyQuerySpec,
+} from '@horus/core';
 import type { DurationDimensionOptions } from '@horus/connectors';
 import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
@@ -107,10 +113,31 @@ export interface ReportFinding {
 
 /** The full investigation report — also the persisted shape. */
 export interface InvestigationReport {
+  /** Delivery and diagnostic support are distinct from a human-confirmed incident outcome. */
+  diagnosis?: 'supported' | 'unresolved';
+  followupRounds?: number;
+  fixPr?: {
+    status: 'open' | 'closed' | 'merged' | 'skipped' | 'blocked';
+    branch?: string;
+    url?: string;
+    summary: string;
+  };
   createdAt?: string;
-  unattended?: { model: string; sessionId?: string; status: 'completed' | 'failed'; error?: string; engineOnly?: boolean };
+  unattended?: {
+    model: string;
+    sessionId?: string;
+    status: 'completed' | 'failed';
+    error?: string;
+    engineOnly?: boolean;
+  };
   startupRecall?: import('./memory-recall.js').StartupIncident[];
-  recallTrace?: Array<{ memoryId: string; check: string; stage: string; evidenceIds: string[]; error?: string }>;
+  recallTrace?: Array<{
+    memoryId: string;
+    check: string;
+    stage: string;
+    evidenceIds: string[];
+    error?: string;
+  }>;
   memoryCaptureError?: string;
   id: string;
   /**
