@@ -433,6 +433,28 @@ after a bounded wait. Never delete a live owner's lock. A dead PID is recoverabl
 malformed lock metadata or an interrupted cleanup fails closed and needs inspection
 with all Horus processes stopped. PID age alone never grants database access.
 
+## October 8 evidence-worker activation
+
+The Maison production macOS worker was upgraded to the artifact built from
+`da29ab3276540a86890a49aac6e03f72e34bc86d`, whose source tree is identical to
+merged master `6162ce103b7fa87e5ecffec28b544a1b6ed724e7`. The build ran in an
+isolated container on the development server; the installed CLI digest also
+matches the successful master GitHub CI build. The receipt uses
+`local-build-from-ci-source` because this was not a downloaded GitHub artifact.
+
+Draft fix PRs are enabled for `Mhmdhammoud/maison-safqa`, targeting `develop` as
+required by that repository's guide. The worker uses a private, ignored config
+beside the project's existing `.horus/config.json`, preserving relative encrypted
+credential discovery. Its projected Mongo reads are limited to `workflow_runs`
+and `workflow_run_outputs`. The original project config and secrets are unchanged.
+
+After activation, local status and Cloud report the new artifact and a healthy
+worker. All 156 saved memories remain synced and all six completed jobs remain
+present. Read-only Elasticsearch, MongoDB and Shopify health checks succeeded.
+The new soak starts at the corrected worker's startup in the current receipt.
+A fresh live incident-to-draft-PR journey and the public release gates remain
+unverified. Draft creation does not authorize automatic merge or deployment.
+
 ## Verification and rollout
 
 Run unit and end-to-end suites only in hosted CI, never on the local machine.

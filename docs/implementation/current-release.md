@@ -2,10 +2,10 @@
 
 Generated from current-release.json; do not edit this summary by hand.
 
-Observed: 2026-10-05T16:58:25.915360+00:00
+Observed: 2026-10-08T01:42:01.244753+00:00
 
-- CLI source: `b32a70f027ea1ed2d4ca3e221edbfc083284d73b`
-- Artifact SHA-256: `92e67a22e5313e9e9244cd7b92384a52c94df72f65a3d5cbb34dce86904de425`
+- CLI source: `da29ab3276540a86890a49aac6e03f72e34bc86d`
+- Artifact SHA-256: `432263cb80fc56635e6d9f0d7835037dd1da7b81a6f8318c7092b218476b46e4`
 - Artifact origin: `local-build-from-ci-source`
 - Cloud API: `0.0.117` / `77c13265ca22a5bff8bf86535bc5c60c568c0269`
 - Cloud verified source: `253a786ac071f7003b280cc4dacfae3842477058`
@@ -14,12 +14,11 @@ Observed: 2026-10-05T16:58:25.915360+00:00
 
 Hosted CI:
 
-- [Meritt-dev/horus run 37335357733](https://github.com/Meritt-dev/horus/actions/runs/37335357733): success on `b32a70f027ea1ed2d4ca3e221edbfc083284d73b`
-- [Meritt-dev/horus run 37340992428](https://github.com/Meritt-dev/horus/actions/runs/37340992428): success on `d8dbebb186e6cea8c7e7ce8cfc6972d118b9a296`
-- [Meritt-dev/horus-cloud run 37341046579](https://github.com/Meritt-dev/horus-cloud/actions/runs/37341046579): success on `3761d67060147fa4d1a13494636a3610ebb73214`
+- [Meritt-dev/horus run 37708405530](https://github.com/Meritt-dev/horus/actions/runs/37708405530): success on `da29ab3276540a86890a49aac6e03f72e34bc86d`
+- [Meritt-dev/horus run 37708913044](https://github.com/Meritt-dev/horus/actions/runs/37708913044): success on `6162ce103b7fa87e5ecffec28b544a1b6ed724e7`
 - [Meritt-dev/horus-cloud run 37342492878](https://github.com/Meritt-dev/horus-cloud/actions/runs/37342492878): success on `253a786ac071f7003b280cc4dacfae3842477058`
 
-Soak anchor: 2026-10-05T16:57:42.673504+00:00. Earliest elapsed cutoff: 2026-10-08T16:57:42.673504+00:00.
+Soak anchor: 2026-10-08T01:41:32.256Z. Earliest elapsed cutoff: 2026-10-11T01:41:32.256000+00:00.
 Time alone does not establish scenario coverage. Earlier manual actions retain their original revision scope.
 
 Release gates:
