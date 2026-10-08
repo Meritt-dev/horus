@@ -74,7 +74,7 @@ function clampVisibility(
  * positive allowlist — `payload` is intentionally absent so no vector/embedding (which the CLI may
  * stash in `payload`) can ever be serialized over the wire.
  */
-function toSyncInput(item: NewMemoryItem): MemoryItemSyncInput {
+export function toSyncInput(item: NewMemoryItem): MemoryItemSyncInput {
   const clientId = (item.id ?? "").trim();
   if (clientId === "") throw new Error("cloud memory sync requires a client item id");
   return {
@@ -123,9 +123,10 @@ export function toLinkSyncInput(link: NewMemoryLink): MemoryLinkSyncInput {
 export function toAuditSyncInput(row: MemoryAudit): MemoryAuditSyncInput {
   return {
     clientAuditId: row.id,
+    detail: row.detail ? Object.fromEntries(Object.entries(row.detail as Record<string, unknown>).filter(([key]) => ['detection', 'rel', 'toKind', 'toRef', 'recurrenceCount', 'investigationId'].includes(key))) : undefined,
     memoryClientId: row.memoryId,
     action: row.action,
-    actor: (row.actor as Record<string, unknown> | null) ?? {},
+    actor: Object.fromEntries(Object.entries((row.actor as Record<string, unknown> | null) ?? {}).filter(([key]) => ['kind', 'id', 'name'].includes(key))),
     ...(row.fromStatus ? { fromStatus: row.fromStatus } : {}),
     ...(row.toStatus ? { toStatus: row.toStatus } : {}),
     ...(row.note ? { note: row.note } : {}),
@@ -161,6 +162,8 @@ function fromWire(r: MemoryItemRecord, repo: string): MemoryItem {
     visibility: r.visibility,
     // This is the write-only private mirror path (dualWrite reads local): a round-tripped record is
     // the device's OWN authored item, so it carries no team-cache provenance (HOR-464).
+    syncScope: null,
+    syncGeneration: 1,
     origin: 'local',
     cloudId: null,
     authorName: null,
@@ -251,6 +254,8 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
         repo: item.repo ?? repoFallback,
         userId: item.userId ?? null,
         visibility: input.visibility ?? "private",
+        syncScope: null,
+        syncGeneration: 1,
         origin: "local",
         cloudId: null,
         authorName: null,
@@ -292,6 +297,8 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
         repo: repoFallback,
         userId: null,
         visibility: "private",
+        syncScope: null,
+        syncGeneration: 1,
         origin: "local",
         cloudId: null,
         authorName: null,

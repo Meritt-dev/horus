@@ -4,9 +4,10 @@ import type { PgDatabase, PgQueryResultHKT, PgTable, PgColumn } from 'drizzle-or
 import { getTableColumns, sql as drizzleSql } from 'drizzle-orm';
 import { PGlite } from '@electric-sql/pglite';
 import postgres from 'postgres';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { mkdirSync, existsSync, openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs';
+import { mkdirSync, existsSync, openSync, writeSync, closeSync, unlinkSync, readFileSync, readdirSync, renameSync, linkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import { assertLocalDatabaseUrl } from './guard.js';
@@ -92,14 +93,14 @@ function unavailableDbHandle(): DbHandle {
  * still accepted for call-site compatibility while the `database` config block is
  * deprecated, but it is never consulted.
  *
- * Wrapped in try/catch: if pglite can't initialize (its WASM/FS assets aren't shipped next
- * to the bundle), returns a no-op handle so the command degrades to display-only instead
- * of crashing. This is the single chokepoint CLI commands use so the driver is consistent.
+ * Only missing bundled assets permit display-only fallback. Database corruption,
+ * permissions and contention propagate; none may silently disable persistence.
  */
 export async function openDb(_url?: string, _opts?: { max?: number }): Promise<DbHandle> {
   try {
     return await createLocalDb();
-  } catch {
+  } catch (error) {
+    if (!isDbUnavailable(error)) throw error;
     return unavailableDbHandle();
   }
 }
@@ -281,43 +282,109 @@ export async function importFromPostgres(
   return counts;
 }
 
-/**
- * Acquire a best-effort exclusive cross-process lock on the embedded DB directory so concurrent
- * CLI runs serialise their pglite writes. Returns a release function. Resilient: a stale lock
- * left by a crashed run is reclaimed after STALE_MS, and after TIMEOUT_MS we proceed UNLOCKED
- * rather than hang — so the lock can only improve the concurrent case, never make it worse.
+/** Exclusive process ownership; live participants never expire, even when suspended.
+ * A bakery ticket serializes stale-file recovery. Each attempt has a unique name,
+ * so removing a dead participant can never remove a replacement participant.
+ * Ownership records are published only after writing them completely.
  */
-async function acquireDbLock(dataDir: string): Promise<() => void> {
+export async function acquireDbLock(dataDir: string, timeoutMs = 5000): Promise<() => void> {
   const lockPath = `${dataDir}.lock`;
-  const STALE_MS = 60_000;
-  const TIMEOUT_MS = 30_000;
-  const start = Date.now();
-  const noop = (): void => {};
-  for (;;) {
-    try {
-      const fd = openSync(lockPath, 'wx'); // O_CREAT | O_EXCL — throws EEXIST if already held
-      writeSync(fd, `${process.pid} ${Date.now()}`);
-      closeSync(fd);
-      return () => {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          /* already removed */
-        }
-      };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return noop; // unusable path — proceed unlocked
-      try {
-        if (Date.now() - statSync(lockPath).mtimeMs > STALE_MS) {
-          unlinkSync(lockPath); // reclaim a stale lock from a crashed run
-          continue;
-        }
-      } catch {
-        continue; // lock vanished between checks — retry immediately
-      }
-      if (Date.now() - start > TIMEOUT_MS) return noop; // give up waiting — better than hanging
-      await new Promise((r) => setTimeout(r, 100));
+  const participants = `${lockPath}.owners`;
+  mkdirSync(participants, { recursive: true, mode: 0o700 });
+  const id = `${process.pid}-${randomUUID()}`;
+  const entry = join(participants, id);
+  const temporary = `${entry}.tmp`;
+  const owner = `${process.pid} ${id}`;
+  const deadline = Date.now() + timeoutMs;
+  const remove = (path: string) => {
+    try { unlinkSync(path); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
+  };
+  const alive = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      throw e; // Permission/unknown errors fail closed.
+    }
+  };
+  const publish = (ticket: bigint) => {
+    const fd = openSync(temporary, 'wx', 0o600);
+    try { writeSync(fd, `${process.pid} ${ticket}`); } finally { closeSync(fd); }
+    renameSync(temporary, entry);
+  };
+  const scan = () => {
+    const rows: Array<{ id: string; ticket: bigint }> = [];
+    for (const name of readdirSync(participants)) {
+      if (name.endsWith('.tmp')) continue; // Never a published participant.
+      const path = join(participants, name);
+      let value: string;
+      try { value = readFileSync(path, 'utf8'); } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw e;
+      }
+      const match = /^(\d+) (\d+)$/.exec(value);
+      if (!match || Number(match[1]) <= 0) throw new Error(`HORUS_DB_BUSY: invalid ownership record ${path}`);
+      if (!alive(Number(match[1]))) { remove(path); continue; }
+      rows.push({ id: name, ticket: BigInt(match[2]!) });
+    }
+    return rows;
+  };
+  const pause = async () => {
+    if (Date.now() >= deadline) throw new Error(`HORUS_DB_BUSY: another process owns ${lockPath}; retry after it exits. Never remove a live owner's lock.`);
+    await new Promise(r => setTimeout(r, 50));
+  };
+  let acquired = false;
+  try {
+    publish(0n); // Choosing: contenders must wait until the ticket is visible.
+    const ticket = scan().reduce((max, row) => row.ticket > max ? row.ticket : max, 0n) + 1n;
+    publish(ticket);
+    while (scan().some(row => row.id !== id &&
+      (row.ticket === 0n || row.ticket < ticket || (row.ticket === ticket && row.id < id)))) await pause();
+    // Bridge to old versions' cleanup guard. Anonymous legacy markers cannot
+    // be proved dead; require stopping old commands before manually clearing them.
+    const fd = openSync(temporary, 'wx', 0o600);
+    try { writeSync(fd, owner); } finally { closeSync(fd); }
+    const reaper = `${lockPath}.reap`;
+    for (;;) {
+      try { linkSync(temporary, reaper); break; } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        let value: string;
+        try { value = readFileSync(reaper, 'utf8'); } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw e;
+        }
+        const pid = Number(value.split(' ')[0]);
+        if (!value || !Number.isInteger(pid) || pid <= 0)
+          throw new Error(`HORUS_DB_BUSY: anonymous legacy marker ${reaper}; stop all older Horus commands before clearing it`);
+        if (alive(pid)) { await pause(); continue; }
+        remove(reaper); // New reapers are serialized by the bakery; names can't be replaced here.
+      }
+    }
+    try {
+      while (existsSync(lockPath)) {
+        let value: string;
+        try { value = readFileSync(lockPath, 'utf8'); } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw e;
+        }
+        const pid = Number(value.split(' ')[0]);
+        if (!value || !Number.isInteger(pid) || pid <= 0)
+          throw new Error(`HORUS_DB_BUSY: anonymous legacy marker ${lockPath}; stop all older Horus commands before clearing it`);
+        if (alive(pid)) { await pause(); continue; }
+        remove(lockPath);
+      }
+      linkSync(temporary, lockPath); // Atomic publication: never an empty .lock.
+    } finally { remove(reaper); }
+    remove(temporary);
+    acquired = true;
+    return () => {
+      try {
+        if (existsSync(lockPath) && readFileSync(lockPath, 'utf8') === owner) remove(lockPath);
+      } finally { remove(entry); }
+    };
+  } finally {
+    remove(temporary);
+    if (!acquired) remove(entry);
   }
 }
 

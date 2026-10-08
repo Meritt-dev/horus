@@ -1,3 +1,5 @@
+import { workerRunLogs, type WorkerActivity } from "../worker-activity.js";
+import { createHash } from 'node:crypto';
 /**
  * Reusable cloud write-path library (HOR-239): persist and retrieve a Horus
  * investigation through the Horus Cloud API. The CLI never touches cloud
@@ -16,7 +18,7 @@ import type {
 import { CloudError, CloudOfflineError } from "./api.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
-import { HORUS_VERSION } from "@horus/core";
+import { HORUS_VERSION, redactSecrets } from "@horus/core";
 import { getLatestOutcomeLabel, isOutcomeResolved, isOutcomeSource } from "@horus/db";
 import type { HorusDb, OutcomeLabel } from "@horus/db";
 
@@ -57,12 +59,26 @@ function cloudEvidenceType(kind: string): string {
 }
 
 export interface CloudInvestigationRefs {
+  agentRunId?: string;
   projectId: string;
   investigationId: string;
 }
 
 function idempotencyKey(reportId: string, suffix: string): string {
   return `${reportId}:${suffix}`;
+}
+
+/** Apply existing secret redaction recursively to exported records; vectors and credentials are excluded. */
+export function redactCloudValue<T>(value: T): T {
+  const clean = (v: unknown): unknown => {
+    if (typeof v === 'string') return redactSecrets(v);
+    if (Array.isArray(v)) return v.map(clean);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v)
+      .filter(([key]) => !/^(embedding|embeddings|vector|vectors)$/i.test(key))
+      .map(([key, item]) => [key, /^(password|secret|token|authorization|api[_-]?key|access[_-]?token)$/i.test(key) ? '[REDACTED]' : clean(item)]));
+    return v;
+  };
+  return clean(value) as T;
 }
 
 function clone<T>(value: T): T {
@@ -338,12 +354,13 @@ export async function uploadInvestigationToCloud(
   client: CloudClient,
   cfg: CloudConfig,
   report: InvestigationReport,
-  opts: { db?: HorusDb } = {},
+  opts: { db?: HorusDb; runTiming?: { startedAt: string; endedAt: string }; runActivity?: WorkerActivity[] } = {},
 ): Promise<CloudInvestigationRefs> {
   if (!cfg.project) {
     throw new Error("Cloud config is missing a linked project.");
   }
 
+  report = redactCloudValue(report);
   const projectId = cfg.project.id;
   const repositoryIds = cfg.repository?.id ? [cfg.repository.id] : undefined;
 
@@ -364,7 +381,7 @@ export async function uploadInvestigationToCloud(
     content: JSON.stringify(report),
     contentFormat: REPORT_CONTENT_FORMAT,
     payload: { kind: REPORT_EVIDENCE_KIND, report: clone(report) },
-    idempotencyKey: idempotencyKey(report.id, "report"),
+    idempotencyKey: idempotencyKey(report.id, `report:${createHash('sha256').update(JSON.stringify(report)).digest('hex')}`),
   });
 
   // Stage 1 dual-write: in addition to the back-compat blob above, materialize the
@@ -372,22 +389,30 @@ export async function uploadInvestigationToCloud(
   // and best-effort — never affects the blob or the upload result.
   await writeInvestigationProvenance(client, projectId, investigation.id, report);
 
-  await client.createAgentRun(projectId, investigation.id, {
-    repositoryId: cfg.repository?.id,
-    status: "completed",
-    agent: "Horus CLI",
+  const runMetadata = {
+    agent: report.unattended?.engineOnly ? "Horus background worker · engine only" : report.unattended ? "Horus background worker" : "Horus CLI",
+    model: report.unattended?.status === 'completed' ? report.unattended.model : undefined,
+    ...opts.runTiming,
+    ...(opts.runActivity ? workerRunLogs(opts.runActivity, report.aiJudgment) : {}),
     cliVersion: HORUS_VERSION,
     summary: report.summary,
+  };
+  const run = await client.createAgentRun(projectId, investigation.id, {
+    ...runMetadata, repositoryId: cfg.repository?.id, status: "completed",
     idempotencyKey: idempotencyKey(report.id, "run"),
   });
+  // Memory sync may have created this stable run before inference completed.
+  // Enrich that same record; a later metadata-only backfill must not erase timing/model.
+  if (report.unattended || opts.runTiming || opts.runActivity)
+    await client.updateAgentRun(projectId, investigation.id, run.id, runMetadata);
 
   await client.updateInvestigation(projectId, investigation.id, { status: "completed" });
 
-  return { projectId, investigationId: investigation.id };
+  return { projectId, investigationId: investigation.id, agentRunId: run.id };
 }
 
 function findReportEvidence(evidence: EvidenceRecord[]): InvestigationReport | null {
-  const record = evidence.find((e) => {
+  const record = [...evidence].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).find((e) => {
     const payload = e.payload as { kind?: unknown } | undefined;
     return e.source === REPORT_EVIDENCE_SOURCE && payload?.kind === REPORT_EVIDENCE_KIND;
   });

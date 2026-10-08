@@ -63,3 +63,29 @@ it('direct Prometheus uses the existing analyzer with bounded query windows and 
   fetch.mockImplementation(() => Promise.resolve(new Response('', { status: 403 })));
   expect((await p.health()).ok).toBe(false);
 });
+
+it('Prometheus matches panels by hint, then falls back to relevant series labels', async () => {
+  const fetch = vi.fn(async (url: string) => new Response(JSON.stringify({ status: 'success', data: {
+    resultType: 'matrix', result: ['checkout', 'billing'].map(service => ({
+      metric: { service }, values: [[100, '2'], [160, '4']],
+    })),
+  } })));
+  vi.stubGlobal('fetch', fetch);
+  const p = new PrometheusMetricsProvider({ url: 'https://metrics.example', queries: [
+    { title: 'Checkout duration', expr: 'checkout_duration_seconds' },
+    { title: 'Billing duration', expr: 'billing_duration_seconds' },
+  ] });
+  const findings = await p.analyze({ hint: 'checkout slow', from: 100, to: 160 });
+  expect(findings.length).toBeGreaterThan(0);
+  expect(findings.every(f => f.panelTitle === 'Checkout duration' && f.matchSource === 'panel-title')).toBe(true);
+  expect(fetch.mock.calls.every(([url]) => new URL(url).searchParams.get('query') === 'checkout_duration_seconds')).toBe(true);
+  fetch.mockClear();
+  const generic = new PrometheusMetricsProvider({ url: 'https://metrics.example', queries: [
+    { title: 'Duration', expr: 'duration_seconds' },
+  ] });
+  const fallback = await generic.analyze({ hint: 'checkout slow', from: 100, to: 160 });
+  expect(fallback.length).toBeGreaterThan(0);
+  expect(fallback.every(f => f.labels.service === 'checkout' && f.matchSource === 'series-labels')).toBe(true);
+  expect(await generic.analyze({ hint: 'inventory timeout', from: 100, to: 160 })).toEqual([]);
+  expect((await generic.analyze({ from: 100, to: 160 })).some(f => f.labels.service === 'billing')).toBe(true);
+});

@@ -65,6 +65,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "horus-home-"));
   repo = mkdtempSync(join(tmpdir(), "horus-repo-"));
   process.env.HORUS_HOME = home;
+  vi.stubEnv('HORUS_DB_DIR', home);
   process.env.HORUS_CLOUD_API_URL = API;
   delete process.env.HORUS_TOKEN;
   vi.stubGlobal("fetch", fakeFetch());
@@ -78,6 +79,7 @@ afterEach(() => {
   delete process.env.HORUS_HOME;
   delete process.env.HORUS_CLOUD_API_URL;
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 

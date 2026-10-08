@@ -7,11 +7,54 @@
  * This is a CLI/notify-layer concern ONLY. The deterministic investigation engine never sees it;
  * it consumes a finished report. Dispatch is BEST-EFFORT and never throws: a failed send is
  * returned as a typed failure so the watch loop can log it and carry on (the watcher's whole
- * contract is "never crash"). No daemon — `watch` stays a poller; inbound push lives cloud-side.
+ * contract is "never crash"). The durable watcher checkpoints these results; inbound push lives cloud-side.
  */
 import { createHmac } from 'node:crypto';
-import type { NotifyConfig } from '@horus/core';
+import { redactSecrets, type NotifyConfig } from '@horus/core';
+import type { validateClaudeResult } from './claude-investigation.js';
 import type { InvestigationReport } from '@horus/engine';
+
+/** Bounded evidence and historical context for the unattended result notification. */
+export function notificationCause(
+  report: InvestigationReport,
+  ai?: Pick<
+    ReturnType<typeof validateClaudeResult>['result'],
+    'likelyCause' | 'evidenceIds' | 'uncertainty' | 'nextChecks'
+  >,
+  aiFailed = false,
+): string {
+  const short = (value: string) =>
+    redactSecrets(value).replace(/\s+/g, ' ').slice(0, 240);
+  const evidence = report.evidence
+    .filter((e) => !ai || ai.evidenceIds.includes(e.id))
+    .slice(0, 3)
+    .map((e) => `${short(e.id)}: ${short(e.title)}`);
+  const history = (report.startupRecall ?? [])
+    .slice(0, 3)
+    .map(
+      (m) =>
+        `${short(m.memoryId)} (${m.outcome?.certainty ?? 'inferred'}, ${m.validation}): ${short(m.claim)}`,
+    );
+  return [
+    `${aiFailed ? 'Engine-only (AI failed). ' : ''}${short(ai ? (ai.likelyCause ?? 'Cause uncertain') : (report.suspectedCauses[0]?.title ?? 'Cause uncertain'))}.`,
+    short(ai?.uncertainty ?? 'Current cause remains unconfirmed.'),
+    `Current evidence: ${evidence.join('; ') || 'none cited'}.`,
+    ...(history.length
+      ? [`Historical context (not current proof): ${history.join('; ')}.`]
+      : []),
+    `Diagnosis: ${report.diagnosis ?? 'unresolved'}.`,
+    ...(report.fixPr
+      ? [
+          report.fixPr.url
+            ? `Fix PR (${report.fixPr.status}): ${report.fixPr.url}`
+            : `Fix PR: ${short(report.fixPr.summary)}`,
+        ]
+      : []),
+    `Next: ${short(ai?.nextChecks[0] ?? 'Review current evidence and missing signals')}`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
 
 /** A finished headline ready to dispatch (the shape `headlineFor` already produces + the id). */
 export interface NotifyHeadline {
@@ -19,6 +62,8 @@ export interface NotifyHeadline {
   hint: string;
   cause: string;
   confidence: number;
+  notificationKey?: string;
+  reportUrl?: string;
 }
 
 /** Outcome of one sink dispatch — never thrown, always returned, so the loop logs and continues. */
@@ -32,11 +77,13 @@ export interface NotifyResult {
 export function buildWebhookPayload(h: NotifyHeadline): Record<string, unknown> {
   const pct = `${Math.round(h.confidence * 100)}%`;
   return {
-    text: `🔭 Horus: ${h.hint} → ${h.cause} (${pct})`,
+    text: `🔭 Horus: ${h.hint} → ${h.cause} (${pct})${h.reportUrl ? `\n${h.reportUrl}` : ''}`,
     investigationId: h.investigationId,
     hint: h.hint,
     cause: h.cause,
     confidence: h.confidence,
+    notificationKey: h.notificationKey,
+    reportUrl: h.reportUrl,
   };
 }
 
@@ -46,7 +93,10 @@ export function signPayload(body: string, secret: string): string {
 }
 
 /** Should this report be dispatched? True when confidence clears the sink's threshold. */
-export function shouldNotify(confidence: number, notify: NotifyConfig | undefined): boolean {
+export function shouldNotify(
+  confidence: number,
+  notify: NotifyConfig | undefined,
+): boolean {
   if (notify === undefined) return false;
   if (notify.webhook === undefined && notify.cloud !== true) return false;
   return confidence >= notify.minConfidence;
@@ -60,11 +110,17 @@ async function postWebhook(
 ): Promise<NotifyResult> {
   const body = JSON.stringify(buildWebhookPayload(h));
   const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (h.notificationKey) headers['idempotency-key'] = h.notificationKey;
   if (secret !== undefined) headers['x-horus-signature'] = signPayload(body, secret);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: controller.signal,
+    });
     if (!res.ok) return { target: 'webhook', ok: false, detail: `HTTP ${res.status}` };
     return { target: 'webhook', ok: true, detail: `HTTP ${res.status}` };
   } catch (err) {
@@ -81,7 +137,12 @@ async function postWebhook(
  * this module stays free of cloud-client wiring and is unit-testable in isolation.
  */
 export async function dispatchNotify(
-  report: Pick<InvestigationReport, 'id' | 'confidence'> & { hint: string; cause: string },
+  report: Pick<InvestigationReport, 'id' | 'confidence'> & {
+    hint: string;
+    cause: string;
+    notificationKey?: string;
+    reportUrl?: string;
+  },
   notify: NotifyConfig | undefined,
   opts: { timeoutMs?: number; cloudPush?: () => Promise<void> } = {},
 ): Promise<NotifyResult[]> {
@@ -91,12 +152,16 @@ export async function dispatchNotify(
     hint: report.hint,
     cause: report.cause,
     confidence: report.confidence,
+    notificationKey: report.notificationKey,
+    reportUrl: report.reportUrl,
   };
   if (!shouldNotify(report.confidence, notify)) return [];
   const timeoutMs = opts.timeoutMs ?? 5000;
   const results: NotifyResult[] = [];
   if (notify.webhook !== undefined) {
-    results.push(await postWebhook(notify.webhook.url, notify.webhook.secret, h, timeoutMs));
+    results.push(
+      await postWebhook(notify.webhook.url, notify.webhook.secret, h, timeoutMs),
+    );
   }
   if (notify.cloud === true && opts.cloudPush !== undefined) {
     try {

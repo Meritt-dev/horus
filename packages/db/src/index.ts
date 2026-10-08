@@ -7,6 +7,10 @@ export {
   findings,
   hypotheses,
   incidentMemory,
+  memorySyncState,
+  memorySyncPullPage,
+  memorySyncReplica,
+  memorySyncOutbox,
   memoryItem,
   memoryLink,
   memoryAudit,
@@ -40,6 +44,7 @@ export type {
 } from './schema.js';
 export {
   createLocalDb,
+  acquireDbLock,
   openDb,
   importFromPostgres,
   localDbPath,
@@ -54,7 +59,7 @@ export {
   cloudDatabaseUrlReason,
   CloudDatabaseUrlError,
 } from './guard.js';
-export { eq, desc, sql, and, or, inArray, notInArray } from 'drizzle-orm';
+export { asc, eq, desc, sql, and, or, isNull, inArray, notInArray } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
 export {
   recordOutcomeLabel,
@@ -81,3 +86,4 @@ export {
   type InvestigationScope,
 } from './investigations.js';
 export { checkEmbeddedDb, EXPECTED_TABLES, type DbHealth } from './health.js';
+export { watchState, watchJob, watchEvent } from './schema.js';

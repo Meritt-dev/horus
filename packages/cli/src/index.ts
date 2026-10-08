@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
 import { maybeNotifyUpdate } from './lib/update-notifier.js';
 import { maybePromptResolutionFeedback } from './lib/feedback-nudge.js';
@@ -21,6 +21,7 @@ import {
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runPacket } from './commands/packet.js';
+import { runService } from './commands/service.js';
 import { runWatch } from './commands/watch.js';
 import type { WatchSource } from './commands/watch.js';
 import { runChanges } from './commands/changes.js';
@@ -118,7 +119,7 @@ export function buildProgram(): Command {
   // release — cached (~24h), non-blocking, and suppressed for non-TTY / CI / --json /
   // HORUS_NO_UPDATE_CHECK. Skip `update` itself (it runs its own check).
   program.hook('preAction', (_thisCommand, actionCommand) => {
-    if (actionCommand.name() !== 'update') maybeNotifyUpdate();
+    if (!['update','service','watch'].includes(actionCommand.name())) maybeNotifyUpdate();
   });
 
   program
@@ -685,8 +686,7 @@ Examples:
     )
     .option(
       '--kind <kind>',
-      'code-fact|contract|decision|pitfall|incident-pattern',
-      'code-fact',
+      'code-fact|contract|decision|pitfall|incident-pattern (default code-fact, or incident-pattern with --outcome-file)',
     )
     .option(
       '--evidence <kind:ref>',
@@ -695,6 +695,7 @@ Examples:
       [],
     )
     .option('--confidence <0..1>', 'confidence in the claim (default 0.75)')
+    .option('--outcome-file <path>', 'inferred incident disposition JSON with investigation and evidence provenance (private)')
     .option('--json', 'output JSON')
     .action(
       async (
@@ -706,6 +707,7 @@ Examples:
           kind?: string;
           evidence?: string[];
           confidence?: string;
+          outcomeFile?: string;
           json?: boolean;
         },
       ) => {
@@ -723,12 +725,13 @@ Examples:
       '--repo <name>',
       'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
     )
+    .option('--outcome-file <path>', 'explicit incident disposition JSON with attester and evidence provenance')
     .option('--note <note>', 'note recorded in the audit trail')
     .option('--json', 'output JSON')
     .action(
       async (
         investigationId: string,
-        opts: { config?: string; repo?: string; note?: string; json?: boolean },
+        opts: { config?: string; repo?: string; note?: string; json?: boolean; outcomeFile?: string },
       ) => {
         process.exitCode = await runMemoryConfirm(investigationId, opts);
       },
@@ -900,16 +903,19 @@ Examples:
   memory
     .command('sync')
     .description(
-      'Push local memory items to the linked cloud project (idempotent, best-effort)',
+      'Inspect and recover automatic durable memory push/pull',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option(
       '--repo <name>',
       'repository/project WITHIN the loaded config (default: inferred from cwd) — cross-repo targeting is --config or cd',
     )
-    .option('--limit <n>', 'max local items to scan', (v) => Number(v))
+    .option('--resolve <memoryId>', 'resolve a visible synchronization conflict')
+    .addOption(new Option('--choice <side>', 'explicit correction to retain').choices(['local', 'cloud']))
+    .option('--restore <memoryId>', 'deliberately restore a synchronized forgotten memory')
+    .option('--limit <n>', 'max pending local items per pass', (v) => Number(v))
     .option('--dry-run', 'preview what would be synced without uploading')
-    .option('--yes', 'skip the confirmation prompt')
+    .option('--yes', 'accepted for compatibility; synchronization is automatic')
     .option('--json', 'output JSON')
     .action(
       async (opts: {
@@ -1259,47 +1265,22 @@ Examples:
 `,
     );
 
-  program
-    .command('watch')
-    .description(
-      'Proactively monitor a source (Sentry/Elasticsearch) and auto-investigate each new incident',
-    )
-    .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--env <name>', 'environment name (e.g. production)')
-    .option(
-      '--source <source>',
-      'sentry | elasticsearch | auto (default: auto — whichever is configured)',
-      'auto',
-    )
-    .option('--interval <seconds>', 'poll interval in seconds (default 60)', '60')
-    .option('--once', 'poll a single cycle then exit (for cron/testing)')
-    .action(
-      async (opts: {
-        config?: string;
-        env?: string;
-        source?: string;
-        interval?: string;
-        once?: boolean;
-      }) => {
-        process.exitCode = await runWatch({
-          config: opts.config,
-          env: opts.env,
-          source: opts.source as WatchSource | undefined,
-          interval: opts.interval,
-          once: opts.once,
-        });
-      },
-    )
-    .addHelpText(
-      'after',
-      `
-Examples:
-  horus watch                                  # auto source, poll every 60s until Ctrl-C
-  horus watch --source sentry --once           # one sweep over current Sentry issues
-  horus watch --source elasticsearch --interval 30
-  horus watch --env production --once
-`,
-    );
+  program.command('watch').description('Run the durable configured watcher in the foreground')
+    .option('--settings <path>', 'service settings JSON (default ~/.horus/service/settings.json)')
+    .option('--once', 'one detection/execution cycle')
+    .action(async opts => { process.exitCode = await runWatch(opts); });
+
+  program.command('service <action>').description('macOS watcher: check, install, start, run, status, pause, resume, stop, remove, retry')
+    .option('--settings <path>', 'absolute service settings JSON')
+    .option('--profile <name>', 'launchd profile label', 'default')
+    .option('--job <id>', 'job identity for retry/worker')
+    .option('--session <id>', 'internal Claude activity session identity')
+    .option('--path <dir>', 'project root to pause/resume (default: cwd)')
+    .option('--env <name>', 'environment to pause/resume')
+    .option('--once', 'one foreground cycle')
+    .option('--delivery-checked', 'confirm destination was inspected before retrying an uncertain delivery')
+    .option('--skip-checks', 'isolated named test profile only')
+    .action(async (action, opts) => { process.exitCode = await runService(action, opts); });
 
   program
     .command('changes <base> [compare]')
@@ -2365,9 +2346,9 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   }
   await program.parseAsync(parseArgv);
   // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
-  await flushTelemetry();
+  if (!(firstOperand === 'service' && program.args[1] === 'activity')) await flushTelemetry();
   // Resolution-time feedback nudge (HOR-431): at the END of a run, if a prior investigation is
   // still unlabeled and old enough, ask once. Deferred (never at investigate time), rate-limited,
   // dismissible, suppressed on non-TTY/CI/--json/--no-input. Never blocks or throws.
-  await maybePromptResolutionFeedback();
+  if (!process.argv.some(a => a === 'service' || a === 'watch')) await maybePromptResolutionFeedback();
 }

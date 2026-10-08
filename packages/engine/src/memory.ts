@@ -25,6 +25,7 @@ import {
   or,
   desc,
   notInArray,
+  isNull,
 } from '@horus/db';
 import type {
   MemoryStore,
@@ -485,9 +486,10 @@ function statusAction(status: MemoryStatus): string {
  * HONESTY INVARIANT (spec §8): this is storage only. Nothing here is read by the confidence/verdict
  * scoring path.
  */
-export function createLocalMemoryStore(db: HorusDb): LocalMemoryStore {
+export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string } = {}): LocalMemoryStore {
+  const scopeFilter = opts.syncScope === undefined ? undefined : or(isNull(memoryItem.syncScope), eq(memoryItem.syncScope, opts.syncScope));
   const getById = async (id: string): Promise<MemoryItem | null> => {
-    const rows = await db.select().from(memoryItem).where(eq(memoryItem.id, id)).limit(1);
+    const rows = await db.select().from(memoryItem).where(and(eq(memoryItem.id, id), scopeFilter)).limit(1);
     return rows[0] ?? null;
   };
 
@@ -652,7 +654,7 @@ export function createLocalMemoryStore(db: HorusDb): LocalMemoryStore {
         // Deterministic: newest first, id as the stable tie-break.
         .orderBy(desc(memoryItem.createdAt), memoryItem.id);
 
-      rows = rows.filter((r) => r.repo === repo); // defense in depth (never leak another repo)
+      rows = rows.filter((r) => r.repo === repo && (opts.syncScope === undefined || r.syncScope === null || r.syncScope === opts.syncScope)); // defense in depth (never leak another repo)
       if (q.limit !== undefined && q.limit > 0) rows = rows.slice(0, Math.floor(q.limit));
       return rows;
     },
@@ -942,6 +944,7 @@ export function createLocalMemoryStore(db: HorusDb): LocalMemoryStore {
             // must move the cache row to the current repo — otherwise "pull here" silently
             // leaves it invisible here, stuck in whichever repo first pulled it.
             repo: values.repo,
+            syncScope: values.syncScope ?? null,
             pulledAt: now,
           },
         });

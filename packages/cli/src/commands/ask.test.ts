@@ -16,6 +16,8 @@ const cloud = vi.hoisted(() => ({
   fetchInvestigationReportFromCloud: vi.fn(),
   authedClient: vi.fn(() => ({ client: {} })),
   reportCloudError: vi.fn(() => 1),
+  memorySyncContext: vi.fn(),
+  restoreMemoryReport: vi.fn(),
 }));
 const engine = vi.hoisted(() => ({
   answerQuestion: vi.fn(() => ({ answer: 'because X' })),
@@ -29,13 +31,20 @@ const engine = vi.hoisted(() => ({
 // HOR-331: fresh source lookup for code-locating questions.
 const source = vi.hoisted(() => ({
   loadConfig: vi.fn(),
+  resolveEnvironment: vi.fn(),
   codeForRepo: vi.fn(),
   health: vi.fn(),
   searchSymbols: vi.fn(),
   context: vi.fn(),
 }));
 
-vi.mock('@horus/core', () => ({ loadConfig: source.loadConfig }));
+vi.mock('@horus/core', () => ({
+  loadConfig: source.loadConfig, resolveEnvironment: source.resolveEnvironment,
+}));
+vi.mock('../lib/cloud/memory-sync.js', () => ({
+  memorySyncContext: cloud.memorySyncContext,
+  restoreMemoryReport: cloud.restoreMemoryReport,
+}));
 vi.mock('@horus/connectors', () => ({ codeForRepo: source.codeForRepo }));
 vi.mock('@horus/db', () => db);
 vi.mock('@horus/engine', () => engine);
@@ -85,6 +94,7 @@ beforeEach(() => {
   engine.migrateReport.mockImplementation((r: unknown) => r);
   // Default source wiring: reachable host, no matches (so plain questions fall through).
   source.loadConfig.mockResolvedValue({});
+  source.resolveEnvironment.mockReturnValue({ path: '/repo', project: 'p' });
   source.codeForRepo.mockReturnValue({
     health: source.health,
     searchSymbols: source.searchSymbols,
@@ -100,6 +110,31 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('runAsk — cloud-linked repo (HOR-319 Bug 1)', () => {
+  it('refreshes imported report copies and keeps their cached body usable offline', async () => {
+    db.getInvestigation.mockResolvedValue({
+      incidentInput: { _horusCloudScope: 'scope' }, report: REPORT,
+    });
+    cloud.memorySyncContext.mockReturnValue({ scope: 'scope' });
+    const fresh = { ...REPORT, summary: 'completed Opus interpretation' };
+    cloud.restoreMemoryReport.mockResolvedValue(fresh);
+    expect(await runAsk('local-id', 'why?', {})).toBe(0);
+    expect(engine.answerQuestion).toHaveBeenLastCalledWith(fresh, 'why?');
+    cloud.restoreMemoryReport.mockRejectedValueOnce(new Error('offline'));
+    expect(await runAsk('local-id', 'why?', {})).toBe(0);
+    expect(engine.answerQuestion).toHaveBeenLastCalledWith(REPORT, 'why?');
+  });
+
+  it('does not expose a cached imported report when the selected Cloud scope rejects it', async () => {
+    db.getInvestigation.mockResolvedValue({
+      incidentInput: { _horusCloudScope: 'old-account' }, report: REPORT,
+    });
+    cloud.memorySyncContext.mockReturnValue({ scope: 'other-account' });
+    cloud.restoreMemoryReport.mockResolvedValue(null);
+    cloud.isCloudActive.mockReturnValue(false);
+    expect(await runAsk('local-id', 'why?', {})).toBe(1);
+    expect(engine.answerQuestion).not.toHaveBeenCalled();
+  });
+
   it('answers from the LOCAL store when given the local id, without calling cloud', async () => {
     cloud.isCloudActive.mockReturnValue(true);
     db.getInvestigation.mockResolvedValue({ report: REPORT });

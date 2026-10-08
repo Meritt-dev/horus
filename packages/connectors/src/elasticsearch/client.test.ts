@@ -53,6 +53,52 @@ describe('ElasticsearchClient auth + request', () => {
 });
 
 describe('ElasticsearchClient error contract + retries', () => {
+  it.each([
+    { timed_out: true },
+    { terminated_early: true },
+    {
+      _shards: {
+        total: 2,
+        successful: 1,
+        failed: 1,
+        failures: [{ reason: 'secret upstream detail' }],
+      },
+    },
+  ])('rejects HTTP 200 partial results for search and counts: %j', async (metadata) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...metadata,
+              hits: { hits: [] },
+              count: 1,
+            }),
+          ),
+      ),
+    );
+    const client = new ElasticsearchClient({ baseUrl: 'http://es.local:9200' });
+    await expect(client.search('idx', {})).rejects.toThrow('incomplete results');
+    await expect(client.count('idx', {})).rejects.toThrow('incomplete results');
+    await expect(client.search('idx', {})).rejects.not.toThrow('secret upstream detail');
+  });
+
+  it('accepts a complete search with shards skipped by query prefiltering', async () => {
+    const result = {
+      timed_out: false,
+      _shards: { total: 2, successful: 2, skipped: 1, failed: 0 },
+      hits: { hits: [] },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(result))),
+    );
+    await expect(
+      new ElasticsearchClient({ baseUrl: 'http://es.local' }).search('idx', {}),
+    ).resolves.toEqual(result);
+  });
+
   it('throws the exact message after a persistent 500 exhausts retries', async () => {
     const fetchMock = vi.fn(async (): Promise<Response> => new Response('boom', { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);

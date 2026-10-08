@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildWebhookPayload,
+  notificationCause,
   signPayload,
   shouldNotify,
   dispatchNotify,
@@ -95,5 +96,28 @@ describe('dispatchNotify', () => {
     const res = await dispatchNotify(report, n, { cloudPush });
     expect(cloudPush).toHaveBeenCalledOnce();
     expect(res).toEqual([{ target: 'cloud', ok: true, detail: 'pushed' }]);
+  });
+});
+
+describe('unattended result context', () => {
+  it('keeps uncertain AI uncertain and includes bounded, redacted evidence and history', () => {
+    const report = {
+      suspectedCauses: [{ title: 'Engine hypothesis' }],
+      evidence: [{ id: 'e1', title: 'Current timeout token=private-value' },
+        { id: 'e2', title: 'Uncited evidence' }],
+      startupRecall: [{ memoryId: 'm1', claim: 'Prior timeout', outcome: { certainty: 'confirmed' },
+        validation: 'contradicted' }],
+    } as unknown as import('@horus/engine').InvestigationReport;
+    const ai = { reportId: 'r1', summary: 'Timed out', likelyCause: null, confidence: 0.1,
+      evidenceIds: ['e1'], historicalMemoryIds: ['m1'], nextChecks: ['Check upstream'],
+      uncertainty: 'Evidence is insufficient' };
+    const text = notificationCause(report, ai);
+    for (const value of ['Cause uncertain', 'Evidence is insufficient', 'e1: Current timeout',
+      'Historical context (not current proof)', 'm1 (confirmed, contradicted)', 'Next: Check upstream'])
+      expect(text).toContain(value);
+    for (const value of ['private-value', 'Uncited evidence', 'Engine hypothesis']) expect(text).not.toContain(value);
+    expect(notificationCause({ ...report, evidence: [], startupRecall: [] }, undefined, true))
+      .toContain('Engine-only (AI failed). Engine hypothesis. Current cause remains unconfirmed. Current evidence: none cited.');
+    expect(notificationCause({ ...report, evidence: [{ ...report.evidence[0]!, title: 'x'.repeat(5000) }] }).length).toBeLessThan(1000);
   });
 });

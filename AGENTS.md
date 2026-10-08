@@ -24,4 +24,6 @@ without the user's authorization; an explicit ticket waiver is sufficient.
 | Attributed explanation                         | HOR-AI: `packages/ai`; consumes evidence, never creates it             |
 
 Reviewers must read [CODING_STANDARDS.md](CODING_STANDARDS.md).
+Current service setup: [operating guide](docs/incident-memory-service.md).
+Release evidence: [current receipt](docs/implementation/current-release.json).
 Developer checks and bounded CI monitoring: [workflow](docs/development-workflow.md).

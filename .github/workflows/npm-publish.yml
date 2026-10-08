@@ -6,22 +6,25 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish with --dry-run instead of publishing"
+        description: 'Run npm publish with --dry-run instead of publishing'
         required: false
-        default: "false"
+        default: 'false'
         type: choice
         options:
-          - "true"
-          - "false"
+          - 'true'
+          - 'false'
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -39,11 +42,29 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Lint
+        run: pnpm lint
+
+      - name: Required recall release evidence
+        env:
+          HORUS_RECALL_REVIEW_BUNDLE: ${{ secrets.HORUS_RECALL_REVIEW_BUNDLE }}
+          HORUS_REQUIRE_RECALL_REVIEW: '1'
+        run: node scripts/run-recall-review.mjs
+
+      - name: Current paired Cloud contract
+        run: python3 scripts/check-paired-contract.py
+
+      - name: Public service acceptance gates
+        run: python3 scripts/release-receipt.py release docs/implementation/current-release.json
+
       - name: Test
         run: pnpm test
 
       - name: Build CLI package
         run: pnpm --filter ./apps/horus build
+
+      - name: Verify accepted CLI artifact
+        run: python3 scripts/release-receipt.py artifact docs/implementation/current-release.json
 
       - name: Pack dry-run
         working-directory: apps/horus

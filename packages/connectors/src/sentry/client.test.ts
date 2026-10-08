@@ -319,3 +319,12 @@ describe('parseNamedResources', () => {
     expect(parseNamedResources({ slug: 'x' })).toEqual([]);
   });
 });
+
+it('pages watcher issues by native cursor and reconciles resolved issue identity', async () => {
+  const fetch = vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(new Response(JSON.stringify([{id:'1',title:'failed',count:'1',status:'unresolved',lastSeen:'2026-09-27T01:00:00Z'}]),{status:200,headers:{link:'<https://sentry.io/?cursor=page2>; rel="next"; results="true"; cursor="page2"'}}))
+    .mockResolvedValueOnce(new Response(JSON.stringify({id:'1',title:'failed',count:'1',status:'resolved',lastSeen:'2026-09-27T01:00:00Z',lastStatusChange:'2026-09-27T02:00:00Z'}),{status:200}));
+  const c=new SentryClient({authToken:'t',org:'org',project:'app'});
+  const page=await c.watchIssues('2026-09-27T00:00:00Z','2026-09-27T03:00:00Z','production','previous');
+  expect(page.nextCursor).toBe('page2'); expect(String(fetch.mock.calls[0]?.[0])).toContain('cursor=previous'); expect(decodeURIComponent(String(fetch.mock.calls[0]?.[0]))).toContain('environment:"production"');
+  expect(await c.issue('1')).toMatchObject({id:'1',status:'resolved',lastStatusChange:'2026-09-27T02:00:00Z'});
+});

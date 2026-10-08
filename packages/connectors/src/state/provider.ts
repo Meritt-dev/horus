@@ -8,6 +8,7 @@
 
 import type { Evidence, HealthStatus, ProviderKind } from '@horus/core';
 import type { Provider } from '../contract.js';
+import type { StateRecordQuery } from './record-query.js';
 import {
   type StateAnalysis,
   type CollectionState,
@@ -23,10 +24,15 @@ import {
 
 export interface StateProvider extends Provider {
   readonly kind: ProviderKind;
-  analyzeState(opts?: { staleHours?: number; legacyHours?: number }): Promise<StateAnalysis>;
+  analyzeState(opts?: {
+    staleHours?: number;
+    legacyHours?: number;
+  }): Promise<StateAnalysis>;
   toEvidence(analysis: StateAnalysis): Evidence[];
   /** List containers (collections/tables) in the configured database. */
   listCollections?(): Promise<string[]>;
+  /** Bounded, projected, equality-only record reads where supported. */
+  queryRecords?(query: StateRecordQuery): Promise<Evidence[]>;
   health(): Promise<HealthStatus>;
   /** Close the underlying connection so the process can exit. */
   close(): Promise<void>;
@@ -60,7 +66,12 @@ export interface StateClient {
  */
 export async function analyzeStateWith(
   client: StateClient,
-  opts: { database: string; collections: string[]; staleHours: number; legacyHours?: number },
+  opts: {
+    database: string;
+    collections: string[];
+    staleHours: number;
+    legacyHours?: number;
+  },
   nowMs: number,
 ): Promise<StateAnalysis> {
   const staleHours = opts.staleHours;
@@ -116,5 +127,11 @@ export async function analyzeStateWith(
   if (targets.length > 0 && collections.length === 0 && firstError !== undefined) {
     throw firstError;
   }
-  return { database: opts.database, staleHours, legacyHours, collections, autoDiscovered };
+  return {
+    database: opts.database,
+    staleHours,
+    legacyHours,
+    collections,
+    autoDiscovered,
+  };
 }

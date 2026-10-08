@@ -1,3 +1,4 @@
+import { syncLinkedMemory } from '../lib/cloud/memory-sync.js';
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { openDb, recordOutcomeLabel, isOutcomeResolved, getLastInvestigationId } from '@horus/db';
@@ -44,6 +45,11 @@ export async function persistOutcomeLabel(
         note,
         payload: manualEstimateMinutes != null ? { manualEstimateMinutes } : null,
       });
+      if (project) {
+        const env = resolveEnvironment(config, { project });
+        const state = await syncLinkedMemory(db, env.path, project);
+        console.error(`Memory: ${state.state}; ${state.pending} pending${state.error ? ` — ${state.error}` : ''}`);
+      }
     } finally {
       await sql.end();
     }
