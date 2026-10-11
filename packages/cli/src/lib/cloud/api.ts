@@ -4,6 +4,8 @@
  */
 
 export const DEFAULT_API_BASE_URL = 'https://api.horus.sh';
+// Snapshot uploads and responses can each contain several megabytes.
+const KNOWLEDGE_TRANSFER_TIMEOUT_MS = 120_000;
 
 export class CloudError extends Error {
   constructor(
@@ -577,7 +579,12 @@ export class CloudClient {
     );
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs = 15_000,
+  ): Promise<T> {
     const headers: Record<string, string> = {};
     if (this.token) headers.authorization = `Bearer ${this.token}`;
     if (body !== undefined) headers['content-type'] = 'application/json';
@@ -587,8 +594,8 @@ export class CloudClient {
       res = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
         method,
         signal: this.signal
-          ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)])
-          : AbortSignal.timeout(15_000),
+          ? AbortSignal.any([this.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
@@ -859,6 +866,7 @@ export class CloudClient {
       'POST',
       `/v1/projects/${projectId}/knowledge-snapshots`,
       body,
+      KNOWLEDGE_TRANSFER_TIMEOUT_MS,
     );
   }
 
@@ -867,6 +875,8 @@ export class CloudClient {
     return this.request<KnowledgeSnapshotRecord>(
       'GET',
       `/v1/projects/${projectId}/knowledge-snapshots/latest`,
+      undefined,
+      KNOWLEDGE_TRANSFER_TIMEOUT_MS,
     );
   }
 
