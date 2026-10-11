@@ -1,6 +1,51 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { encodeNodePath, SourceHttpClient } from './client.js';
 
+describe('codeRelationships', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('bounds the canonical SQL pull and keeps recorded direction and unknown confidence', async () => {
+    const fetch = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            rows: [
+              ['method:a.ts:Controller.create', 'function:b.ts:save', 'calls', 0.8],
+              ['function:b.ts:save', 'function:c.ts:run', 'calls', null],
+              ['extra', 'overflow', 'calls', 1],
+            ],
+            columns: [],
+            rowCount: 3,
+            durationMs: 0,
+          }),
+        ),
+    );
+    vi.stubGlobal('fetch', fetch);
+    const result = await new SourceHttpClient({
+      baseUrl: 'http://127.0.0.1:8420',
+    }).codeRelationships(2);
+    expect(result).toEqual({
+      edges: [
+        {
+          source: 'method:a.ts:Controller.create',
+          target: 'function:b.ts:save',
+          rel: 'calls',
+          confidence: 0.8,
+        },
+        {
+          source: 'function:b.ts:save',
+          target: 'function:c.ts:run',
+          rel: 'calls',
+          confidence: null,
+        },
+      ],
+      truncated: true,
+    });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).query).toMatch(
+      /SELECT source, target, rel_type, confidence FROM edges.*LIMIT 3$/,
+    );
+  });
+});
+
 describe('encodeNodePath (HOR-445)', () => {
   it('escapes # so a #private-method seed id does not truncate the URL at the fragment', () => {
     const id = 'method:source/core/Ky.ts:Ky.#consumeReturnedResponseFromBeforeRetryHook';
@@ -17,7 +62,9 @@ describe('encodeNodePath (HOR-445)', () => {
   });
 
   it('leaves an ordinary path-shaped node id (/ and :) intact', () => {
-    expect(encodeNodePath('method:source/foo.ts:Bar.baz')).toBe('method:source/foo.ts:Bar.baz');
+    expect(encodeNodePath('method:source/foo.ts:Bar.baz')).toBe(
+      'method:source/foo.ts:Bar.baz',
+    );
   });
 });
 
@@ -103,9 +150,12 @@ describe('trace — relationship path query', () => {
   const urls: string[] = [];
   const fetchMock = vi.fn(async (url: string | URL) => {
     urls.push(String(url));
-    return new Response(JSON.stringify({ found: true, hops: 1, path: [], segments: [] }), {
-      status: 200,
-    });
+    return new Response(
+      JSON.stringify({ found: true, hops: 1, path: [], segments: [] }),
+      {
+        status: 200,
+      },
+    );
   });
 
   afterEach(() => {
@@ -128,7 +178,10 @@ describe('trace — relationship path query', () => {
   });
 
   it('maps maxDepth and relations to query params', async () => {
-    await client().trace('funcA', 'ClassC', { maxDepth: 4, relations: ['calls', 'imports'] });
+    await client().trace('funcA', 'ClassC', {
+      maxDepth: 4,
+      relations: ['calls', 'imports'],
+    });
     expect(urls[0]).toContain('max_depth=4');
     // URLSearchParams encodes the comma in the joined relations list.
     expect(urls[0]).toContain('relations=calls%2Cimports');

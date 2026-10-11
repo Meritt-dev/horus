@@ -45,7 +45,9 @@ interface PackageJson {
 /** Read + parse a repo's package.json, or null if absent/unreadable. */
 export function readPackageJson(repoPath: string): PackageJson | null {
   try {
-    return JSON.parse(readFileSync(join(repoPath, 'package.json'), 'utf8')) as PackageJson;
+    return JSON.parse(
+      readFileSync(join(repoPath, 'package.json'), 'utf8'),
+    ) as PackageJson;
   } catch {
     return null;
   }
@@ -245,7 +247,8 @@ function parsePyproject(text: string): PythonManifest {
       (s.match(/["']([^"']+)["']/g) ?? []).map((q) => q.slice(1, -1));
     // The array terminates on a `]` that is NOT inside a quoted requirement
     // string (e.g. the `]` in `sqlalchemy[asyncio]` must not end the array).
-    const closesArray = (s: string): boolean => s.replace(/["'][^"']*["']/g, '').includes(']');
+    const closesArray = (s: string): boolean =>
+      s.replace(/["'][^"']*["']/g, '').includes(']');
 
     if (section === 'project') {
       const nameM = trimmed.match(/^name\s*=\s*["']([^"']+)["']/);
@@ -439,7 +442,8 @@ function readManifests(repoPath: string): ManifestSet {
   if (pyprojectText !== null) absorb('pyproject.toml', parsePyproject(pyprojectText));
   if (setupCfgText !== null) absorb('setup.cfg', parseSetupCfg(setupCfgText));
   if (setupPyText !== null) absorb('setup.py', parseSetupPy(setupPyText));
-  if (requirementsText !== null) absorb('requirements.txt', parseRequirementsTxt(requirementsText));
+  if (requirementsText !== null)
+    absorb('requirements.txt', parseRequirementsTxt(requirementsText));
 
   const hasPython =
     pyprojectText !== null ||
@@ -474,10 +478,16 @@ function readManifests(repoPath: string): ManifestSet {
  * JS/TS are only claimed when a real package.json is present (HOR-407); Python
  * when any Python manifest is present. A repo with no manifest gets `[]`.
  */
-function detectLanguages(manifests: ManifestSet, jsDeps: Record<string, string>): string[] {
+function detectLanguages(
+  manifests: ManifestSet,
+  jsDeps: Record<string, string>,
+): string[] {
   const langs = new Set<string>();
   if (manifests.hasPackageJson) {
-    if ('typescript' in jsDeps || Object.keys(jsDeps).some((d) => d.startsWith('@types/'))) {
+    if (
+      'typescript' in jsDeps ||
+      Object.keys(jsDeps).some((d) => d.startsWith('@types/'))
+    ) {
       langs.add('TypeScript');
     } else {
       langs.add('JavaScript');
@@ -541,7 +551,10 @@ export interface BuildOptions {
 export function deriveRepositoryProfile(repo: RepoInput, opts: BuildOptions = {}) {
   const manifests = readManifests(repo.path);
   const pkg = manifests.pkg ?? {};
-  const jsDeps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>;
+  const jsDeps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<
+    string,
+    string
+  >;
   const jsNames = Object.keys(jsDeps);
   const pyNames = manifests.python.deps;
 
@@ -610,7 +623,8 @@ export function buildProjectKnowledge(
   // Bridge the analysed source graph into the symbol-derived categories (HOR-408).
   // The host serves a single repo; if the caller didn't name it, fall back to the
   // lone configured repo so items carry a repository scope.
-  const graphRepo = opts.sourceGraph?.repo ?? (repos.length === 1 ? repos[0]?.name : undefined);
+  const graphRepo =
+    opts.sourceGraph?.repo ?? (repos.length === 1 ? repos[0]?.name : undefined);
   const fromGraph = opts.sourceGraph
     ? buildKnowledgeFromSourceGraph(opts.sourceGraph, {
         project: opts.project,
@@ -633,6 +647,9 @@ export function buildProjectKnowledge(
     project: opts.project,
     repositories,
     operations: fromGraph.operations,
+    ...('sourceRelationships' in fromGraph && fromGraph.sourceRelationships
+      ? { sourceRelationships: fromGraph.sourceRelationships }
+      : {}),
     types: fromGraph.types,
     enums: fromGraph.enums,
     domainConcepts: fromGraph.domainConcepts,

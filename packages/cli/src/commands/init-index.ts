@@ -171,8 +171,11 @@ async function extractSourceGraph(
   const N = SOURCE_GRAPH_PULL_LIMIT;
 
   // Symbols: types (Class/Interface/TypeAlias), callables (Function/Method), enums.
-  const symbolRows = await client.symbolsByLabel(SOURCE_SYMBOL_LABELS, N * 2).catch(() => []);
+  const symbolRows = await client
+    .symbolsByLabel(SOURCE_SYMBOL_LABELS, N * 2)
+    .catch(() => []);
   const symbols: SourceSymbolInput[] = symbolRows.map((r) => ({
+    id: r.id,
     label: r.label,
     name: r.name,
     filePath: r.filePath || undefined,
@@ -212,14 +215,19 @@ async function extractSourceGraph(
       .filter((s): s is { component: string; detail?: string } => s !== null),
   }));
 
-  if (
-    symbols.length === 0 &&
-    communities.length === 0 &&
-    processes.length === 0
-  ) {
+  if (symbols.length === 0 && communities.length === 0 && processes.length === 0) {
     return null;
   }
-  return { repo, symbols, communities, processes };
+  // Optional additive metadata. Older hosts remain usable when their read-only
+  // console cannot supply it; absence is distinct from a confirmed empty graph.
+  const relationships = await client.codeRelationships().catch(() => undefined);
+  return {
+    repo,
+    symbols,
+    communities,
+    processes,
+    ...(relationships ? { relationships } : {}),
+  };
 }
 
 /**
@@ -242,10 +250,18 @@ async function buildKnowledgeIndex(
 
     // Import mode: a provided KB is the knowledge source (HOR-292).
     if (opts.importKb) {
-      const res = importKnowledgeBaseFile(resolve(opts.importKb), { root, project: label });
-      const total = res.manifest ? Object.values(res.manifest.counts).reduce((a, b) => a + b, 0) : 0;
-      console.log(pc.dim(`  project knowledge: imported ${total} item(s) from ${opts.importKb}`));
-      if (res.warnings.length) console.log(pc.dim(`  (${res.warnings.length} import warning(s))`));
+      const res = importKnowledgeBaseFile(resolve(opts.importKb), {
+        root,
+        project: label,
+      });
+      const total = res.manifest
+        ? Object.values(res.manifest.counts).reduce((a, b) => a + b, 0)
+        : 0;
+      console.log(
+        pc.dim(`  project knowledge: imported ${total} item(s) from ${opts.importKb}`),
+      );
+      if (res.warnings.length)
+        console.log(pc.dim(`  (${res.warnings.length} import warning(s))`));
       return;
     }
 
@@ -266,7 +282,8 @@ async function buildKnowledgeIndex(
     const repos: RepoInput[] = [];
     if (config && configuredProject) {
       const proj = config.projects.find((p) => p.name === configuredProject);
-      for (const r of proj?.repositories ?? []) repos.push({ name: r.name, path: resolve(r.path) });
+      for (const r of proj?.repositories ?? [])
+        repos.push({ name: r.name, path: resolve(r.path) });
     }
     if (repos.length === 0) repos.push({ name: label, path: root });
 
@@ -286,23 +303,29 @@ async function buildKnowledgeIndex(
       }
     }
 
-    const snapshot = buildProjectKnowledge(repos, { project: label, gitSha, sourceGraph });
+    const snapshot = buildProjectKnowledge(repos, {
+      project: label,
+      gitSha,
+      sourceGraph,
+    });
     createJsonKnowledgeStore(root).write(snapshot, {
       generator: { tool: 'horus-cli' },
       git: { sha: gitSha, branch },
       repositories: repos.map((r) => ({ name: r.name, path: r.path, headSha: gitSha })),
-      sourceIntelligence: config ? { tool: 'source', version: PINNED_SOURCE_VERSION } : undefined,
+      sourceIntelligence: config
+        ? { tool: 'source', version: PINNED_SOURCE_VERSION }
+        : undefined,
     });
     const counts = [
       snapshot.repositories.length ? `${snapshot.repositories.length} repo(s)` : null,
       snapshot.operations.length ? `${snapshot.operations.length} operation(s)` : null,
       snapshot.types.length ? `${snapshot.types.length} type(s)` : null,
-      snapshot.domainConcepts.length ? `${snapshot.domainConcepts.length} concept(s)` : null,
+      snapshot.domainConcepts.length
+        ? `${snapshot.domainConcepts.length} concept(s)`
+        : null,
       snapshot.dataFlows.length ? `${snapshot.dataFlows.length} flow(s)` : null,
     ].filter(Boolean);
-    console.log(
-      pc.dim(`  project knowledge: ${counts.join(', ')} → .horus/index/`),
-    );
+    console.log(pc.dim(`  project knowledge: ${counts.join(', ')} → .horus/index/`));
   } catch (err) {
     // Knowledge building is best-effort and must never break `horus index`.
     console.log(pc.dim(`  project knowledge skipped: ${(err as Error).message}`));
@@ -312,7 +335,8 @@ async function buildKnowledgeIndex(
 export async function runIndex(opts: IndexOptions): Promise<number> {
   try {
     const cwd = process.cwd();
-    const root = opts.path !== undefined ? resolve(opts.path) : (findRepoRoot(cwd) ?? cwd);
+    const root =
+      opts.path !== undefined ? resolve(opts.path) : (findRepoRoot(cwd) ?? cwd);
     // Ignore `.horus/` up front — BEFORE the (slow, abortable) analyze/host-spawn work below,
     // so a timeout/abort mid-index still leaves a clean tree. The success paths call this again
     // (idempotent). Without it, a failed init left `?? .horus/` dirtying git status (dogfood 0.21.1).
@@ -352,7 +376,11 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // Full re-analysis: the running host holds the store lock and the existing
       // index carries the stale graph — stop it and remove `.horus/source` so the
       // spawn path below rebuilds from scratch (the documented full-rebuild path).
-      console.log(pc.dim('  --reindex: stopping the host and removing .horus/source for a full re-analysis…'));
+      console.log(
+        pc.dim(
+          '  --reindex: stopping the host and removing .horus/source for a full re-analysis…',
+        ),
+      );
       await killSpawnedHost(root);
       rmSync(join(root, '.horus', 'source'), { recursive: true, force: true });
     }
@@ -362,11 +390,17 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // Reuse a host only if it is healthy AND actually serving THIS repo — never another
       // repo's host that happens to occupy the same port (the collision that leaked one
       // repo's queue map into another's investigation).
-      if (candidate && (await isHostHealthy(candidate)) && (await hostServesRepo(candidate, root))) {
+      if (
+        candidate &&
+        (await isHostHealthy(candidate)) &&
+        (await hostServesRepo(candidate, root))
+      ) {
         // …AND only if it runs the pinned backend. A host left running across a
         // `horus update` serves a graph this CLI may mis-map — the same drift the
         // spawn path refuses via assertSourceVersionPinned. Restart it instead.
-        const compat = await checkSourceCompatibility(new SourceHttpClient({ baseUrl: candidate }));
+        const compat = await checkSourceCompatibility(
+          new SourceHttpClient({ baseUrl: candidate }),
+        );
         if (compat.version !== null && !compat.matches) {
           driftedHost = { url: candidate, version: compat.version };
           continue;
@@ -394,7 +428,11 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // No host running for this repo — set one up.
       console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
       if (!(await sourceAvailable())) {
-        console.error(pc.red('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash'));
+        console.error(
+          pc.red(
+            'horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash',
+          ),
+        );
         return 1;
       }
       // Refuse to analyze or host with a drifted backend — a version mismatch corrupts
@@ -431,7 +469,9 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
         // search serves degraded (FTS-only) until embeddings warm. Only a genuinely broken
         // result (no index produced, or the HOR-433 kùzu-era empty store with no structural
         // marker) is fatal here.
-        const incomplete = isAnalyzed(root) ? indexNeedsReanalyze(root) : 'no index was produced';
+        const incomplete = isAnalyzed(root)
+          ? indexNeedsReanalyze(root)
+          : 'no index was produced';
         if (incomplete) {
           console.error(
             pc.red(
@@ -451,7 +491,8 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // same free port (TOCTOU) and one backend then fails to bind. Retry on a fresh port
       // when the host doesn't come up, which makes parallel first-index race-safe (HOR-357).
       const priorPort =
-        parseHostPort(configuredHost ?? '') ?? parseHostPort(readSourceHostUrl(root) ?? '');
+        parseHostPort(configuredHost ?? '') ??
+        parseHostPort(readSourceHostUrl(root) ?? '');
       // Reuse already failed above, so any host still recorded for this repo is stale/unhealthy
       // (e.g. a previously hard-killed host that left the kùzu lock held). Reap it BEFORE spawning
       // so the new host can acquire the lock — otherwise it loops to "did not become healthy"
@@ -503,7 +544,9 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       }
       if (!started) {
         console.error(
-          pc.red(`  Source-intelligence host did not become healthy — see ${root}/.horus/source-host.log`),
+          pc.red(
+            `  Source-intelligence host did not become healthy — see ${root}/.horus/source-host.log`,
+          ),
         );
         return 1;
       }
@@ -566,7 +609,9 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
         project: {
           name,
           repositories: [{ name, path: root, source: { hostUrl } }],
-          environments: [{ name: opts.env ?? 'production', readOnly: true, connectors: {} }],
+          environments: [
+            { name: opts.env ?? 'production', readOnly: true, connectors: {} },
+          ],
         },
       };
       const configPath = writeLocalConfig(root, file);
@@ -574,11 +619,7 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       ensureProjectGitignore(root);
       console.log(`${pc.green('✓')} Indexed ${pc.bold(name)} — host ${hostUrl}`);
       console.log(pc.dim(`  ${configPath}`));
-      console.log(
-        pc.dim(
-          `  investigate: horus investigate "<hint>"  (from this repo)`,
-        ),
-      );
+      console.log(pc.dim(`  investigate: horus investigate "<hint>"  (from this repo)`));
     } else if (hostUrl !== configuredHost) {
       // The live host differs from what the config records — either no host was set
       // (HOR-150: reused host never persisted), or the configured host was dead and we
@@ -589,17 +630,23 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       if (existingPath) {
         const file = readLocalConfig(existingPath);
         const project = file.project as Record<string, unknown>;
-        const repos = project['repositories'] as Array<Record<string, unknown>> | undefined;
+        const repos = project['repositories'] as
+          | Array<Record<string, unknown>>
+          | undefined;
         if (repos && repos.length > 0) {
           repos[0]!['source'] = { hostUrl };
         }
         writeLocalConfig(root, file);
         registerProject(label, root, existingPath);
         ensureProjectGitignore(root);
-        console.log(`${pc.green('✓')} Indexed ${pc.bold(label)} — source host registered at ${hostUrl}`);
+        console.log(
+          `${pc.green('✓')} Indexed ${pc.bold(label)} — source host registered at ${hostUrl}`,
+        );
         console.log(pc.dim(`  ${existingPath}`));
       } else {
-        console.log(`${pc.green('✓')} Indexed ${pc.bold(label)} ${pc.dim('(queue map refreshed)')}`);
+        console.log(
+          `${pc.green('✓')} Indexed ${pc.bold(label)} ${pc.dim('(queue map refreshed)')}`,
+        );
       }
     } else {
       console.log(

@@ -32,15 +32,66 @@ function tmp(): string {
 const FIXTURE: SourceGraphExtract = {
   repo: 'billing-svc',
   symbols: [
-    { label: 'Function', name: 'create_invoice', filePath: 'app/api.py', startLine: 10, endLine: 30, isEntryPoint: true },
-    { label: 'Function', name: 'list_invoices', filePath: 'app/api.py', startLine: 32, endLine: 40 },
-    { label: 'Method', name: 'save', className: 'InvoiceRepo', filePath: 'app/repo.py', startLine: 5, endLine: 12 },
-    { label: 'Class', name: 'InvoiceRepo', filePath: 'app/repo.py', startLine: 1, endLine: 50 },
-    { label: 'Interface', name: 'Payable', filePath: 'app/types.py', startLine: 1, endLine: 8 },
-    { label: 'TypeAlias', name: 'Money', filePath: 'app/types.py', startLine: 10, endLine: 10 },
-    { label: 'Enum', name: 'InvoiceStatus', filePath: 'app/types.py', startLine: 12, endLine: 16, enumValues: ['DRAFT', 'PAID'] },
+    {
+      label: 'Function',
+      name: 'create_invoice',
+      filePath: 'app/api.py',
+      startLine: 10,
+      endLine: 30,
+      isEntryPoint: true,
+    },
+    {
+      label: 'Function',
+      name: 'list_invoices',
+      filePath: 'app/api.py',
+      startLine: 32,
+      endLine: 40,
+    },
+    {
+      label: 'Method',
+      name: 'save',
+      className: 'InvoiceRepo',
+      filePath: 'app/repo.py',
+      startLine: 5,
+      endLine: 12,
+    },
+    {
+      label: 'Class',
+      name: 'InvoiceRepo',
+      filePath: 'app/repo.py',
+      startLine: 1,
+      endLine: 50,
+    },
+    {
+      label: 'Interface',
+      name: 'Payable',
+      filePath: 'app/types.py',
+      startLine: 1,
+      endLine: 8,
+    },
+    {
+      label: 'TypeAlias',
+      name: 'Money',
+      filePath: 'app/types.py',
+      startLine: 10,
+      endLine: 10,
+    },
+    {
+      label: 'Enum',
+      name: 'InvoiceStatus',
+      filePath: 'app/types.py',
+      startLine: 12,
+      endLine: 16,
+      enumValues: ['DRAFT', 'PAID'],
+    },
     // duplicate id (same kind:file:name) must be de-duped, not double-counted.
-    { label: 'Function', name: 'create_invoice', filePath: 'app/api.py', startLine: 10, endLine: 30 },
+    {
+      label: 'Function',
+      name: 'create_invoice',
+      filePath: 'app/api.py',
+      startLine: 10,
+      endLine: 30,
+    },
     // blank name is dropped.
     { label: 'Function', name: '   ', filePath: 'app/api.py' },
   ],
@@ -61,6 +112,69 @@ const FIXTURE: SourceGraphExtract = {
 };
 
 describe('buildKnowledgeFromSourceGraph', () => {
+  it('round-trips exact code relationships and recorded confidence in the optional snapshot metadata', () => {
+    const root = tmp();
+    const snapshot = buildProjectKnowledge([{ name: 'svc', path: root }], {
+      now: NOW,
+      sourceGraph: {
+        symbols: [
+          {
+            id: 'method:a:run',
+            label: 'Method',
+            className: 'Controller',
+            name: 'run',
+            filePath: 'a.ts',
+          },
+          { id: 'function:b:run', label: 'Function', name: 'run', filePath: 'b.ts' },
+        ],
+        relationships: {
+          edges: [
+            {
+              source: 'method:a:run',
+              target: 'function:b:run',
+              rel: 'calls',
+              confidence: null,
+            },
+          ],
+          truncated: false,
+        },
+      },
+    });
+    const store = createJsonKnowledgeStore(root);
+    store.write(snapshot);
+    expect(store.readSnapshot()?.sourceRelationships).toEqual({
+      edges: [
+        {
+          id: JSON.stringify(['calls', 'method:a:run', 'function:b:run']),
+          from: 'operation:a.ts:Controller.run',
+          to: 'operation:b.ts:run',
+          rel: 'calls',
+          confidence: null,
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('omits ambiguous and missing symbols instead of matching by names or inventing paths', () => {
+    const result = buildKnowledgeFromSourceGraph({
+      symbols: [
+        { id: 'overload-1', label: 'Function', name: 'run', filePath: 'a.ts' },
+        { id: 'overload-2', label: 'Function', name: 'run', filePath: 'a.ts' },
+        { id: 'unique', label: 'Function', name: 'run', filePath: 'b.ts' },
+      ],
+      relationships: {
+        edges: [
+          { source: 'overload-1', target: 'unique', rel: 'calls', confidence: 0.5 },
+          { source: 'missing', target: 'unique', rel: 'calls', confidence: 1 },
+        ],
+        truncated: false,
+      },
+    });
+    expect(result.sourceRelationships).toEqual({ edges: [], truncated: true });
+    expect(buildKnowledgeFromSourceGraph(FIXTURE).sourceRelationships).toBeUndefined();
+  });
+
   it('maps an analyse-output extract into populated KB categories', () => {
     const k = buildKnowledgeFromSourceGraph(FIXTURE, {
       project: 'billing',
@@ -99,7 +213,10 @@ describe('buildKnowledgeFromSourceGraph', () => {
     expect(k.domainConcepts.map((d) => d.name).sort()).toEqual(['Billing', 'Payments']);
     expect(k.domainConcepts[0]?.provenance.sourceType).toBe('inferred');
     expect(k.dataFlows).toHaveLength(1);
-    expect(k.dataFlows[0]?.steps.map((s) => s.component)).toEqual(['create_invoice', 'save']);
+    expect(k.dataFlows[0]?.steps.map((s) => s.component)).toEqual([
+      'create_invoice',
+      'save',
+    ]);
 
     // runtime components: only the entry-point function.
     expect(k.runtimeComponents.map((r) => r.name)).toEqual(['create_invoice']);
@@ -145,7 +262,10 @@ describe('deriveExternalIntegrations', () => {
       join(path, 'pyproject.toml'),
       '[project]\nname = "svc"\ndependencies = ["fastapi", "asyncpg", "stripe"]\n',
     );
-    const profile = deriveRepositoryProfile({ name: 'svc', path }, { project: 'p', now: NOW });
+    const profile = deriveRepositoryProfile(
+      { name: 'svc', path },
+      { project: 'p', now: NOW },
+    );
     const integrations = deriveExternalIntegrations([profile]);
     const names = integrations.map((i) => i.name).sort();
     expect(names).toContain('PostgreSQL');
@@ -195,8 +315,13 @@ describe('buildProjectKnowledge with a source graph → non-empty KB + manifest'
 
   it('without a source graph, only manifest-derived categories populate (no crash)', () => {
     const repoPath = tmp();
-    writeFileSync(join(repoPath, 'package.json'), JSON.stringify({ name: 'web', dependencies: { stripe: '14' } }));
-    const snapshot = buildProjectKnowledge([{ name: 'web', path: repoPath }], { now: NOW });
+    writeFileSync(
+      join(repoPath, 'package.json'),
+      JSON.stringify({ name: 'web', dependencies: { stripe: '14' } }),
+    );
+    const snapshot = buildProjectKnowledge([{ name: 'web', path: repoPath }], {
+      now: NOW,
+    });
     expect(snapshot.operations).toEqual([]);
     expect(snapshot.types).toEqual([]);
     // External integrations still derive from the manifest.
