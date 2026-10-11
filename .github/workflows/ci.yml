@@ -92,6 +92,11 @@ jobs:
 
       - run: uv lock --check
 
+      # Wheel installs resolve third-party dependencies independently of uv.lock.
+      # Catch incompatible releases before shipping a backend that cannot start.
+      - name: Verify fresh source package startup
+        run: uv tool run --isolated --from . horus-source --version
+
       - run: uv sync --extra dev --frozen
 
       - run: uv run --extra dev pytest tests/ -q
