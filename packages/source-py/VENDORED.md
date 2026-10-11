@@ -8,7 +8,7 @@ releases are **retired** — do not edit or release from either.
 ## One bundle, one version, one codebase
 
 - The backend ships **inside the horus release bundle**: `scripts/release/
-  build-source-wheel.sh` builds the frontend + wheel from this directory, verifies it
+build-source-wheel.sh` builds the frontend + wheel from this directory, verifies it
   (`scripts/verify_wheel.py`), and stages `dist/horus_source.whl`, which the apps/horus
   tsup build copies next to `index.cjs`. It lands in the npm package, the Homebrew
   platform archives, and as a GitHub release asset for the curl installer.

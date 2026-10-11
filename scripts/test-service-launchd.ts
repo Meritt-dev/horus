@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { createLocalDb } from '../packages/db/src/index.js';
 import { readWatchState, writeWatchState } from '../packages/cli/src/lib/watch-store.js';
 import { runService } from '../packages/cli/src/commands/service.js';
+import { isPidAlive } from '../packages/cli/src/lib/host-reaper.js';
 if (process.platform !== 'darwin') throw new Error('macOS required');
 const dir = await mkdtemp(join(tmpdir(), 'horus-launchd-test-'));
 const profile = `test-${process.pid}`;
@@ -78,6 +79,7 @@ try {
   await h.sql.end();
   process.kill(state.pid, 'SIGKILL');
   let restarted = false;
+  let restartedPid: number | null = null;
   for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const next = JSON.parse(await readFile(join(dir, 'service/status.json'), 'utf8'));
@@ -89,15 +91,23 @@ try {
         Date.parse(next.supervisor.startedAt) > Date.parse(state.supervisor.startedAt),
       );
       restarted = true;
+      restartedPid = next.pid;
       break;
     }
   }
   assert(restarted, 'launchd did not restart killed service within 60 seconds');
+  await runService('status', { settings, profile });
+  // The restarted worker owns the single-writer DB. Stop it before inspecting
+  // durable state rather than racing its first cold database-open cycle.
+  await runService('stop', { settings, profile });
+  assert(restartedPid, 'restart snapshot must identify the worker PID');
+  for (let i = 0; i < 120 && isPidAlive(restartedPid); i++) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  assert(!isPidAlive(restartedPid), 'stopped worker did not exit within 60 seconds');
   h = await createLocalDb();
   assert.deepEqual(await readWatchState(h.db, 'restart:marker'), { cursor: 'durable' });
   await h.sql.end();
-  await runService('status', { settings, profile });
-  await runService('stop', { settings, profile });
   await runService('remove', { settings, profile });
   assert(
     !existsSync(
