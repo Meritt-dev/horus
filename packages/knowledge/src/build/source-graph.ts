@@ -22,6 +22,7 @@
  * line range it was extracted from. Nothing is invented; categories with no
  * matching graph nodes stay empty rather than being padded.
  */
+import { createHash } from 'node:crypto';
 import type {
   DomainConcept,
   EnumDefinition,
@@ -398,7 +399,9 @@ export function buildKnowledgeFromSourceGraph(
       sourceRelationships!.truncated = true;
       continue;
     }
-    const id = JSON.stringify([edge.rel, edge.source, edge.target]);
+    const id = `source:${createHash('sha256')
+      .update(JSON.stringify([edge.rel, edge.source, edge.target]))
+      .digest('hex')}`;
     if (seenRelationships.has(id)) continue;
     seenRelationships.add(id);
     if (sourceRelationships!.edges.length >= 20000) {

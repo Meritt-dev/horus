@@ -324,6 +324,9 @@ async function buildKnowledgeIndex(
         ? `${snapshot.domainConcepts.length} concept(s)`
         : null,
       snapshot.dataFlows.length ? `${snapshot.dataFlows.length} flow(s)` : null,
+      snapshot.sourceRelationships
+        ? `${snapshot.sourceRelationships.edges.length} source relationship(s)${snapshot.sourceRelationships.truncated ? ' (truncated)' : ''}`
+        : null,
     ].filter(Boolean);
     console.log(pc.dim(`  project knowledge: ${counts.join(', ')} → .horus/index/`));
   } catch (err) {

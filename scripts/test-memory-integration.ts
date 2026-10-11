@@ -22,6 +22,7 @@ import {
   recallStartupIncidents,
 } from '../packages/engine/src/index.js';
 import { CloudClient } from '../packages/cli/src/lib/cloud/api.js';
+import { buildProjectKnowledge } from '../packages/knowledge/src/index.js';
 import {
   synchronizeMemory,
   syncLinkedMemory,
@@ -72,6 +73,53 @@ const dir = await mkdtemp(join(tmpdir(), 'horus-memory-contract-'));
 const handles: DbHandle[] = [];
 const originalHome = process.env.HORUS_HOME;
 try {
+  // Additive source-to-knowledge contract, through the real authenticated Cloud
+  // API. Fixture identities are exact; equal display names must not collapse.
+  const knowledge = buildProjectKnowledge([], {
+    sourceGraph: {
+      symbols: [
+        { id: 'source:a', label: 'Function', name: 'run', filePath: 'a.ts' },
+        { id: 'source:b', label: 'Function', name: 'run', filePath: 'b.ts' },
+      ],
+      relationships: {
+        edges: [
+          { source: 'source:a', target: 'source:b', rel: 'calls', confidence: 0.6 },
+        ],
+        truncated: false,
+      },
+    },
+  });
+  await new CloudClient(base, token.plaintext).pushKnowledgeSnapshot(tenant.projectId, {
+    schemaVersion: 1,
+    generatedAt: knowledge.generatedAt,
+    contentHash: 'source-path-contract',
+    snapshot: knowledge,
+    manifest: {},
+  });
+  const codeGraphResponse = await fetch(
+    `${base}/v1/projects/${tenant.projectId}/knowledge-graph?lens=explore`,
+    { headers: { authorization: `Bearer ${token.plaintext}` } },
+  );
+  assert.equal(codeGraphResponse.status, 200);
+  const codeGraph = (await codeGraphResponse.json()) as {
+    edges: Array<{ from: string; to: string; rel: string; confidence: number | null }>;
+  };
+  assert.deepEqual(
+    codeGraph.edges.map(({ from, to, rel, confidence }) => ({
+      from,
+      to,
+      rel,
+      confidence,
+    })),
+    [
+      {
+        from: 'ent:operation:a.ts:run',
+        to: 'ent:operation:b.ts:run',
+        rel: 'calls',
+        confidence: 0.6,
+      },
+    ],
+  );
   let a = await createLocalDb({ path: join(dir, 'first') });
   handles.push(a);
   const b = await createLocalDb({ path: join(dir, 'second') });
@@ -99,8 +147,13 @@ try {
       hint: 'EMODA reserve ETIMEDOUT 503',
       repo: ctx.repo,
       environment: 'production',
-      incident: { errorCode: 'ETIMEDOUT', eventCode: 'EMODA_017D',
-        fingerprint: 'EMODA_017D:ETIMEDOUT:indeterminate:503', source: 'elasticsearch', eventId: 'logs:reserve-a' },
+      incident: {
+        errorCode: 'ETIMEDOUT',
+        eventCode: 'EMODA_017D',
+        fingerprint: 'EMODA_017D:ETIMEDOUT:indeterminate:503',
+        source: 'elasticsearch',
+        eventId: 'logs:reserve-a',
+      },
     },
     { code: null, db: a.db, store: createLocalMemoryStore(a.db) },
   );
@@ -224,51 +277,133 @@ try {
   assert.equal((await createLocalMemoryStore(a.db).get(memId))!.status, 'fresh');
   // A mature recurrence exceeds the old per-request array cap. Freeze it in
   // the existing outbox, lose a page response, then restore every row on a clean machine.
-  const mature = await createLocalMemoryStore(a.db).add({
-    id: 'mature-history', kind: 'investigation', source: 'investigation', scope: 'repo',
-    claim: 'Mature recurring incident', repo: ctx.repo, confidence: 0.4,
-  }, { actor: { kind: 'user' } });
+  const mature = await createLocalMemoryStore(a.db).add(
+    {
+      id: 'mature-history',
+      kind: 'investigation',
+      source: 'investigation',
+      scope: 'repo',
+      claim: 'Mature recurring incident',
+      repo: ctx.repo,
+      confidence: 0.4,
+    },
+    { actor: { kind: 'user' } },
+  );
   for (let offset = 0; offset < 2101; offset += 500) {
-    const indices = Array.from({ length: Math.min(500, 2101 - offset) }, (_, i) => offset + i);
-    await a.db.insert(memoryLink).values(indices.map(i => ({ id: `large-link-${i}`,
-      fromMemoryId: mature.id, rel: 'about-file', toKind: 'node', toRef: `file-${i}.ts` })));
-    await a.db.insert(memoryAudit).values(indices.map(i => ({ id: `large-audit-${i}`,
-      memoryId: mature.id, action: 'link', actor: { kind: 'system' }, at: new Date('2026-01-01T00:00:00Z') })));
+    const indices = Array.from(
+      { length: Math.min(500, 2101 - offset) },
+      (_, i) => offset + i,
+    );
+    await a.db.insert(memoryLink).values(
+      indices.map((i) => ({
+        id: `large-link-${i}`,
+        fromMemoryId: mature.id,
+        rel: 'about-file',
+        toKind: 'node',
+        toRef: `file-${i}.ts`,
+      })),
+    );
+    await a.db.insert(memoryAudit).values(
+      indices.map((i) => ({
+        id: `large-audit-${i}`,
+        memoryId: mature.id,
+        action: 'link',
+        actor: { kind: 'system' },
+        at: new Date('2026-01-01T00:00:00Z'),
+      })),
+    );
   }
   const sync = ctx.client.syncMemoryItems.bind(ctx.client);
   let lostPage = false;
   ctx.client.syncMemoryItems = async (...args) => {
     const result = await sync(...args);
-    if (result.staged && !lostPage) { lostPage = true; throw new Error('lost page response'); }
+    if (result.staged && !lostPage) {
+      lostPage = true;
+      throw new Error('lost page response');
+    }
     return result;
   };
   await synchronizeMemory(a.db, ctx, { backfill: false, deadline: Date.now() + 60000 });
-  const [frozen] = await a.db.select().from(memorySyncOutbox).where(eq(memorySyncOutbox.memoryId, mature.id));
-  assert(frozen && frozen.request.links.length === 2101, 'oversized snapshot remains durable');
+  const [frozen] = await a.db
+    .select()
+    .from(memorySyncOutbox)
+    .where(eq(memorySyncOutbox.memoryId, mature.id));
+  assert(
+    frozen && frozen.request.links.length === 2101,
+    'oversized snapshot remains durable',
+  );
   ctx.client.syncMemoryItems = sync;
   await a.db.update(memorySyncOutbox).set({ nextAttemptAt: new Date(0) });
-  assert.equal((await synchronizeMemory(a.db, ctx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
-  let clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
+  assert.equal(
+    (
+      await synchronizeMemory(a.db, ctx, {
+        backfill: false,
+        deadline: Date.now() + 60000,
+      })
+    ).state,
+    'Synced',
+  );
+  let clean = await createLocalDb({ path: join(dir, 'large-history-clean') });
+  handles.push(clean);
   const cleanCtx = { ...ctx, repo: 'clean-large-history' };
   const readLinks = cleanCtx.client.listMemoryLinks.bind(cleanCtx.client);
   let interruptedPull = false;
   cleanCtx.client.listMemoryLinks = async (...args) => {
-    if (args[1].cursor && !interruptedPull) { interruptedPull = true; throw new Error('offline after a persisted history page'); }
+    if (args[1].cursor && !interruptedPull) {
+      interruptedPull = true;
+      throw new Error('offline after a persisted history page');
+    }
     return readLinks(...args);
   };
-  const partial = await synchronizeMemory(clean.db, cleanCtx, { backfill: false, deadline: Date.now() + 60000 });
+  const partial = await synchronizeMemory(clean.db, cleanCtx, {
+    backfill: false,
+    deadline: Date.now() + 60000,
+  });
   assert(partial.error?.includes('offline after a persisted history page'));
-  assert.equal((await clean.db.select().from(memoryItem).where(eq(memoryItem.id, mature.id))).length, 0);
-  await clean.sql.end(); handles.splice(handles.indexOf(clean), 1);
-  clean = await createLocalDb({ path: join(dir, 'large-history-clean') }); handles.push(clean);
+  assert.equal(
+    (await clean.db.select().from(memoryItem).where(eq(memoryItem.id, mature.id))).length,
+    0,
+  );
+  await clean.sql.end();
+  handles.splice(handles.indexOf(clean), 1);
+  clean = await createLocalDb({ path: join(dir, 'large-history-clean') });
+  handles.push(clean);
   let resumedCursor: string | undefined;
-  cleanCtx.client.listMemoryLinks = async (...args) => { resumedCursor ??= args[1].cursor; return readLinks(...args); };
-  assert.equal((await synchronizeMemory(clean.db, cleanCtx, { backfill: false, deadline: Date.now() + 60000 })).state, 'Synced');
-  assert(resumedCursor, 'restore resumes the persisted page cursor after process restart');
+  cleanCtx.client.listMemoryLinks = async (...args) => {
+    resumedCursor ??= args[1].cursor;
+    return readLinks(...args);
+  };
+  assert.equal(
+    (
+      await synchronizeMemory(clean.db, cleanCtx, {
+        backfill: false,
+        deadline: Date.now() + 60000,
+      })
+    ).state,
+    'Synced',
+  );
+  assert(
+    resumedCursor,
+    'restore resumes the persisted page cursor after process restart',
+  );
   cleanCtx.client.listMemoryLinks = readLinks;
-  assert.equal((await clean.db.select().from(memoryLink).where(eq(memoryLink.fromMemoryId, mature.id))).length, 2101);
-  assert.equal((await clean.db.select().from(memoryAudit).where(eq(memoryAudit.memoryId, mature.id))).length, 2102);
-  console.log('PASS: 2101 links and 2102 audit rows restored through bounded pages after a lost page acknowledgement');
+  assert.equal(
+    (
+      await clean.db
+        .select()
+        .from(memoryLink)
+        .where(eq(memoryLink.fromMemoryId, mature.id))
+    ).length,
+    2101,
+  );
+  assert.equal(
+    (await clean.db.select().from(memoryAudit).where(eq(memoryAudit.memoryId, mature.id)))
+      .length,
+    2102,
+  );
+  console.log(
+    'PASS: 2101 links and 2102 audit rows restored through bounded pages after a lost page acknowledgement',
+  );
   if (process.env.HORUS_RECALL_HISTORY) {
     const history = JSON.parse(await readFile(process.env.HORUS_RECALL_HISTORY, 'utf8'));
     assert(Array.isArray(history.reports) && history.reports.length <= 1000);

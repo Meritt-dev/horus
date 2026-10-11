@@ -145,7 +145,7 @@ describe('buildKnowledgeFromSourceGraph', () => {
     expect(store.readSnapshot()?.sourceRelationships).toEqual({
       edges: [
         {
-          id: JSON.stringify(['calls', 'method:a:run', 'function:b:run']),
+          id: expect.stringMatching(/^source:[a-f0-9]{64}$/),
           from: 'operation:a.ts:Controller.run',
           to: 'operation:b.ts:run',
           rel: 'calls',

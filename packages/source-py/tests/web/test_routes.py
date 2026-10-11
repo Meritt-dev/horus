@@ -1358,6 +1358,23 @@ class TestTraceRoute:
         assert [s["relType"] for s in body["segments"]] == ["calls", "uses_type"]
         assert body["segments"][0]["direction"] == "out"
 
+    def test_knowledge_relationship_projection_sql(self):
+        app = self._app_with_graph()
+        try:
+            with TestClient(app) as client:
+                response = client.post("/cypher", json={"query": (
+                    "SELECT source, target, rel_type, confidence FROM edges "
+                    "WHERE rel_type IN ('calls', 'extends', 'implements', 'uses_type') "
+                    "ORDER BY source, target, rel_type LIMIT 20001"
+                )})
+            assert response.status_code == 200
+            assert response.json()["rows"] == [
+                ["function:src/a.py:funcA", "function:src/b.py:funcB", "calls", 0.6],
+                ["function:src/b.py:funcB", "class:src/c.py:ClassC", "uses_type", 1.0],
+            ]
+        finally:
+            app.state.storage.close()
+
     def test_relations_filter(self):
         client = TestClient(self._app_with_graph())
         resp = client.get("/trace", params={"from": "funcA", "to": "ClassC",
