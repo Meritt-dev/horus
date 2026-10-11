@@ -8,7 +8,7 @@ releases are **retired** — do not edit or release from either.
 ## One bundle, one version, one codebase
 
 - The backend ships **inside the horus release bundle**: `scripts/release/
-  build-source-wheel.sh` builds the frontend + wheel from this directory, verifies it
+build-source-wheel.sh` builds the frontend + wheel from this directory, verifies it
   (`scripts/verify_wheel.py`), and stages `dist/horus_source.whl`, which the apps/horus
   tsup build copies next to `index.cjs`. It lands in the npm package, the Homebrew
   platform archives, and as a GitHub release asset for the curl installer.
@@ -18,6 +18,10 @@ releases are **retired** — do not edit or release from either.
 - `horus init` and `horus update` install the backend from the bundled wheel via
   `uv tool install` (the wheel's third-party dependencies still resolve from PyPI as a
   normal package install; that is dependency resolution, not a deployment of our code).
+- MCP stays within its supported 1.x API range: the shared-host stdio proxy uses
+  `streamablehttp_client`, which MCP 2 removed. CI also installs this package in a
+  fresh tool environment so dependency resolution outside `uv.lock` cannot silently
+  produce a backend that fails at startup.
 - The backend's own PyPI update notifier is removed — the horus CLI owns updates.
 
 ## Working in here
