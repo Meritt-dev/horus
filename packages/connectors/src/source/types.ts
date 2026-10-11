@@ -31,6 +31,14 @@ export interface SourceCypherResult {
   durationMs: number;
 }
 
+/** Recorded code relationships, without source bodies or embeddings. */
+export interface SourceCodeRelationship {
+  source: string;
+  target: string;
+  rel: 'calls' | 'extends' | 'implements' | 'uses_type';
+  confidence: number | null;
+}
+
 export interface SourceImpactResult {
   target: SourceNode;
   affected: number;

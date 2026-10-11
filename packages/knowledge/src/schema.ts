@@ -7,7 +7,8 @@
  *
  *   - SOURCE INTELLIGENCE: the raw code graph in `.horus/source/` (Kùzu),
  *     queried over HTTP. Project knowledge *references* it (file/line/symbol) but
- *     never duplicates the graph.
+ *     keeps raw source bodies and embeddings local. An optional bounded relationship
+ *     projection connects existing knowledge entities for Cloud path tracing.
  *   - RUNTIME EVIDENCE: investigation observations in the CLI's local Postgres
  *     (evidence/findings/hypotheses). Time-stamped, per-incident — not durable
  *     project facts.
@@ -46,7 +47,10 @@ export const ConfidenceSchema = z.enum(['high', 'medium', 'low']);
 export type Confidence = z.infer<typeof ConfidenceSchema>;
 
 /** Inclusive 1-based source line range `[start, end]`. */
-export const LineRangeSchema = z.tuple([z.number().int().min(0), z.number().int().min(0)]);
+export const LineRangeSchema = z.tuple([
+  z.number().int().min(0),
+  z.number().int().min(0),
+]);
 
 /**
  * Per-item provenance. Every field is optional except `sourceType` — knowledge
@@ -242,10 +246,31 @@ export type ExternalIntegration = z.infer<typeof ExternalIntegrationSchema>;
  * `.horus/index/knowledge-base.json`; derived per-category view files and the
  * `manifest.json` index are written alongside it (see store.ts / layout.ts).
  */
+/** Bounded relationships between existing knowledge entities. Raw source bodies,
+ * embeddings and the rest of the source graph remain local. */
+export const SourceKnowledgeRelationshipsSchema = z.object({
+  edges: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        from: z.string().min(1),
+        to: z.string().min(1),
+        rel: z.enum(['calls', 'extends', 'implements', 'uses_type']),
+        confidence: z.number().min(0).max(1).nullable(),
+      }),
+    )
+    .max(20000),
+  truncated: z.boolean(),
+});
+export type SourceKnowledgeRelationships = z.infer<
+  typeof SourceKnowledgeRelationshipsSchema
+>;
+
 export const KnowledgeSnapshotSchema = z.object({
   schemaVersion: z.literal(KNOWLEDGE_SCHEMA_VERSION),
   generatedAt: z.string().datetime(),
   project: z.string().optional(),
+  sourceRelationships: SourceKnowledgeRelationshipsSchema.optional(),
   repositories: z.array(RepositoryProfileSchema).default([]),
   operations: z.array(OperationSchema).default([]),
   types: z.array(TypeDefinitionSchema).default([]),

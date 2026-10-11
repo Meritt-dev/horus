@@ -22,6 +22,7 @@
  * line range it was extracted from. Nothing is invented; categories with no
  * matching graph nodes stay empty rather than being padded.
  */
+import { createHash } from 'node:crypto';
 import type {
   DomainConcept,
   EnumDefinition,
@@ -32,10 +33,13 @@ import type {
   RepositoryProfile,
   RuntimeComponent,
   TypeDefinition,
+  SourceKnowledgeRelationships,
 } from '../schema.js';
 
 /** A code symbol pulled from the source graph (one Function/Class/Enum/... node). */
 export interface SourceSymbolInput {
+  /** Exact source-host identity; never resolve relationships by display name. */
+  id?: string;
   /** Raw graph label, case-insensitive: function | method | class | interface | type_alias | enum. */
   label: string;
   name: string;
@@ -79,6 +83,15 @@ export interface SourceProcessInput {
  * still bridges whatever it does have.
  */
 export interface SourceGraphExtract {
+  relationships?: {
+    edges: Array<{
+      source: string;
+      target: string;
+      rel: 'calls' | 'extends' | 'implements' | 'uses_type';
+      confidence: number | null;
+    }>;
+    truncated: boolean;
+  };
   symbols?: SourceSymbolInput[];
   communities?: SourceCommunityInput[];
   processes?: SourceProcessInput[];
@@ -101,6 +114,7 @@ export interface SourceGraphMapOptions {
 
 /** Categories this bridge can populate from the source graph. */
 export interface SourceGraphKnowledge {
+  sourceRelationships?: SourceKnowledgeRelationships;
   operations: Operation[];
   types: TypeDefinition[];
   enums: EnumDefinition[];
@@ -117,7 +131,10 @@ const DEFAULT_MAX_PER_CATEGORY = 5000;
  * comparison key (`typealias`).
  */
 function norm(label: string): string {
-  return label.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
 }
 
 /** A non-empty, trimmed string, or undefined. */
@@ -145,7 +162,9 @@ function provenanceFor(
     confidence: 'high',
     ...(repo ? { repo } : {}),
     ...(clean(sym.filePath) ? { filePath: sym.filePath } : {}),
-    ...(hasRange ? { lineRange: [start as number, end as number] as [number, number] } : {}),
+    ...(hasRange
+      ? { lineRange: [start as number, end as number] as [number, number] }
+      : {}),
     ...(opts.gitSha ? { gitSha: opts.gitSha } : {}),
     ...(opts.now ? { generatedAt: opts.now } : {}),
   };
@@ -178,7 +197,12 @@ export function buildKnowledgeFromSourceGraph(
 
   // De-dupe by id: the graph can carry overloads / re-declarations that hash to
   // the same kind:file:name. First write wins (graph order is stable).
-  const seen = { op: new Set<string>(), ty: new Set<string>(), en: new Set<string>(), rt: new Set<string>() };
+  const seen = {
+    op: new Set<string>(),
+    ty: new Set<string>(),
+    en: new Set<string>(),
+    rt: new Set<string>(),
+  };
 
   const idFor = (kind: string, sym: SourceSymbolInput, displayName: string): string =>
     `${kind}:${sym.filePath ?? ''}:${displayName}`;
@@ -192,7 +216,8 @@ export function buildKnowledgeFromSourceGraph(
     if (label === 'class' || label === 'interface' || label === 'typealias') {
       if (types.length >= cap) continue;
       // class → object, interface → interface, type_alias → alias (kind is free-form).
-      const kind = label === 'typealias' ? 'alias' : label === 'interface' ? 'interface' : 'object';
+      const kind =
+        label === 'typealias' ? 'alias' : label === 'interface' ? 'interface' : 'object';
       const id = idFor('type', sym, name);
       if (seen.ty.has(id)) continue;
       seen.ty.add(id);
@@ -317,14 +342,89 @@ export function buildKnowledgeFromSourceGraph(
       },
       name,
       steps: (p.steps ?? [])
-        .map((s) => ({ component: clean(s.component) ?? '', ...(clean(s.detail) ? { detail: s.detail } : {}) }))
+        .map((s) => ({
+          component: clean(s.component) ?? '',
+          ...(clean(s.detail) ? { detail: s.detail } : {}),
+        }))
         .filter((s) => s.component),
       sources: [],
       sinks: [],
     });
   }
 
-  return { operations, types, enums, domainConcepts, dataFlows, runtimeComponents };
+  // Only project edges onto unambiguous, actually retained knowledge entities.
+  // Overloads/re-declarations can collapse to one KB identity; never guess which
+  // source node an edge meant in that case.
+  const retained = new Set([...operations, ...types, ...enums].map((item) => item.id));
+  const sourceToKnowledge = new Map<string, string>();
+  const sourcesByKnowledge = new Map<string, Set<string>>();
+  for (const sym of extract.symbols ?? []) {
+    const sourceId = clean(sym.id);
+    const name = clean(sym.name);
+    if (!sourceId || !name) continue;
+    const label = norm(sym.label);
+    const kind = ['function', 'method'].includes(label)
+      ? 'operation'
+      : ['class', 'interface', 'typealias'].includes(label)
+        ? 'type'
+        : label === 'enum'
+          ? 'enum'
+          : null;
+    if (!kind) continue;
+    const displayName =
+      label === 'method' && clean(sym.className) ? `${sym.className}.${name}` : name;
+    const id = idFor(kind, sym, displayName);
+    if (!retained.has(id)) continue;
+    sourceToKnowledge.set(sourceId, id);
+    const ids = sourcesByKnowledge.get(id) ?? new Set<string>();
+    ids.add(sourceId);
+    sourcesByKnowledge.set(id, ids);
+  }
+  const sourceRelationships = extract.relationships
+    ? {
+        edges: [] as SourceKnowledgeRelationships['edges'],
+        truncated: extract.relationships.truncated,
+      }
+    : undefined;
+  const seenRelationships = new Set<string>();
+  for (const edge of extract.relationships?.edges ?? []) {
+    const from = sourceToKnowledge.get(edge.source);
+    const to = sourceToKnowledge.get(edge.target);
+    if (
+      !from ||
+      !to ||
+      sourcesByKnowledge.get(from)?.size !== 1 ||
+      sourcesByKnowledge.get(to)?.size !== 1
+    ) {
+      sourceRelationships!.truncated = true;
+      continue;
+    }
+    const id = `source:${createHash('sha256')
+      .update(JSON.stringify([edge.rel, edge.source, edge.target]))
+      .digest('hex')}`;
+    if (seenRelationships.has(id)) continue;
+    seenRelationships.add(id);
+    if (sourceRelationships!.edges.length >= 20000) {
+      sourceRelationships!.truncated = true;
+      continue;
+    }
+    sourceRelationships!.edges.push({
+      id,
+      from,
+      to,
+      rel: edge.rel,
+      confidence: edge.confidence,
+    });
+  }
+  return {
+    operations,
+    types,
+    enums,
+    domainConcepts,
+    dataFlows,
+    runtimeComponents,
+    ...(sourceRelationships ? { sourceRelationships } : {}),
+  };
 }
 
 /**

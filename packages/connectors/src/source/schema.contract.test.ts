@@ -50,6 +50,18 @@ describe('source-intelligence schema contract', () => {
     expect(Number(r.rows[0]?.[0])).toBeGreaterThan(0);
   });
 
+  it('projects recorded call edges through the existing read-only SQL contract', async (ctx) => {
+    if (!hostUp) return ctx.skip();
+    const result = await client.codeRelationships(10);
+    expect(result.edges.length).toBeGreaterThan(0);
+    expect(result.edges.length).toBeLessThanOrEqual(10);
+    for (const edge of result.edges) {
+      expect(typeof edge.source).toBe('string');
+      expect(typeof edge.target).toBe('string');
+      expect(['calls', 'extends', 'implements', 'uses_type']).toContain(edge.rel);
+    }
+  });
+
   it('REJECTS Cypher on the query console (drift guard — the seam architecture relied on)', async (ctx) => {
     if (!hostUp) return ctx.skip();
     // The console is read-only SQL since HOR-392. Any code still emitting Cypher

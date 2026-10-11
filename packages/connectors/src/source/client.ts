@@ -3,6 +3,7 @@ import type {
   SourceContentHit,
   SourceCouplingResult,
   SourceCypherResult,
+  SourceCodeRelationship,
   SourceDeadCodeResult,
   SourceFilesContainingResult,
   SourceDiffResult,
@@ -179,20 +180,65 @@ export class SourceHttpClient {
     return this.request<SourceOverview>('GET', '/api/overview');
   }
 
+  /** Reuse the canonical read-only SQL console; no new source-host endpoint. */
+  async codeRelationships(
+    limit = 20000,
+  ): Promise<{ edges: SourceCodeRelationship[]; truncated: boolean }> {
+    const cap = Math.max(
+      1,
+      Math.min(20000, Math.floor(Number.isFinite(limit) ? limit : 20000)),
+    );
+    const result = await this.cypher(
+      'SELECT source, target, rel_type, confidence FROM edges ' +
+        "WHERE rel_type IN ('calls', 'extends', 'implements', 'uses_type') " +
+        `ORDER BY source, target, rel_type LIMIT ${cap + 1}`,
+    );
+    const edges: SourceCodeRelationship[] = [];
+    for (const [source, target, rel, confidence] of result.rows.slice(0, cap)) {
+      if (
+        typeof source !== 'string' ||
+        typeof target !== 'string' ||
+        !['calls', 'extends', 'implements', 'uses_type'].includes(String(rel))
+      )
+        continue;
+      edges.push({
+        source,
+        target,
+        rel: rel as SourceCodeRelationship['rel'],
+        confidence:
+          typeof confidence === 'number' &&
+          Number.isFinite(confidence) &&
+          confidence >= 0 &&
+          confidence <= 1
+            ? confidence
+            : null,
+      });
+    }
+    return { edges, truncated: result.rows.length > cap };
+  }
+
   cypher(query: string): Promise<SourceCypherResult> {
     return this.request<SourceCypherResult>('POST', '/api/cypher', { query });
   }
 
   async search(query: string, limit = 20): Promise<SourceSearchResult[]> {
-    const res = await this.request<{ results: SourceSearchResult[] }>('POST', '/api/search', {
-      query,
-      limit,
-    });
+    const res = await this.request<{ results: SourceSearchResult[] }>(
+      'POST',
+      '/api/search',
+      {
+        query,
+        limit,
+      },
+    );
     return res.results;
   }
 
   /** Blast radius. Product-only by default; `includeTests` restores test/docs/example callers. */
-  impact(nodeId: string, depth = 3, opts?: { includeTests?: boolean }): Promise<SourceImpactResult> {
+  impact(
+    nodeId: string,
+    depth = 3,
+    opts?: { includeTests?: boolean },
+  ): Promise<SourceImpactResult> {
     const includeTests = opts?.includeTests ? '&include_tests=true' : '';
     return this.request<SourceImpactResult>(
       'GET',
@@ -226,12 +272,18 @@ export class SourceHttpClient {
    * surprising connections (edges bridging detected communities), and a few
    * suggested follow-up questions.
    */
-  insights(opts?: { hubLimit?: number; bridgeLimit?: number }): Promise<SourceInsightsResult> {
+  insights(opts?: {
+    hubLimit?: number;
+    bridgeLimit?: number;
+  }): Promise<SourceInsightsResult> {
     const params = new URLSearchParams();
     if (opts?.hubLimit != null) params.set('hub_limit', String(opts.hubLimit));
     if (opts?.bridgeLimit != null) params.set('bridge_limit', String(opts.bridgeLimit));
     const qs = params.toString();
-    return this.request<SourceInsightsResult>('GET', `/api/insights${qs ? `?${qs}` : ''}`);
+    return this.request<SourceInsightsResult>(
+      'GET',
+      `/api/insights${qs ? `?${qs}` : ''}`,
+    );
   }
 
   async nodeCount(): Promise<number> {
@@ -247,10 +299,14 @@ export class SourceHttpClient {
 
   /** Nodes whose full content contains ANY of `tokens` — full (untruncated) content. */
   async contentSearch(tokens: string[], limit = 500): Promise<SourceContentHit[]> {
-    const res = await this.request<{ results: SourceContentHit[] }>('POST', '/api/content-search', {
-      tokens,
-      limit,
-    });
+    const res = await this.request<{ results: SourceContentHit[] }>(
+      'POST',
+      '/api/content-search',
+      {
+        tokens,
+        limit,
+      },
+    );
     return res.results ?? [];
   }
 
@@ -286,7 +342,10 @@ export class SourceHttpClient {
    *  Product-only by default; `includeTests` restores steps living in test files. */
   flows(nodeId: string, opts?: { includeTests?: boolean }): Promise<SourceFlowsResult> {
     const includeTests = opts?.includeTests ? '?include_tests=true' : '';
-    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeNodePath(nodeId)}${includeTests}`);
+    return this.request<SourceFlowsResult>(
+      'GET',
+      `/api/flows/${encodeNodePath(nodeId)}${includeTests}`,
+    );
   }
 
   /** Method symbols of `className` defined in `file`, ordered by start line. */
@@ -330,12 +389,19 @@ export class SourceHttpClient {
    * Per-token distinct FILE paths whose content contains the token (external-system
    * detection). `limit` is a PER-TOKEN budget so a common token can't crowd out rare ones.
    */
-  async filesContaining(tokens: string[], limit = 500): Promise<Record<string, string[]>> {
-    const res = await this.request<SourceFilesContainingResult>('POST', '/api/content-search', {
-      tokens,
-      limit,
-      filesOnly: true,
-    });
+  async filesContaining(
+    tokens: string[],
+    limit = 500,
+  ): Promise<Record<string, string[]>> {
+    const res = await this.request<SourceFilesContainingResult>(
+      'POST',
+      '/api/content-search',
+      {
+        tokens,
+        limit,
+        filesOnly: true,
+      },
+    );
     return res.matches ?? {};
   }
 
@@ -353,7 +419,11 @@ export class SourceHttpClient {
 
   /** Vector-search claims in a repo. Returns the (possibly empty) hit list. */
   async memorySearch(body: SourceMemorySearchRequest): Promise<SourceMemorySearchHit[]> {
-    const res = await this.request<SourceMemorySearchResult>('POST', '/api/memory/search', body);
+    const res = await this.request<SourceMemorySearchResult>(
+      'POST',
+      '/api/memory/search',
+      body,
+    );
     return res.results ?? [];
   }
 
