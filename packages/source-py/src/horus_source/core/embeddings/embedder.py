@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _model_cache: dict[str, "TextEmbedding"] = {}
 _model_lock = threading.Lock()
+_model_retry_after: dict[str, float] = {}
 
 # nomic-embed-text REQUIRES task-instruction prefixes: queries are encoded with
 # "search_query: " and documents with "search_document: ". The model was trained this
@@ -76,6 +78,16 @@ def _embed_thread_count() -> int:
     return 4
 
 
+def _load_model(model_name: str) -> "TextEmbedding":
+    from fastembed import TextEmbedding
+
+    # Both load paths hold _model_lock; publish only a fully initialized model.
+    model = TextEmbedding(model_name=model_name, threads=_embed_thread_count())
+    _model_cache[model_name] = model
+    _model_retry_after.pop(model_name, None)
+    return model
+
+
 def _get_model(model_name: str) -> "TextEmbedding":
     cached = _model_cache.get(model_name)
     if cached is not None:
@@ -84,18 +96,48 @@ def _get_model(model_name: str) -> "TextEmbedding":
         cached = _model_cache.get(model_name)
         if cached is not None:
             return cached
-        from fastembed import TextEmbedding
+        return _load_model(model_name)
 
-        # Pinned thread count for reproducible embeddings (HOR-374) — see _embed_thread_count.
-        model = TextEmbedding(model_name=model_name, threads=_embed_thread_count())
-        _model_cache[model_name] = model
-        return model
+
+def _query_model_if_ready(model_name: str) -> "TextEmbedding | None":
+    cached = _model_cache.get(model_name)
+    if cached is not None:
+        return cached
+    if not _model_lock.acquire(blocking=False):
+        return None
+    if time.monotonic() < _model_retry_after.get(model_name, 0):
+        _model_lock.release()
+        return None
+    cached = _model_cache.get(model_name)
+    if cached is not None:
+        _model_lock.release()
+        return cached
+
+    def warm() -> None:
+        try:
+            _load_model(model_name)
+        except Exception:
+            _model_retry_after[model_name] = time.monotonic() + 60
+            logger.warning("Query model initialization failed; lexical search remains available", exc_info=True)
+        finally:
+            _model_lock.release()
+
+    # A primitive Lock can be released by the loader thread. Holding it before
+    # starting prevents concurrent cold requests from spawning duplicate loaders.
+    try:
+        threading.Thread(target=warm, daemon=True, name="horus-query-model").start()
+    except Exception:
+        _model_retry_after[model_name] = time.monotonic() + 60
+        _model_lock.release()
+        raise
+    return None
 
 
 def _get_model_cache_clear() -> None:
     """Clear the model cache (used in tests)."""
     with _model_lock:
         _model_cache.clear()
+        _model_retry_after.clear()
 
 
 _get_model.cache_clear = _get_model_cache_clear  # type: ignore[attr-defined]
@@ -138,12 +180,20 @@ def embed_query(
     query: str,
     model_name: str = _DEFAULT_MODEL,
     dimensions: int = _DEFAULT_DIMENSIONS,
+    *,
+    wait_for_model: bool = True,
 ) -> list[float] | None:
-    """Embed a single query string, returning ``None`` on failure."""
+    """Embed a query, or return None while a nonblocking caller warms the model.
+
+    Interactive search opts out of waiting for model downloads/initialization so
+    indexed lexical results remain usable. Batch callers retain blocking behavior.
+    """
     if not query or not query.strip():
         return None
     try:
-        model = _get_model(model_name)
+        model = _get_model(model_name) if wait_for_model else _query_model_if_ready(model_name)
+        if model is None:
+            return None
         text = f"{_QUERY_PREFIX}{query}" if _uses_task_prefixes(model_name) else query
         vec = next(iter(model.query_embed(text)))
         return vec[:dimensions].tolist()

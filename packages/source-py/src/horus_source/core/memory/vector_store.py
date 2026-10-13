@@ -264,7 +264,9 @@ class MemoryVectorStore:
             "model": row[3],
         }
 
-    def search(self, query: str, repo: str, limit: int = 10) -> list[MemorySearchHit]:
+    def search(
+        self, query: str, repo: str, limit: int = 10, *, wait_for_model: bool = True,
+    ) -> list[MemorySearchHit]:
         """Return the nearest claims to *query* within *repo*, best first.
 
         Embeds the query with the shared nomic encoder (384-dim) and ranks the
@@ -272,14 +274,14 @@ class MemoryVectorStore:
         as code vector search, but pre-filtered by the ``repo`` partition key so
         claim ids never mix into other repos. Falls back to a Python cosine over
         the repo's stored vectors if the native query fails, and returns ``[]`` on
-        any embedding/query failure so the caller degrades to lexical recall.
+        model warmup or any embedding/query failure so the caller degrades to lexical recall.
         """
         if not query or not query.strip() or not repo:
             return []
         limit = max(int(limit), 0)
         if limit == 0:
             return []
-        vec = embed_query(query)
+        vec = embed_query(query, wait_for_model=wait_for_model)
         if vec is None:
             return []
         try:

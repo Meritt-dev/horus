@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,6 +13,7 @@ from horus_source.core.embeddings.embedder import (
     _DEFAULT_MODEL,
     EMBEDDABLE_LABELS,
     _get_model,
+    _model_lock,
     embed_graph,
     embed_nodes,
     embed_query,
@@ -522,6 +525,59 @@ class TestEmbedQueryNomic:
         result = embed_query("test query")
         assert result is not None
         assert len(result) == 384
+
+
+class TestQueryModelWarmup:
+    @patch("fastembed.TextEmbedding")
+    def test_cold_queries_do_not_wait_or_start_duplicate_loaders(self, factory):
+        entered = threading.Event()
+        release = threading.Event()
+        model = MagicMock()
+        model.query_embed.side_effect = lambda _: iter([np.ones(768)])
+
+        def initialize(*args, **kwargs):
+            entered.set()
+            assert release.wait(10)
+            return model
+
+        factory.side_effect = initialize
+        try:
+            assert embed_query("first query", wait_for_model=False) is None
+            assert entered.wait(5)
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                pending = [pool.submit(embed_query, "other query", wait_for_model=False) for _ in range(20)]
+                assert all(request.result(timeout=5) is None for request in pending)
+            factory.assert_called_once()
+        finally:
+            release.set()
+            _get_model(_DEFAULT_MODEL)  # Drain the loader before clearing its cache.
+
+        result = embed_query("warm query", wait_for_model=False)
+        assert result == [1.0] * 384
+        model.query_embed.assert_called_once_with("search_query: warm query")
+        factory.assert_called_once()
+
+    @patch("fastembed.TextEmbedding")
+    def test_thread_start_failure_releases_lock(self, factory):
+        with patch("threading.Thread.start", side_effect=RuntimeError("cannot start thread")):
+            assert embed_query("cold query", wait_for_model=False) is None
+        _get_model(_DEFAULT_MODEL)
+        factory.assert_called_once()
+
+    @patch("fastembed.TextEmbedding")
+    def test_failed_background_load_can_retry(self, factory):
+        model = MagicMock()
+        model.query_embed.side_effect = lambda _: iter([np.ones(768)])
+        factory.side_effect = [RuntimeError("model download unavailable"), model]
+        assert embed_query("cold query", wait_for_model=False) is None
+        assert _model_lock.acquire(timeout=5)
+        _model_lock.release()  # The failed loader has recorded its retry cooldown.
+        for _ in range(10):
+            assert embed_query("still offline", wait_for_model=False) is None
+        factory.assert_called_once()
+        assert _get_model(_DEFAULT_MODEL) is model
+        assert embed_query("retry", wait_for_model=False) == [1.0] * 384
+        assert factory.call_count == 2
 
 
 def _make_incremental_graph() -> KnowledgeGraph:

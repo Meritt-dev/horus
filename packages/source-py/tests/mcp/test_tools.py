@@ -182,6 +182,11 @@ class TestHandleListRepos:
 
 
 class TestHandleQuery:
+    @pytest.fixture(autouse=True)
+    def lexical_model(self, monkeypatch):
+        # Formatting tests need no download; cold/warm behavior is tested separately.
+        monkeypatch.setattr("horus_source.mcp.tools.embed_query", lambda query, **kwargs: None)
+
     def test_returns_results(self, mock_storage):
         result = handle_query(mock_storage, "validate")
         assert "validate" in result

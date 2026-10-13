@@ -217,7 +217,9 @@ def _format_query_results(results: list, groups: dict[str, list]) -> str:
     return "\n".join(lines)
 
 
-def handle_query(storage: StorageBackend, query: str, limit: int = 20) -> str:
+def handle_query(
+    storage: StorageBackend, query: str, limit: int = 20, *, wait_for_model: bool = True,
+) -> str:
     """Execute hybrid search and format results, grouped by execution process.
 
     Args:
@@ -231,9 +233,9 @@ def handle_query(storage: StorageBackend, query: str, limit: int = 20) -> str:
     """
     limit = max(1, min(limit, 100))
 
-    query_embedding = embed_query(query)
+    query_embedding = embed_query(query, wait_for_model=wait_for_model)
     if query_embedding is None:
-        logger.warning("embed_query returned None; falling back to FTS-only search")
+        logger.debug("Query embeddings unavailable or warming; using lexical search")
 
     results = hybrid_search(query, storage, query_embedding=query_embedding, limit=limit)
     if not results:
