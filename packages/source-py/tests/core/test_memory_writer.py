@@ -30,7 +30,7 @@ def stub_embeddings(monkeypatch: pytest.MonkeyPatch):
     def _doc(text: str, model_name: str = "stub") -> list[float] | None:
         return _unit(registry[text]) if text in registry else None
 
-    def _query(query: str) -> list[float] | None:
+    def _query(query: str, *, wait_for_model: bool = True) -> list[float] | None:
         return _unit(registry[query]) if query in registry else None
 
     monkeypatch.setattr(vs, "embed_text_document", _doc)

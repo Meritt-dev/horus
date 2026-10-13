@@ -26,6 +26,7 @@ from horus_source.config.languages import is_supported
 from horus_source.core.embeddings.embedder import (
     _DEFAULT_MODEL,
     EMBEDDING_SCHEME_VERSION,
+    _get_model,
     embed_graph,
     embed_missing,
     embed_nodes,
@@ -263,12 +264,35 @@ def _compute_dirty_node_ids(graph: KnowledgeGraph, dirty_files: set[str]) -> set
 _SMALL_CHANGE_THRESHOLD = 3
 
 
+def _run_incremental_embeddings(
+    storage: StorageBackend, repo_path: Path, dirty_files: set[str],
+    graph: KnowledgeGraph | None = None,
+) -> bool:
+    try:
+        graph = graph if graph is not None else storage.load_graph()
+        if ensure_current_embeddings(storage, repo_path):
+            return True
+        dirty_node_ids = _compute_dirty_node_ids(graph, dirty_files)
+        if not dirty_node_ids:
+            return True
+        logger.info("Re-embedding %d nodes...", len(dirty_node_ids))
+        embeddings = embed_nodes(graph, dirty_node_ids)
+        if not embeddings:
+            return False
+        storage.upsert_embeddings(embeddings)
+        return True
+    except Exception:
+        logger.warning("Incremental embedding failed", exc_info=True)
+        return False
+
+
 def _run_incremental_global_phases(
     storage: StorageBackend,
     repo_path: Path,
     dirty_files: set[str],
     run_coupling: bool = False,
-) -> None:
+    run_embeddings: bool = True,
+) -> bool:
     """Run global phases incrementally using graph hydrated from storage.
 
     When the change is small (< _SMALL_CHANGE_THRESHOLD files), only dead code
@@ -321,20 +345,12 @@ def _run_incremental_global_phases(
             storage.add_relationships(coupled_rels)
         logger.info("Coupling: %d pairs", num_coupled)
 
-    if not ensure_current_embeddings(storage, repo_path):
-        dirty_node_ids = _compute_dirty_node_ids(graph, dirty_files)
-        if dirty_node_ids:
-            logger.info("Re-embedding %d nodes...", len(dirty_node_ids))
-            try:
-                embeddings = embed_nodes(graph, dirty_node_ids)
-                if embeddings:
-                    storage.upsert_embeddings(embeddings)
-            except Exception:
-                logger.warning("Incremental embedding failed", exc_info=True)
+    embedded = run_embeddings and _run_incremental_embeddings(storage, repo_path, dirty_files, graph)
 
     storage.rebuild_fts_indexes()
 
     logger.info("Incremental global phases complete.")
+    return embedded
 
 
 async def watch_repo(
@@ -359,10 +375,31 @@ async def watch_repo(
 
     gitignore = load_gitignore(repo_path)
     dirty_files: set[str] = set()
+    pending_embeddings: set[str] = set()
+    embedding_retry_at = 0.0
+    embedding_failures = 0
     last_change_time: float = 0.0
     first_dirty_time: float = 0.0
     global_lock = asyncio.Lock()
     last_known_commit = _get_head_sha(repo_path)
+
+    def postpone_embeddings() -> None:
+        nonlocal embedding_failures, embedding_retry_at
+        embedding_failures = min(embedding_failures + 1, 4)
+        embedding_retry_at = time.monotonic() + min(60 * 2 ** (embedding_failures - 1), 300)
+
+    async def prepare_model() -> bool:
+        if time.monotonic() < embedding_retry_at:
+            return False
+        try:
+            # Downloads initialize no graph state. Indexed MCP reads must not
+            # wait for them while structural/database mutations stay serialized.
+            await asyncio.to_thread(_get_model, _DEFAULT_MODEL)
+            return True
+        except Exception:
+            postpone_embeddings()
+            logger.warning("Embedding model unavailable; structural updates remain available", exc_info=True)
+            return False
 
     logger.info("Watching %s for changes...", repo_path)
 
@@ -410,13 +447,33 @@ async def watch_repo(
             try:
                 async with global_lock:
                     logger.info("Running incremental global phases...")
-                    await _run_sync(
+                    model_ready = await prepare_model()
+                    embedded = await _run_sync(
                         _run_incremental_global_phases,
-                        storage, repo_path, snapshot, run_coupling,
+                        storage, repo_path, snapshot, run_coupling, model_ready,
                     )
+                    if embedded:
+                        pending_embeddings -= snapshot
+                        embedding_failures = 0
+                        embedding_retry_at = 0.0
+                    else:
+                        pending_embeddings |= snapshot
+                        if model_ready:
+                            postpone_embeddings()
             except Exception:
                 logger.exception("Global phases failed; re-queueing dirty files")
                 dirty_files |= snapshot
                 last_change_time = time.monotonic()
+
+        # Retry only vectors after an initialization failure, not communities,
+        # processes or FTS for files whose structural update already succeeded.
+        if pending_embeddings and time.monotonic() >= embedding_retry_at and await prepare_model():
+            snapshot = pending_embeddings.copy()
+            if await _run_sync(_run_incremental_embeddings, storage, repo_path, snapshot):
+                pending_embeddings -= snapshot
+                embedding_failures = 0
+                embedding_retry_at = 0.0
+            else:
+                postpone_embeddings()
 
     logger.info("Watch stopped.")

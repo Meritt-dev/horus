@@ -465,7 +465,10 @@ def _dispatch_tool(name: str, arguments: dict, storage: StorageBackend) -> str:
     if name == "horus_source_list_repos":
         return handle_list_repos()
     elif name == "horus_source_query":
-        return handle_query(storage, arguments.get("query", ""), limit=arguments.get("limit", 20))
+        return handle_query(
+            storage, arguments.get("query", ""), limit=arguments.get("limit", 20),
+            wait_for_model=False,
+        )
     elif name == "horus_source_context":
         return handle_context(storage, arguments.get("symbol", ""))
     elif name == "horus_source_impact":
