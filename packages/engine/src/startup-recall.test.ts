@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, type DbHandle } from '@horus/db';
 import { createLocalMemoryStore } from './memory.js';
-import { recallStartupIncidents, type IncidentContext } from './memory-recall.js';
+import {
+  appendHint,
+  hintTerms,
+  incidentHintPartition,
+  recallStartupIncidents,
+  type IncidentContext,
+} from './memory-recall.js';
+import type { MemoryVectorIndex } from './memory-store.js';
 import { investigate } from './engine.js';
 import type { LogsProvider } from '@horus/connectors';
 let dir: string;
@@ -275,4 +282,91 @@ it('runs a prior check before broad collection and current contradiction never c
   expect(report.startupRecall?.[0]?.validation).toBe('contradicted');
   expect(report.confidence).toBeLessThan(0.9);
   expect(report.persisted).toBe(true);
+});
+
+/** Fake local vector index: fixed per-memory similarities, records upserts. */
+function fakeIndex(scores: Record<string, number>) {
+  const upserts: { memoryId: string; claim: string; repo: string }[] = [];
+  const index: MemoryVectorIndex = {
+    upsert: async (i) => {
+      upserts.push(i);
+    },
+    search: async () =>
+      Object.entries(scores).map(([id, score]) => ({
+        memoryId: `${id}#hint:abc`,
+        score,
+      })),
+    remove: async () => {},
+  };
+  return { index, upserts };
+}
+it('typed hints: a reworded repeat is recalled through stored-hint similarity, an unrelated one is not', async () => {
+  await seed('fulfil', 'fulfillment failing for brand orders', undefined);
+  await seed('token', 'store token exchange failing STORE_TOKEN', undefined);
+  const store = createLocalMemoryStore(handle.db);
+  const hint = 'brand orders are not getting fulfilled';
+  // The previous word-overlap rule needed >=45% shared words and missed this rewording.
+  const { index } = fakeIndex({ fulfil: 0.8, token: 0.55 });
+  expect(
+    (await recallStartupIncidents(store, { repo: 'shop', hint }, { index })).map(
+      (c) => c.memoryId,
+    ),
+  ).toEqual(['fulfil']);
+  const unrelated = fakeIndex({ fulfil: 0.6, token: 0.58 }).index;
+  expect(
+    await recallStartupIncidents(
+      store,
+      { repo: 'shop', hint: 'vendor dashboard shows empty statistics' },
+      { index: unrelated },
+    ),
+  ).toEqual([]);
+});
+it('a rare shared code identifier recalls without embeddings; common words alone do not', async () => {
+  await seed('gaia', 'the GAIA_STOCK_SYNC queue keeps failing', undefined);
+  await seed('other', 'product sync failures in the scheduler', undefined);
+  const store = createLocalMemoryStore(handle.db);
+  const recalled = await recallStartupIncidents(store, {
+    repo: 'shop',
+    hint: 'GAIA_STOCK_SYNC job fails with status code 401 from Gaia API',
+  });
+  expect(recalled.map((c) => c.memoryId)).toEqual(['gaia']);
+  expect(
+    await recallStartupIncidents(store, {
+      repo: 'shop',
+      hint: 'checkout sync failing for customers',
+    }),
+  ).toEqual([]);
+});
+it('backfills the hint partition once when it is empty, without blocking recall', async () => {
+  await seed('fulfil', 'fulfillment failing for brand orders', undefined);
+  const { index, upserts } = fakeIndex({});
+  await recallStartupIncidents(
+    createLocalMemoryStore(handle.db),
+    { repo: 'shop', hint: 'fulfillment failing for brand orders' },
+    { index },
+  );
+  expect(upserts).toEqual([
+    expect.objectContaining({
+      claim: 'fulfillment failing for brand orders',
+      repo: incidentHintPartition('shop'),
+    }),
+  ]);
+  expect(upserts[0]!.memoryId.startsWith('fulfil#hint:')).toBe(true);
+});
+it('hint terms keep exact codes and split identifiers; hint history is bounded and deduplicated', () => {
+  expect([...hintTerms('ERR4624 in syncEmodaProduct fulfilled')].sort()).toEqual([
+    '#err4624',
+    'emoda',
+    'err',
+    'fulfill',
+    'product',
+    'sync',
+  ]);
+  expect(appendHint(['a', 'b'], 'a')).toEqual(['a', 'b']);
+  expect(
+    appendHint(
+      Array.from({ length: 20 }, (_, i) => `h${i}`),
+      'new',
+    ),
+  ).toHaveLength(20);
 });

@@ -32,6 +32,11 @@ export interface InvestigationInput {
   incident?: import('./memory-recall.js').IncidentContext;
   /** Free-text hint naming a symbol, file, or behaviour to investigate. */
   hint: string;
+  /**
+   * Calling agent session (Claude Code `CLAUDE_CODE_SESSION_ID`, or `HORUS_AGENT_SESSION`), recorded
+   * so recall can later be measured against real session continuity. Context only; never scored.
+   */
+  agentSession?: string;
   /** Optional repository scope. */
   repo?: string;
   /** Optional git ref or range (e.g. `v1.2.0` or `abc123..HEAD`) to bound history. */

@@ -217,6 +217,8 @@ export async function recallSimilar(
       .select()
       .from(incidentMemory)
       .where(eq(incidentMemory.project, p))
+      // Newest first: one row per investigation, so an unordered cap would hide recent incidents.
+      .orderBy(desc(incidentMemory.createdAt), desc(incidentMemory.id))
       .limit(200);
 
     const candidates: SimilarIncident[] = [];
@@ -542,6 +544,7 @@ export function createLocalMemoryStore(
           .select()
           .from(incidentMemory)
           .where(eq(incidentMemory.project, p))
+          .orderBy(desc(incidentMemory.createdAt), desc(incidentMemory.id))
           .limit(200);
         const tagSet = new Set(i.tokens);
         return rows.filter((row) => {

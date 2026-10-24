@@ -493,11 +493,204 @@ function loggerOnlyMessage(incident: IncidentContext, hint: string): string | un
   return `${tail}:${message}`;
 }
 
+// ---------------------------------------------------------------------------
+// Typed-hint matching (used when no structured incident field matches)
+// ---------------------------------------------------------------------------
+// Benchmarked on 207 chronological SAFQA investigations against two independent relevance label
+// sets (5-fold cross-validation): IDF keyword coverage + local nomic similarity of stored hints
+// found 83-85% of repeats with 95-96% of unrelated incidents left unmatched; keyword-only (host
+// down) 65-66% / 96-98%. The previous word-overlap rule found 39% / 100%.
+const HINT_KEYWORD_WEIGHT = 0.4;
+const HINT_COMBINED_MIN = 0.86;
+const HINT_KEYWORD_ONLY_MIN = 0.45;
+/** A shared exact code-shaped identifier carried by at most this many stored hints matches alone. */
+const RARE_CODE_MAX_HINTS = 2;
+const MAX_STORED_HINTS = 20;
+const BACKFILL_BUDGET_MS = 2000;
+const HINT_STOP = new Set([
+  'the',
+  'and',
+  'for',
+  'error',
+  'failed',
+  'failure',
+  'incident',
+  'investigation',
+  'with',
+  'from',
+  'are',
+  'not',
+  'that',
+  'this',
+  'what',
+  'how',
+  'does',
+  'why',
+  'when',
+  'keeps',
+  'keep',
+  'getting',
+  'was',
+  'were',
+  'has',
+  'have',
+  'into',
+  'after',
+  'its',
+  'all',
+  'any',
+  'can',
+  'could',
+  'should',
+  'did',
+  'work',
+  'works',
+  'working',
+]);
+
+function stemTerm(word: string): string {
+  for (const suffix of ['ments', 'ment', 'ings', 'ing', 'ed', 'es', 's'])
+    if (word.length - suffix.length >= 4 && word.endsWith(suffix))
+      return word.slice(0, -suffix.length);
+  return word;
+}
+
+/** Hint terms: exact code-shaped tokens (`#err4624`) plus stemmed camelCase/snake_case words. */
+export function hintTerms(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const token of text.match(/[A-Za-z0-9_]+/g) ?? []) {
+    if (/[0-9_]/.test(token) && token.length >= 4) out.add(`#${token.toLowerCase()}`);
+    for (const part of token.match(/[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g) ??
+      []) {
+      const word = part.toLowerCase();
+      if (word.length > 2 && !HINT_STOP.has(word) && !/^[0-9]+$/.test(word))
+        out.add(stemTerm(word));
+    }
+  }
+  return out;
+}
+
+/** Every hint a memory has been investigated under (oldest first), falling back to the latest hint/claim. */
+export function storedHints(item: MemoryItem): string[] {
+  const payload = (item.payload ?? {}) as Record<string, unknown>;
+  const hints = Array.isArray(payload.hints)
+    ? payload.hints.filter((h): h is string => typeof h === 'string' && h.trim() !== '')
+    : [];
+  if (hints.length) return hints;
+  return [typeof payload.hint === 'string' ? payload.hint : item.claim];
+}
+
+/** Append a hint to a memory's rolling hint history (deduplicated, bounded). */
+export function appendHint(previous: unknown, hint: string): string[] {
+  const prior = Array.isArray(previous)
+    ? previous.filter((h): h is string => typeof h === 'string')
+    : [];
+  return [...new Set([...prior, hint])].slice(-MAX_STORED_HINTS);
+}
+
+/** Separate per-repo partition in the local memory vector index, so hint vectors never mix with claims. */
+export function incidentHintPartition(repo: string): string {
+  return `${repo}#incident-hints`;
+}
+
+function hintVectorId(memoryId: string, hint: string): string {
+  return `${memoryId}#hint:${createHash('sha256').update(hint).digest('hex').slice(0, 16)}`;
+}
+
+/** Index one hint for embedding recall. Content-addressed and best-effort: never throws. */
+export async function indexIncidentHint(
+  index: MemoryVectorIndex,
+  repo: string,
+  memoryId: string,
+  hint: string,
+): Promise<void> {
+  if (!repo.trim() || !hint.trim()) return;
+  try {
+    await index.upsert({
+      memoryId: hintVectorId(memoryId, hint),
+      claim: hint,
+      repo: incidentHintPartition(repo),
+      scope: 'repo',
+    });
+  } catch {
+    // ignore — embedding recall degrades to keyword matching
+  }
+}
+
+/** Best stored-hint similarity per memory id. Empty on any index failure. */
+async function hintSimilarities(
+  index: MemoryVectorIndex,
+  repo: string,
+  hint: string,
+): Promise<Map<string, number>> {
+  const best = new Map<string, number>();
+  try {
+    for (const hit of await index.search({
+      query: hint,
+      repo: incidentHintPartition(repo),
+      limit: 200,
+    })) {
+      const memoryId = hit.memoryId.split('#hint:')[0]!;
+      best.set(memoryId, Math.max(best.get(memoryId) ?? -1, hit.score));
+    }
+  } catch {
+    // ignore — keyword matching still applies
+  }
+  return best;
+}
+
+interface HintMatch {
+  accepted: boolean;
+  score: number;
+  shared: string[];
+}
+
+/**
+ * Score one memory's stored hints against the query. Keyword coverage is an IDF-weighted f1 of
+ * query and stored-hint terms (>=2 shared terms); IDF comes from all stored hints in the pool.
+ */
+function matchHint(
+  query: Set<string>,
+  hints: Set<string>[],
+  df: Map<string, number>,
+  docs: number,
+  similarity: number | undefined,
+): HintMatch {
+  const idf = (t: string) =>
+    Math.log(1 + (docs - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  const queryWeight = [...query].reduce((sum, t) => sum + idf(t), 0) || 1;
+  let keyword = 0;
+  let rareCode = false;
+  const shared = new Set<string>();
+  for (const terms of hints) {
+    const hit = [...query].filter((t) => terms.has(t));
+    if (
+      hit.some(
+        (t) =>
+          t.startsWith('#') && t.length > 6 && (df.get(t) ?? 0) <= RARE_CODE_MAX_HINTS,
+      )
+    )
+      rareCode = true;
+    if (hit.length < 2) continue;
+    hit.forEach((t) => shared.add(t.replace(/^#/, '')));
+    const matched = hit.reduce((sum, t) => sum + idf(t), 0);
+    const q = matched / queryWeight;
+    const d = matched / ([...terms].reduce((sum, t) => sum + idf(t), 0) || 1);
+    keyword = Math.max(keyword, (2 * q * d) / (q + d));
+  }
+  const score =
+    similarity === undefined ? keyword : similarity + HINT_KEYWORD_WEIGHT * keyword;
+  const accepted =
+    rareCode ||
+    score >= (similarity === undefined ? HINT_KEYWORD_ONLY_MIN : HINT_COMBINED_MIN);
+  return { accepted, score, shared: [...shared].sort() };
+}
+
 /** Bounded, deterministic startup retrieval. No hypothesis/category from the current run is used. */
 export async function recallStartupIncidents(
   store: MemoryStore,
   input: import('./types.js').InvestigationInput,
-  opts: { syncScope?: string; now?: Date } = {},
+  opts: { syncScope?: string; now?: Date; index?: MemoryVectorIndex } = {},
 ): Promise<StartupIncident[]> {
   if (!input.repo?.trim()) return [];
   const pool = await store.query({
@@ -506,6 +699,30 @@ export async function recallStartupIncidents(
     limit: 200,
   });
   const now = opts.now ?? new Date();
+  const queryTerms = hintTerms(input.hint);
+  const hintTermsById = new Map(
+    pool.map((item) => [item.id, storedHints(item).map(hintTerms)]),
+  );
+  const df = new Map<string, number>();
+  let hintDocs = 0;
+  for (const docs of hintTermsById.values())
+    for (const terms of docs) {
+      hintDocs++;
+      for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
+    }
+  const similarities = opts.index
+    ? await hintSimilarities(opts.index, input.repo, input.hint)
+    : new Map<string, number>();
+  // First run after upgrade: the hint partition is empty, so index the pool for later investigations.
+  // Bounded so a slow host can never hold up the investigation; unindexed memories use keyword matching.
+  if (opts.index && similarities.size === 0) {
+    const deadline = Date.now() + BACKFILL_BUDGET_MS;
+    backfill: for (const item of pool)
+      for (const hint of storedHints(item)) {
+        if (Date.now() > deadline) break backfill;
+        await indexIncidentHint(opts.index, input.repo, item.id, hint);
+      }
+  }
   const ranked: StartupIncident[] = [];
   for (const item of pool) {
     if (
@@ -557,10 +774,15 @@ export async function recallStartupIncidents(
       }
     }
     if (mismatch) continue;
-    const { shared, overlap } = incidentHintOverlap(input.hint, priorHint);
-    // ponytail: conservative lexical fallback; replace only after chronological replay improves it.
-    if (!fields.length && (shared.length < 2 || overlap < 0.45)) continue;
-    if (shared.length) fields.push(`hint:${shared.join(',')}`);
+    const hint = matchHint(
+      queryTerms,
+      hintTermsById.get(item.id) ?? [],
+      df,
+      hintDocs,
+      similarities.get(item.id),
+    );
+    if (!fields.length && !hint.accepted) continue;
+    if (hint.shared.length) fields.push(`hint:${hint.shared.join(',')}`);
     const refs =
       payload.reportRefs && typeof payload.reportRefs === 'object'
         ? (payload.reportRefs as Record<string, string>)
@@ -580,7 +802,7 @@ export async function recallStartupIncidents(
         : [
             `Check current evidence for ${typeof payload.hint === 'string' ? payload.hint : item.claim}`,
           ],
-      relevance: fields.filter((f) => !f.startsWith('hint:')).length + overlap,
+      relevance: fields.filter((f) => !f.startsWith('hint:')).length + hint.score,
       validation: 'unverified',
       contradictingEvidenceIds: [],
     });

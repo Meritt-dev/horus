@@ -55,6 +55,19 @@ export function renderChangeImpact(r: ChangeImpactReport): string {
     lines.push('');
   }
 
+  if (r.relatedIncidents?.length) {
+    const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+    lines.push('## Past incidents in this code');
+    for (const i of r.relatedIncidents) {
+      const symbols = i.matchedSymbols.map((id) => id.split(':').pop()).join(', ');
+      lines.push(
+        `- ${i.createdAt.slice(0, 10)} ${clip(i.hint, 100)} (${i.investigationId})`,
+      );
+      lines.push(`  touches ${symbols}; cause then: ${clip(i.topCause, 140)}`);
+    }
+    lines.push('');
+  }
+
   lines.push('## Affected flows');
   if (r.affectedFlows.length === 0) {
     lines.push('none');
@@ -114,6 +127,7 @@ export function changeImpactToCompactObject(
     removed,
     modified,
     affectedFlows,
+    ...(r.relatedIncidents?.length ? { relatedIncidents: r.relatedIncidents } : {}),
     ...(truncatedCount > 0
       ? {
           truncated: true,

@@ -1,6 +1,6 @@
 import type { QueueEvidenceProvider } from '@horus/connectors';
 import type { StructuredLogSource } from '@horus/connectors';
-import { recallStartupIncidents } from './memory-recall.js';
+import { indexIncidentHint, recallStartupIncidents } from './memory-recall.js';
 /**
  * The deterministic investigation pipeline (HOR-5). NO AI/LLM.
  *
@@ -77,7 +77,7 @@ import { selectHintMatchedSignal } from './hint-matched-signal.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
-import type { AuditCtx, MemoryStore } from './memory-store.js';
+import type { AuditCtx, MemoryStore, MemoryVectorIndex } from './memory-store.js';
 import {
   autoInvestigationMemoryEnabled,
   captureInvestigationMemory,
@@ -121,6 +121,8 @@ import type { BoundedGitChange, ConfigChangeFile } from './git-collector.js';
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
   memoryScope?: string;
+  /** Optional local memory vector index; startup recall adds embedding similarity of stored hints. */
+  recallIndex?: MemoryVectorIndex;
   onStartupRecall?: (items: import('./memory-recall.js').StartupIncident[]) => void;
   /**
    * Source-intelligence provider. Optional (HOR-319 layer-2): when null/absent the
@@ -1676,6 +1678,7 @@ export async function investigate(
     deps.store && !/^(0|false|off)$/i.test(process.env.HORUS_STARTUP_RECALL ?? '')
       ? await recallStartupIncidents(deps.store, input, {
           syncScope: deps.memoryScope,
+          index: deps.recallIndex,
         }).catch(() => [])
       : [];
   // The same scope/status boundary applies to the older recurrence corroboration path.
@@ -5118,7 +5121,20 @@ export async function investigate(
         // Deterministic "seen at" stamp — the persisted investigation's createdAt (never Date.now()
         // in the scoring path); falls back to a fresh Date only when the DB did not echo createdAt.
         const reportTime = persisted?.createdAt ?? new Date();
-        await captureInvestigationMemory(store, persistedId, report, reportTime, audit);
+        const captured = await captureInvestigationMemory(
+          store,
+          persistedId,
+          report,
+          reportTime,
+          audit,
+        );
+        if (deps.recallIndex && captured.memoryId && report.input.repo)
+          await indexIncidentHint(
+            deps.recallIndex,
+            report.input.repo,
+            captured.memoryId,
+            report.input.hint,
+          );
       } catch (error) {
         report.memoryCaptureError = connectorFailureReason(error);
         // Non-blocking — auto-memory must never prevent investigation delivery (spec §7/§8).

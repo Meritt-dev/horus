@@ -123,6 +123,15 @@ export function renderWhatChanged(r: WhatChangedReport): string {
         lines.push('  - ' + f.flowName);
       }
     }
+    if (r.changeImpact.relatedIncidents?.length) {
+      lines.push('');
+      lines.push('## Past incidents in this code');
+      for (const i of r.changeImpact.relatedIncidents) {
+        lines.push(
+          `  - ${i.createdAt.slice(0, 10)} ${i.hint.slice(0, 100)} (${i.investigationId})`,
+        );
+      }
+    }
   }
 
   return lines.join('\n');

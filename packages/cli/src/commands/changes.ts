@@ -6,6 +6,7 @@ import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
 import { failCommand } from '../lib/command-failure.js';
+import { relatedIncidentsFor } from '../lib/related-incidents.js';
 
 export const CHANGES_AI_CONTRACT = `Provide a clearly separated AI change-impact review with:
 
@@ -50,6 +51,8 @@ export async function runChanges(
     }
 
     const report = await changeImpact({ base, compare }, { code });
+    const related = await relatedIncidentsFor(config, report);
+    if (related.length) report.relatedIncidents = related;
 
     if (opts.json) {
       console.log(changeImpactToJSON(report, { full: opts.full }));

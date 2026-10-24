@@ -41,6 +41,9 @@ import {
   queueForEnv,
   redisStateForEnv,
   metricsForEnv,
+  SourceHttpClient,
+  SourceMemoryVectorIndex,
+  type MemoryVectorIndexLike,
 } from '@horus/connectors';
 import type {
   LogsProvider,
@@ -105,6 +108,8 @@ export interface InvestigationContext {
   queue: QueueRuntimeProvider | null;
   redisState: RedisStateRuntimeProvider | null;
   metrics: MetricsProvider | null;
+  /** Local memory vector index on the verified source host; null in runtime-only mode. */
+  recallIndex?: MemoryVectorIndexLike | null;
   /** Default service scope: CLI flag > ES connector's serviceName > undefined. */
   service?: string;
 }
@@ -145,6 +150,7 @@ export async function buildInvestigationContext(
 
   // `codeForEnv` only returns a provider when the repo has a configured sourceHostUrl.
   const sourceUrl = renv.repositories[0]?.sourceHostUrl;
+  let hostUrl = sourceUrl;
   let runtimeOnly: boolean;
   if (opts.unattended) {
     runtimeOnly = !code || !(await code.health()).ok;
@@ -157,6 +163,7 @@ export async function buildInvestigationContext(
     runtimeOnly = !resolved.ok;
     if (resolved.ok && resolved.hostUrl && resolved.hostUrl !== sourceUrl) {
       code = codeForUrl(resolved.hostUrl);
+      hostUrl = resolved.hostUrl;
     }
   } else {
     runtimeOnly = !code || !(await code.health()).ok;
@@ -209,6 +216,13 @@ export async function buildInvestigationContext(
     // Runtime-only degrade: pass no source provider so the engine skips seed
     // resolution + structural evidence and builds from runtime evidence.
     code: runtimeOnly ? null : code,
+    // Short timeout: recall similarity is optional context and must not delay the investigation.
+    recallIndex:
+      runtimeOnly || !hostUrl
+        ? null
+        : new SourceMemoryVectorIndex(
+            new SourceHttpClient({ baseUrl: hostUrl, timeoutMs: 3000 }),
+          ),
     logs,
     mongo,
     postgres,
@@ -318,6 +332,9 @@ export async function runOneInvestigation(
     : NaN;
   const staleIndex =
     !Number.isNaN(indexedAtMs) && Date.now() - indexedAtMs > STALE_INDEX_MS;
+  const agentSession = (
+    process.env.HORUS_AGENT_SESSION ?? process.env.CLAUDE_CODE_SESSION_ID
+  )?.trim();
   const investigation = investigate(
     {
       reportId: input.reportId,
@@ -328,6 +345,7 @@ export async function runOneInvestigation(
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.since !== undefined ? { since: input.since } : {}),
       ...(input.logsSince !== undefined ? { logsSince: input.logsSince } : {}),
+      ...(agentSession ? { agentSession } : {}),
       ...((input.service ?? ctx.service) !== undefined
         ? { service: input.service ?? ctx.service }
         : {}),
@@ -346,6 +364,7 @@ export async function runOneInvestigation(
         syncScope: memorySyncContext(renv.path, renv.project)?.scope,
       }),
       memoryScope: memorySyncContext(renv.path, renv.project)?.scope,
+      ...(ctx.recallIndex ? { recallIndex: ctx.recallIndex } : {}),
       onStartupRecall: (items) => {
         if (!items.length) console.error('Prior incidents: no relevant match.');
         for (const item of items) console.error(formatStartupIncident(item));

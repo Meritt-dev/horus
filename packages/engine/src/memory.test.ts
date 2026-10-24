@@ -3,8 +3,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { InvestigationReport } from './types.js';
-import type { HorusDb } from '@horus/db';
+import { createLocalDb, incidentMemory, type HorusDb } from '@horus/db';
 import {
   moduleArea,
   tagOverlap,
@@ -338,6 +341,9 @@ function makeIsolationDb(
         where(_cond: unknown) {
           return chain;
         },
+        orderBy(..._cols: unknown[]) {
+          return chain;
+        },
         limit(_n: number) {
           return Promise.resolve(rows);
         },
@@ -473,6 +479,30 @@ describe('recallSimilar — project isolation (HOR-46)', () => {
       '   ',
     );
     expect(results).toHaveLength(0);
+  });
+});
+
+describe('recallSimilar — bounded scan keeps the newest incidents', () => {
+  it('still recalls the latest incident after more than 200 rows exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'horus-recall-order-'));
+    const handle = await createLocalDb({ path: join(dir, 'horus.db') });
+    try {
+      const base = Date.parse('2026-01-01T00:00:00Z');
+      // Oldest rows inserted first, as investigations accumulate in production.
+      await handle.db.insert(incidentMemory).values(
+        Array.from({ length: 210 }, (_, i) => ({
+          project: 'p',
+          title: `incident ${i}`,
+          tags: i === 209 ? ['src/modules/latest'] : ['src/modules/older'],
+          createdAt: new Date(base + i * 60_000),
+        })),
+      );
+      const results = await recallSimilar(handle.db, ['src/modules/latest'], null, 'p');
+      expect(results.map((r) => r.title)).toEqual(['incident 209']);
+    } finally {
+      await handle.sql.end();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -6,7 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { CodeProvider } from '@horus/connectors';
 import type { ChangeSet, Symbol, Flow } from '@horus/core';
-import { changeImpact } from './changes.js';
+import { changeImpact, incidentsTouchingChanges } from './changes.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -264,5 +264,60 @@ describe('changeImpact — structural truth hardening', () => {
       'flow:small-a',
       'flow:small-b',
     ]);
+  });
+});
+
+describe('incidentsTouchingChanges', () => {
+  const sym = (id: string) =>
+    ({ id, name: id.split(':').pop()!, filePath: 'src/a.ts' }) as Symbol;
+  const saved = (
+    id: string,
+    day: number,
+    hint: string,
+    band: string,
+    seeds: string[],
+  ) => ({
+    id,
+    createdAt: new Date(Date.UTC(2026, 8, day)),
+    report: {
+      input: { hint },
+      seeds: seeds.map((s) => ({ id: s })),
+      suspectedCauses: [{ title: `cause ${id}`, band }],
+    },
+  });
+  const change = {
+    modified: [
+      { before: sym('method:src/a.ts:A.run'), after: sym('method:src/a.ts:A.run') },
+    ],
+    removed: [],
+  };
+
+  it('lists confident past incidents whose top seeds the change touches, newest first, once per hint', () => {
+    const out = incidentsTouchingChanges(change, [
+      saved('old', 1, 'queue stuck', 'likely', ['method:src/a.ts:A.run']),
+      saved('new', 5, 'Queue stuck', 'highly-likely', ['method:src/a.ts:A.run']),
+      saved('other', 3, 'checkout slow', 'likely', [
+        'function:src/b.ts:pay',
+        'method:src/a.ts:A.run',
+      ]),
+    ]);
+    expect(out.map((i) => i.investigationId)).toEqual(['new', 'other']);
+    expect(out[0]!.matchedSymbols).toEqual(['method:src/a.ts:A.run']);
+  });
+
+  it('ignores weak causes, untouched code, file-level seeds and seeds beyond the top three', () => {
+    expect(
+      incidentsTouchingChanges(change, [
+        saved('weak', 1, 'a', 'possible', ['method:src/a.ts:A.run']),
+        saved('untouched', 2, 'b', 'likely', ['method:src/a.ts:A.stop']),
+        saved('file', 3, 'c', 'likely', ['file:src/a.ts']),
+        saved('deep', 4, 'd', 'likely', [
+          'method:x:1',
+          'method:x:2',
+          'method:x:3',
+          'method:src/a.ts:A.run',
+        ]),
+      ]),
+    ).toEqual([]);
   });
 });

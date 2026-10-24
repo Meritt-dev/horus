@@ -11,6 +11,8 @@ import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
 import { failCommand } from '../lib/command-failure.js';
+import { relatedIncidentsFor } from '../lib/related-incidents.js';
+import { redactCloudValue } from '../lib/cloud/investigation-sync.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 
@@ -95,6 +97,11 @@ export async function runWhatChanged(
       { repoPath: renv.path, since, until: opts.until, service },
       { code },
     );
+
+    if (r.changeImpact) {
+      const related = await relatedIncidentsFor(config, r.changeImpact, renv.project);
+      if (related.length) r.changeImpact.relatedIncidents = related;
+    }
 
     console.log(
       opts.json ? whatChangedToJSON(r, { full: opts.full }) : renderWhatChanged(r),
@@ -197,6 +204,8 @@ async function pushChangeReport(r: WhatChangedReport, repoCwd?: string): Promise
           removed: ci.removed.map(symName),
         }
       : null,
+    // Past incidents in the changed code; redacted like synced investigations.
+    relatedIncidents: redactCloudValue(ci?.relatedIncidents ?? []),
     contributors: r.contributors,
     queueTopology: r.queueTopology,
   };
