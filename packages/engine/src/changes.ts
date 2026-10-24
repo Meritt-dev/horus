@@ -20,7 +20,9 @@ export interface AffectedFlow {
  */
 function isDerivedNode(s: Symbol): boolean {
   return (
-    /^(community|process|folder):/.test(s.id) || s.filePath == null || s.filePath.trim() === ''
+    /^(community|process|folder):/.test(s.id) ||
+    s.filePath == null ||
+    s.filePath.trim() === ''
   );
 }
 
@@ -38,6 +40,69 @@ export interface ChangeImpactReport {
   modified: { before: Symbol; after: Symbol }[];
   affectedFlows: AffectedFlow[];
   summary: string;
+  /** Saved investigations whose code footprint this change touches (context only, never a verdict). */
+  relatedIncidents?: RelatedIncident[];
+}
+
+/** A past investigation whose top code seeds include a symbol this change modifies or removes. */
+export interface RelatedIncident {
+  investigationId: string;
+  createdAt: string;
+  hint: string;
+  topCause: string;
+  matchedSymbols: string[];
+}
+
+/** Only causes Horus itself rated at least `likely`: their code links were ~2x as reliable as the rest. */
+const RELATED_INCIDENT_BANDS = new Set(['highly-likely', 'likely']);
+const RELATED_INCIDENT_LIMIT = 5;
+
+/**
+ * Past incidents whose footprint (top-3 method/function seeds) this change touches, newest first.
+ * Validated on 409 commits / 200 investigations: such links point at the code later changed for the
+ * incident about twice as often as chance, but do NOT predict the next incident — so this is review
+ * context ("code behind incident X"), never a risk score or merge gate.
+ */
+export function incidentsTouchingChanges(
+  r: Pick<ChangeImpactReport, 'modified' | 'removed'>,
+  saved: ReadonlyArray<{ id: string; createdAt: Date; report: unknown }>,
+): RelatedIncident[] {
+  const changed = new Set([
+    ...r.modified.map((m) => m.before.id),
+    ...r.modified.map((m) => m.after.id),
+    ...r.removed.map((s) => s.id),
+  ]);
+  const out: RelatedIncident[] = [];
+  for (const row of [...saved].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  )) {
+    const report = row.report as {
+      input?: { hint?: unknown };
+      seeds?: Array<{ id?: unknown }>;
+      suspectedCauses?: Array<{ title?: unknown; band?: unknown }>;
+    } | null;
+    const cause = report?.suspectedCauses?.[0];
+    if (!cause || !RELATED_INCIDENT_BANDS.has(String(cause.band))) continue;
+    const footprint = (report?.seeds ?? [])
+      .slice(0, 3)
+      .map((s) => String(s.id ?? ''))
+      .filter((id) => /^(method|function):/.test(id));
+    const matched = footprint.filter((id) => changed.has(id));
+    if (!matched.length) continue;
+    const hint = String(report?.input?.hint ?? '');
+    // Re-runs of the same question add nothing; the newest one wins (rows are newest first).
+    if (out.some((o) => o.hint.trim().toLowerCase() === hint.trim().toLowerCase()))
+      continue;
+    out.push({
+      investigationId: row.id,
+      createdAt: row.createdAt.toISOString(),
+      hint,
+      topCause: String(cause.title ?? ''),
+      matchedSymbols: matched,
+    });
+    if (out.length === RELATED_INCIDENT_LIMIT) break;
+  }
+  return out;
 }
 
 export async function changeImpact(
@@ -65,7 +130,9 @@ export async function changeImpact(
   const changes: ChangeSet = {
     added: raw.added.filter((s) => !isDerivedNode(s)),
     removed: raw.removed.filter((s) => !isDerivedNode(s)),
-    modified: raw.modified.filter((m) => !isDerivedNode(m.after) && !isDerivedNode(m.before)),
+    modified: raw.modified.filter(
+      (m) => !isDerivedNode(m.after) && !isDerivedNode(m.before),
+    ),
   };
 
   // All "present-day" changed symbols — added + modified afters
@@ -75,9 +142,7 @@ export async function changeImpact(
   ];
 
   // Cap at 25 to bound source-intelligence calls; skip file-label ids for flow mapping
-  const capped = presentSymbols
-    .filter((s) => !s.id.startsWith('file:'))
-    .slice(0, 25);
+  const capped = presentSymbols.filter((s) => !s.id.startsWith('file:')).slice(0, 25);
 
   // For each changed symbol, fetch flows (treat errors as no flows)
   const flowsPerSymbol: Flow[][] = await Promise.all(

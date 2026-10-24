@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLocalDb, type DbHandle } from '@horus/db';
 import { createLocalMemoryStore } from './memory.js';
-import { recallStartupIncidents, type IncidentContext } from './memory-recall.js';
+import {
+  appendHint,
+  hintTerms,
+  incidentHintPartition,
+  recallStartupIncidents,
+  type IncidentContext,
+} from './memory-recall.js';
+import type { MemoryVectorIndex } from './memory-store.js';
 import { investigate } from './engine.js';
 import type { LogsProvider } from '@horus/connectors';
 let dir: string;
@@ -18,7 +25,13 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 const audit = { actor: { kind: 'user' as const } };
-async function seed(id: string, hint: string, errorCode: string | undefined, environment?: string, origin?: Partial<IncidentContext>) {
+async function seed(
+  id: string,
+  hint: string,
+  errorCode: string | undefined,
+  environment?: string,
+  origin?: Partial<IncidentContext>,
+) {
   return createLocalMemoryStore(handle.db).add(
     {
       id,
@@ -77,51 +90,112 @@ it('repeated reports for the same provider event cannot crowd out another occurr
   const origin = { source: 'elasticsearch', eventId: 'logs:event-a' };
   await seed('a-first', hint, 'ETIMEDOUT', 'production', origin);
   await seed('b-repeat', hint, 'ETIMEDOUT', 'production', origin);
-  await seed('c-other', hint, 'ETIMEDOUT', 'production', { ...origin, eventId: 'logs:event-b' });
-  const candidates = await recallStartupIncidents(createLocalMemoryStore(handle.db), {
-    repo: 'shop', hint, environment: 'production', incident: { errorCode: 'ETIMEDOUT' },
+  await seed('c-other', hint, 'ETIMEDOUT', 'production', {
+    ...origin,
+    eventId: 'logs:event-b',
   });
-  expect(candidates.map(c => c.memoryId)).toEqual(['a-first', 'c-other']);
+  const candidates = await recallStartupIncidents(createLocalMemoryStore(handle.db), {
+    repo: 'shop',
+    hint,
+    environment: 'production',
+    incident: { errorCode: 'ETIMEDOUT' },
+  });
+  expect(candidates.map((c) => c.memoryId)).toEqual(['a-first', 'c-other']);
 });
 it('recalls the same specific logger message across codes without relaxing actual failure or outcome guards', async () => {
-  await seed('catalog', 'EMODA_011_03 Fetch products error', 'EMODA_011_03', 'production', {
-    source: 'elasticsearch', eventId: 'logs:catalog-a', fingerprint: 'EMODA_011_03', operation: 'catalog',
-  });
+  await seed(
+    'catalog',
+    'EMODA_011_03 Fetch products error',
+    'EMODA_011_03',
+    'production',
+    {
+      source: 'elasticsearch',
+      eventId: 'logs:catalog-a',
+      fingerprint: 'EMODA_011_03',
+      operation: 'catalog',
+    },
+  );
   const store = createLocalMemoryStore(handle.db);
   const q = {
-    repo: 'shop', environment: 'production', hint: 'EMODA_011_04 Fetch products error',
-    incident: { source: 'elasticsearch', eventId: 'logs:catalog-b', eventCode: 'EMODA_011_04', fingerprint: 'EMODA_011_04', operation: 'catalog' },
+    repo: 'shop',
+    environment: 'production',
+    hint: 'EMODA_011_04 Fetch products error',
+    incident: {
+      source: 'elasticsearch',
+      eventId: 'logs:catalog-b',
+      eventCode: 'EMODA_011_04',
+      fingerprint: 'EMODA_011_04',
+      operation: 'catalog',
+    },
   };
   const recalled = await recallStartupIncidents(store, q);
-  expect(recalled.map(c => c.memoryId)).toEqual(['catalog']);
+  expect(recalled.map((c) => c.memoryId)).toEqual(['catalog']);
   expect(recalled[0]!.validation).toBe('unverified');
   expect(recalled[0]!.matchingFields).not.toContain('errorCode');
   expect(recalled[0]!.matchingFields).not.toContain('fingerprint');
-  expect((await recallStartupIncidents(store, { ...q, incident: { ...q.incident, eventCode: undefined, errorCode: 'EMODA_011_04' } })).map(c => c.memoryId)).toEqual(['catalog']);
+  expect(
+    (
+      await recallStartupIncidents(store, {
+        ...q,
+        incident: { ...q.incident, eventCode: undefined, errorCode: 'EMODA_011_04' },
+      })
+    ).map((c) => c.memoryId),
+  ).toEqual(['catalog']);
   for (const incident of [
     { ...q.incident, errorCode: 'STOCK' },
     { ...q.incident, fingerprint: 'EMODA_011_04:503' },
     { ...q.incident, operation: 'reserve' },
     { ...q.incident, source: 'pagerduty' },
     { ...q.incident, eventId: undefined },
-  ]) expect(await recallStartupIncidents(store, { ...q, incident })).toEqual([]);
-  expect(await recallStartupIncidents(store, { ...q, environment: 'staging' })).toEqual([]);
+  ])
+    expect(await recallStartupIncidents(store, { ...q, incident })).toEqual([]);
+  expect(await recallStartupIncidents(store, { ...q, environment: 'staging' })).toEqual(
+    [],
+  );
   await seed('wrapper', 'ERR243_07 Store client error.', 'ERR243_07', 'production', {
-    source: 'elasticsearch', eventId: 'logs:wrapper-a', fingerprint: 'ERR243_07',
+    source: 'elasticsearch',
+    eventId: 'logs:wrapper-a',
+    fingerprint: 'ERR243_07',
   });
-  expect(await recallStartupIncidents(store, { ...q, hint: 'ERR243_05 Store client error.',
-    incident: { source: 'elasticsearch', eventId: 'logs:wrapper-b', errorCode: 'ERR243_05', fingerprint: 'ERR243_05' } })).toEqual([]);
+  expect(
+    await recallStartupIncidents(store, {
+      ...q,
+      hint: 'ERR243_05 Store client error.',
+      incident: {
+        source: 'elasticsearch',
+        eventId: 'logs:wrapper-b',
+        errorCode: 'ERR243_05',
+        fingerprint: 'ERR243_05',
+      },
+    }),
+  ).toEqual([]);
   const item = await store.get('catalog');
   const payload = item!.payload as Record<string, unknown>;
-  await store.update('catalog', { payload: { ...payload, outcome: {
-    ...(payload.outcome as object), disposition: 'confirmed-incident', certainty: 'confirmed',
-    attester: 'Fixture', verifiedAt: '2026-09-27T00:00:00Z', sourceRefs: ['fixture:verification'],
-  } } }, { audit });
+  await store.update(
+    'catalog',
+    {
+      payload: {
+        ...payload,
+        outcome: {
+          ...(payload.outcome as object),
+          disposition: 'confirmed-incident',
+          certainty: 'confirmed',
+          attester: 'Fixture',
+          verifiedAt: '2026-09-27T00:00:00Z',
+          sourceRefs: ['fixture:verification'],
+        },
+      },
+    },
+    { audit },
+  );
   expect(await recallStartupIncidents(store, q)).toEqual([]);
 });
 it('checks the current native logger code when a recalled operation has no supplier error code', async () => {
   await seed('catalog', 'EMODA_011_03 Fetch products error', undefined, 'production', {
-    source: 'elasticsearch', eventId: 'logs:catalog-a', eventCode: 'EMODA_011_03', fingerprint: 'EMODA_011_03',
+    source: 'elasticsearch',
+    eventId: 'logs:catalog-a',
+    eventCode: 'EMODA_011_03',
+    fingerprint: 'EMODA_011_03',
   });
   const logs = {
     queryEvidence: vi.fn(async (query: import('@horus/connectors').LogQuery) => {
@@ -129,12 +203,27 @@ it('checks the current native logger code when a recalled operation has no suppl
       return [];
     }),
     checkCompatibility: async () => ({ issues: [] }),
-    analyzeErrors: async () => ({ signatures: [], totalErrors: 0, window: {}, baseline: {} }),
+    analyzeErrors: async () => ({
+      signatures: [],
+      totalErrors: 0,
+      window: {},
+      baseline: {},
+    }),
   } as unknown as LogsProvider;
-  const report = await investigate({
-    repo: 'shop', hint: 'EMODA_011_04 Fetch products error', environment: 'production',
-    incident: { source: 'elasticsearch', eventId: 'logs:catalog-b', eventCode: 'EMODA_011_04', fingerprint: 'EMODA_011_04' },
-  }, { db: handle.db, code: null, logs, store: createLocalMemoryStore(handle.db) });
+  const report = await investigate(
+    {
+      repo: 'shop',
+      hint: 'EMODA_011_04 Fetch products error',
+      environment: 'production',
+      incident: {
+        source: 'elasticsearch',
+        eventId: 'logs:catalog-b',
+        eventCode: 'EMODA_011_04',
+        fingerprint: 'EMODA_011_04',
+      },
+    },
+    { db: handle.db, code: null, logs, store: createLocalMemoryStore(handle.db) },
+  );
   expect(report.startupRecall?.[0]?.memoryId).toBe('catalog');
   expect(report.recallTrace?.[0]?.stage).toBe('before-broad-collection');
   expect(report.recallTrace?.[0]?.error).toBeUndefined();
@@ -193,4 +282,91 @@ it('runs a prior check before broad collection and current contradiction never c
   expect(report.startupRecall?.[0]?.validation).toBe('contradicted');
   expect(report.confidence).toBeLessThan(0.9);
   expect(report.persisted).toBe(true);
+});
+
+/** Fake local vector index: fixed per-memory similarities, records upserts. */
+function fakeIndex(scores: Record<string, number>) {
+  const upserts: { memoryId: string; claim: string; repo: string }[] = [];
+  const index: MemoryVectorIndex = {
+    upsert: async (i) => {
+      upserts.push(i);
+    },
+    search: async () =>
+      Object.entries(scores).map(([id, score]) => ({
+        memoryId: `${id}#hint:abc`,
+        score,
+      })),
+    remove: async () => {},
+  };
+  return { index, upserts };
+}
+it('typed hints: a reworded repeat is recalled through stored-hint similarity, an unrelated one is not', async () => {
+  await seed('fulfil', 'fulfillment failing for brand orders', undefined);
+  await seed('token', 'store token exchange failing STORE_TOKEN', undefined);
+  const store = createLocalMemoryStore(handle.db);
+  const hint = 'brand orders are not getting fulfilled';
+  // The previous word-overlap rule needed >=45% shared words and missed this rewording.
+  const { index } = fakeIndex({ fulfil: 0.8, token: 0.55 });
+  expect(
+    (await recallStartupIncidents(store, { repo: 'shop', hint }, { index })).map(
+      (c) => c.memoryId,
+    ),
+  ).toEqual(['fulfil']);
+  const unrelated = fakeIndex({ fulfil: 0.6, token: 0.58 }).index;
+  expect(
+    await recallStartupIncidents(
+      store,
+      { repo: 'shop', hint: 'vendor dashboard shows empty statistics' },
+      { index: unrelated },
+    ),
+  ).toEqual([]);
+});
+it('a rare shared code identifier recalls without embeddings; common words alone do not', async () => {
+  await seed('gaia', 'the GAIA_STOCK_SYNC queue keeps failing', undefined);
+  await seed('other', 'product sync failures in the scheduler', undefined);
+  const store = createLocalMemoryStore(handle.db);
+  const recalled = await recallStartupIncidents(store, {
+    repo: 'shop',
+    hint: 'GAIA_STOCK_SYNC job fails with status code 401 from Gaia API',
+  });
+  expect(recalled.map((c) => c.memoryId)).toEqual(['gaia']);
+  expect(
+    await recallStartupIncidents(store, {
+      repo: 'shop',
+      hint: 'checkout sync failing for customers',
+    }),
+  ).toEqual([]);
+});
+it('backfills the hint partition once when it is empty, without blocking recall', async () => {
+  await seed('fulfil', 'fulfillment failing for brand orders', undefined);
+  const { index, upserts } = fakeIndex({});
+  await recallStartupIncidents(
+    createLocalMemoryStore(handle.db),
+    { repo: 'shop', hint: 'fulfillment failing for brand orders' },
+    { index },
+  );
+  expect(upserts).toEqual([
+    expect.objectContaining({
+      claim: 'fulfillment failing for brand orders',
+      repo: incidentHintPartition('shop'),
+    }),
+  ]);
+  expect(upserts[0]!.memoryId.startsWith('fulfil#hint:')).toBe(true);
+});
+it('hint terms keep exact codes and split identifiers; hint history is bounded and deduplicated', () => {
+  expect([...hintTerms('ERR4624 in syncEmodaProduct fulfilled')].sort()).toEqual([
+    '#err4624',
+    'emoda',
+    'err',
+    'fulfill',
+    'product',
+    'sync',
+  ]);
+  expect(appendHint(['a', 'b'], 'a')).toEqual(['a', 'b']);
+  expect(
+    appendHint(
+      Array.from({ length: 20 }, (_, i) => `h${i}`),
+      'new',
+    ),
+  ).toHaveLength(20);
 });

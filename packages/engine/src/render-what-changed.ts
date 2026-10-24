@@ -123,13 +123,25 @@ export function renderWhatChanged(r: WhatChangedReport): string {
         lines.push('  - ' + f.flowName);
       }
     }
+    if (r.changeImpact.relatedIncidents?.length) {
+      lines.push('');
+      lines.push('## Past incidents in this code');
+      for (const i of r.changeImpact.relatedIncidents) {
+        lines.push(
+          `  - ${i.createdAt.slice(0, 10)} ${i.hint.slice(0, 100)} (${i.investigationId})`,
+        );
+      }
+    }
   }
 
   return lines.join('\n');
 }
 
 /** Stable JSON serialization — compact by default; `full` restores the raw report. */
-export function whatChangedToJSON(r: WhatChangedReport, opts?: { full?: boolean }): string {
+export function whatChangedToJSON(
+  r: WhatChangedReport,
+  opts?: { full?: boolean },
+): string {
   if (opts?.full) return JSON.stringify(r, null, 2);
 
   // Compact repo state: counts stay exact, file lists slim to 10 entries each.
@@ -181,9 +193,14 @@ export function whatChangedToJSON(r: WhatChangedReport, opts?: { full?: boolean 
       topCommits,
       contributors: r.contributors,
       queueTopology: r.queueTopology,
-      changeImpact: r.changeImpact == null ? null : changeImpactToCompactObject(r.changeImpact),
+      changeImpact:
+        r.changeImpact == null ? null : changeImpactToCompactObject(r.changeImpact),
       ...(omittedFiles > 0
-        ? { truncated: true, truncatedCount: omittedFiles, hint: 're-run with --full for the complete structure' }
+        ? {
+            truncated: true,
+            truncatedCount: omittedFiles,
+            hint: 're-run with --full for the complete structure',
+          }
         : {}),
     },
     null,

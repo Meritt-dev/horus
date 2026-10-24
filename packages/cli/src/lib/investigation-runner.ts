@@ -1,4 +1,10 @@
-import { cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv, type QueueEvidenceProvider, type StructuredLogSource } from '@horus/connectors';
+import {
+  cloudLogsForEnv,
+  additionalStateForEnv,
+  additionalQueuesForEnv,
+  type QueueEvidenceProvider,
+  type StructuredLogSource,
+} from '@horus/connectors';
 import { syncLinkedMemory, memorySyncContext } from './cloud/memory-sync.js';
 /**
  * Shared investigation runner (HOR-CLI).
@@ -17,7 +23,11 @@ import { syncLinkedMemory, memorySyncContext } from './cloud/memory-sync.js';
  */
 
 import pc from 'picocolors';
-import { redactSecrets, type ResolvedEnvironment, type ShopifyQuerySpec } from '@horus/core';
+import {
+  redactSecrets,
+  type ResolvedEnvironment,
+  type ShopifyQuerySpec,
+} from '@horus/core';
 import {
   codeForEnv,
   codeForUrl,
@@ -31,6 +41,9 @@ import {
   queueForEnv,
   redisStateForEnv,
   metricsForEnv,
+  SourceHttpClient,
+  SourceMemoryVectorIndex,
+  type MemoryVectorIndexLike,
 } from '@horus/connectors';
 import type {
   LogsProvider,
@@ -58,8 +71,12 @@ import { readAuth } from './cloud/auth-store.js';
 import { readCloudConfig } from './cloud/context-store.js';
 
 /** Explain the startup match before current evidence is gathered. */
-export function formatStartupIncident(item: NonNullable<InvestigationReport['startupRecall']>[number]): string {
-  const refs = Object.entries(item.reportRefs).map(([local, cloud]) => `${local} (Cloud ${cloud})`);
+export function formatStartupIncident(
+  item: NonNullable<InvestigationReport['startupRecall']>[number],
+): string {
+  const refs = Object.entries(item.reportRefs).map(
+    ([local, cloud]) => `${local} (Cloud ${cloud})`,
+  );
   return redactSecrets(`Prior incident ${item.incidentId ?? item.memoryId} [${item.environment}; ${item.outcome?.certainty ?? 'inferred'}]: ${item.claim}
   Matched: ${item.matchingFields.join(', ') || 'unspecified'}; last verified: ${item.lastVerifiedAt ?? 'never'}.
   Reports: ${refs.join(', ') || item.outcome?.sourceInvestigation || 'unavailable'}; historical outcome: ${item.outcome?.disposition ?? 'unknown'}.
@@ -91,6 +108,8 @@ export interface InvestigationContext {
   queue: QueueRuntimeProvider | null;
   redisState: RedisStateRuntimeProvider | null;
   metrics: MetricsProvider | null;
+  /** Local memory vector index on the verified source host; null in runtime-only mode. */
+  recallIndex?: MemoryVectorIndexLike | null;
   /** Default service scope: CLI flag > ES connector's serviceName > undefined. */
   service?: string;
 }
@@ -131,6 +150,7 @@ export async function buildInvestigationContext(
 
   // `codeForEnv` only returns a provider when the repo has a configured sourceHostUrl.
   const sourceUrl = renv.repositories[0]?.sourceHostUrl;
+  let hostUrl = sourceUrl;
   let runtimeOnly: boolean;
   if (opts.unattended) {
     runtimeOnly = !code || !(await code.health()).ok;
@@ -143,6 +163,7 @@ export async function buildInvestigationContext(
     runtimeOnly = !resolved.ok;
     if (resolved.ok && resolved.hostUrl && resolved.hostUrl !== sourceUrl) {
       code = codeForUrl(resolved.hostUrl);
+      hostUrl = resolved.hostUrl;
     }
   } else {
     runtimeOnly = !code || !(await code.health()).ok;
@@ -171,7 +192,11 @@ export async function buildInvestigationContext(
   const cloudCfg = readCloudConfig(renv.path);
   const lens =
     auth && cloudCfg?.workspace?.id
-      ? lensForCloud({ apiBaseUrl: auth.apiBaseUrl, token: auth.token, workspaceId: cloudCfg.workspace.id })
+      ? lensForCloud({
+          apiBaseUrl: auth.apiBaseUrl,
+          token: auth.token,
+          workspaceId: cloudCfg.workspace.id,
+        })
       : null;
   const axiom = axiomForEnv(renv);
   const shopify = shopifyForEnv(renv);
@@ -191,6 +216,13 @@ export async function buildInvestigationContext(
     // Runtime-only degrade: pass no source provider so the engine skips seed
     // resolution + structural evidence and builds from runtime evidence.
     code: runtimeOnly ? null : code,
+    // Short timeout: recall similarity is optional context and must not delay the investigation.
+    recallIndex:
+      runtimeOnly || !hostUrl
+        ? null
+        : new SourceMemoryVectorIndex(
+            new SourceHttpClient({ baseUrl: hostUrl, timeoutMs: 3000 }),
+          ),
     logs,
     mongo,
     postgres,
@@ -240,11 +272,15 @@ export interface RunInvestigationInput {
  * Fail-closed: any error (missing/corrupt/under-performing model) → undefined → Horus keeps its
  * deterministic ranking. The model only ever REORDERS the eligible causes the engine hands it.
  */
-function loadReranker(): ((causes: readonly CauseCandidate[]) => CauseCandidate[]) | undefined {
+function loadReranker():
+  | ((causes: readonly CauseCandidate[]) => CauseCandidate[])
+  | undefined {
   const flag = process.env.HORUS_RERANK;
   if (!flag || flag === '0' || flag.toLowerCase() === 'false') return undefined;
   try {
-    const blob: unknown = JSON.parse(readFileSync(join(homedir(), '.horus', 'reranker.json'), 'utf8'));
+    const blob: unknown = JSON.parse(
+      readFileSync(join(homedir(), '.horus', 'reranker.json'), 'utf8'),
+    );
     if (!isRerankerModel(blob)) return undefined;
     if ((blob.holdout?.delta ?? 0) <= 0) return undefined; // never apply a model that didn't beat baseline
     return (causes) => applyReranker(blob, causes);
@@ -266,23 +302,39 @@ export async function runOneInvestigation(
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
   if (input.reportId) {
-    const [saved] = await ctx.dbHandle.db.select().from(investigations).where(eq(investigations.id, input.reportId));
+    const [saved] = await ctx.dbHandle.db
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, input.reportId));
     if (saved) {
       const report = saved.report as InvestigationReport | null;
-      if (!report || saved.project !== renv.project || report.input.environment !== renv.env) throw new Error('Saved report identity/scope mismatch');
+      if (
+        !report ||
+        saved.project !== renv.project ||
+        report.input.environment !== renv.env
+      )
+        throw new Error('Saved report identity/scope mismatch');
       return report;
     }
   }
   const rerank = loadReranker();
   opts.onActivity?.('recall');
-  try { await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true }); }
-  catch (error) { console.error(`Memory refresh unavailable: ${(error as Error).message}`); }
+  try {
+    await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true });
+  } catch (error) {
+    console.error(`Memory refresh unavailable: ${(error as Error).message}`);
+  }
   // Stale-index freshness feeds the engine's next-step routing: when the index is
   // behind, `horus init` must appear as a real next step, not only as a banner caveat.
   const indexMeta = readIndexMeta(renv.path);
-  const indexedAtMs = indexMeta?.lastIndexedAt ? Date.parse(indexMeta.lastIndexedAt) : NaN;
+  const indexedAtMs = indexMeta?.lastIndexedAt
+    ? Date.parse(indexMeta.lastIndexedAt)
+    : NaN;
   const staleIndex =
     !Number.isNaN(indexedAtMs) && Date.now() - indexedAtMs > STALE_INDEX_MS;
+  const agentSession = (
+    process.env.HORUS_AGENT_SESSION ?? process.env.CLAUDE_CODE_SESSION_ID
+  )?.trim();
   const investigation = investigate(
     {
       reportId: input.reportId,
@@ -293,21 +345,27 @@ export async function runOneInvestigation(
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.since !== undefined ? { since: input.since } : {}),
       ...(input.logsSince !== undefined ? { logsSince: input.logsSince } : {}),
+      ...(agentSession ? { agentSession } : {}),
       ...((input.service ?? ctx.service) !== undefined
         ? { service: input.service ?? ctx.service }
         : {}),
       // Invocation-time Shopify queries override the connector's config defaults; when
       // omitted the provider falls back to `connectors.shopify.queries` (e.g. under watch).
-      ...(input.shopifyQueries !== undefined ? { shopifyQueries: input.shopifyQueries } : {}),
+      ...(input.shopifyQueries !== undefined
+        ? { shopifyQueries: input.shopifyQueries }
+        : {}),
     },
     {
       code: ctx.code,
       db: ctx.dbHandle.db,
       // HOR-432 — the authored-memory store so every investigation auto-captures a recurrence-aware
       // memory. Best-effort + CONTEXT-ONLY in the engine (never feeds scoring, never blocks delivery).
-      store: createLocalMemoryStore(ctx.dbHandle.db, { syncScope: memorySyncContext(renv.path, renv.project)?.scope }),
+      store: createLocalMemoryStore(ctx.dbHandle.db, {
+        syncScope: memorySyncContext(renv.path, renv.project)?.scope,
+      }),
       memoryScope: memorySyncContext(renv.path, renv.project)?.scope,
-      onStartupRecall: items => {
+      ...(ctx.recallIndex ? { recallIndex: ctx.recallIndex } : {}),
+      onStartupRecall: (items) => {
         if (!items.length) console.error('Prior incidents: no relevant match.');
         for (const item of items) console.error(formatStartupIncident(item));
         opts.onActivity?.('collect');
@@ -354,13 +412,16 @@ export async function runOneInvestigation(
   );
 
   const timeoutMs =
-    opts.timeoutMs ??
-    (Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) || 120) * 1000;
+    opts.timeoutMs ?? (Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) || 120) * 1000;
   const report = await withDeadline(investigation, timeoutMs);
   try {
     const sync = await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project);
-    console.error(`Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`);
-  } catch (error) { console.error(`Memory is not durably saved: ${(error as Error).message}`); }
+    console.error(
+      `Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`,
+    );
+  } catch (error) {
+    console.error(`Memory is not durably saved: ${(error as Error).message}`);
+  }
   return report;
 }
 
@@ -369,9 +430,12 @@ export async function runOneInvestigation(
  * alive, so the CLI prints its output but never exits. Idempotent-friendly: each close is
  * guarded and best-effort.
  */
-export async function disposeInvestigationContext(ctx: InvestigationContext): Promise<void> {
+export async function disposeInvestigationContext(
+  ctx: InvestigationContext,
+): Promise<void> {
   await safeClose(() => ctx.dbHandle.sql.end());
-  for (const provider of ctx.additionalState ?? []) await safeClose(() => provider.close());
+  for (const provider of ctx.additionalState ?? [])
+    await safeClose(() => provider.close());
   if (ctx.mongo) await safeClose(() => ctx.mongo!.close());
   if (ctx.postgres) await safeClose(() => ctx.postgres!.close());
   if (ctx.redisState) await safeClose(() => ctx.redisState!.close());

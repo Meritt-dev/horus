@@ -1,6 +1,6 @@
 import type { QueueEvidenceProvider } from '@horus/connectors';
 import type { StructuredLogSource } from '@horus/connectors';
-import { recallStartupIncidents } from './memory-recall.js';
+import { indexIncidentHint, recallStartupIncidents } from './memory-recall.js';
 /**
  * The deterministic investigation pipeline (HOR-5). NO AI/LLM.
  *
@@ -45,7 +45,12 @@ import type {
   DurationDimensionOptions,
   DurationByDimension,
 } from '@horus/connectors';
-import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
+import {
+  shortTs,
+  selectStateSignals,
+  tokenize,
+  analyzeQueueRuntime,
+} from '@horus/connectors';
 import { formatSymbolLocation } from './render.js';
 import { estimateOwnership } from './ownership.js';
 import type { OwnershipEstimate } from './ownership.js';
@@ -61,18 +66,28 @@ import {
 } from '@horus/db';
 import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
-import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
+import {
+  rankCauses,
+  selectHeadlineCause,
+  type CauseInput,
+  type CauseCandidate,
+} from './score-cause.js';
 import { detectDataFlowCauseAcross } from './detect-data-flow-cause.js';
 import { selectHintMatchedSignal } from './hint-matched-signal.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
-import type { AuditCtx, MemoryStore } from './memory-store.js';
+import type { AuditCtx, MemoryStore, MemoryVectorIndex } from './memory-store.js';
 import {
   autoInvestigationMemoryEnabled,
   captureInvestigationMemory,
 } from './auto-investigation-memory.js';
-import { detectMissingEvidence, gapNextActions, hasAnyRuntimeConnector, type ConnectorFlags } from './gaps.js';
+import {
+  detectMissingEvidence,
+  gapNextActions,
+  hasAnyRuntimeConnector,
+  type ConnectorFlags,
+} from './gaps.js';
 import { route } from './router.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
 import type {
@@ -83,7 +98,14 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier, parseSymbolQuery, parseNamedSymbols } from './seeds.js';
+import {
+  rankSeeds,
+  isTypeLikeName,
+  executableBaseName,
+  parseSeedQualifier,
+  parseSymbolQuery,
+  parseNamedSymbols,
+} from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import {
@@ -99,6 +121,8 @@ import type { BoundedGitChange, ConfigChangeFile } from './git-collector.js';
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
   memoryScope?: string;
+  /** Optional local memory vector index; startup recall adds embedding similarity of stored hints. */
+  recallIndex?: MemoryVectorIndex;
   onStartupRecall?: (items: import('./memory-recall.js').StartupIncident[]) => void;
   /**
    * Source-intelligence provider. Optional (HOR-319 layer-2): when null/absent the
@@ -214,11 +238,14 @@ function sourceForKind(kind: EvidenceKind): ProviderKind {
  */
 function investigationSubject(input: InvestigationInput): EvidenceSubject | undefined {
   const subject: EvidenceSubject = {};
-  if (input.service !== undefined && input.service !== '') subject.service = input.service;
+  if (input.service !== undefined && input.service !== '')
+    subject.service = input.service;
   if (input.environment !== undefined && input.environment !== '') {
     subject.environment = input.environment;
   }
-  return subject.service !== undefined || subject.environment !== undefined ? subject : undefined;
+  return subject.service !== undefined || subject.environment !== undefined
+    ? subject
+    : undefined;
 }
 
 /** Clamp a number into the inclusive [0, 1] range. */
@@ -275,7 +302,8 @@ export function seedEmittedSeverityTier(
 
   // No prefix — last-resort message keywords; positive-evidence downgrade only.
   const text = `${code} ${message ?? ''}`.toLowerCase();
-  if (/\b(skip|skipping|skipped|deprecat|info|debug|trace|notice)\b/.test(text)) return SEV_INFO;
+  if (/\b(skip|skipping|skipped|deprecat|info|debug|trace|notice)\b/.test(text))
+    return SEV_INFO;
   if (/\bwarn(ing)?\b/.test(text)) return SEV_WARN;
 
   // Unknown — treat as an error so we never silently downgrade a real failure.
@@ -342,14 +370,19 @@ export function connectorFailureReason(err: unknown): string {
     typeof e?.message === 'string' ? e.message : '',
   ].join(' ');
   if (/abort|timed?\s*out|timeout|ETIMEDOUT/i.test(text)) return 'timeout';
-  if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EPIPE|socket|network|fetch failed/i.test(text)) {
+  if (
+    /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EPIPE|socket|network|fetch failed/i.test(
+      text,
+    )
+  ) {
     return 'connection failed';
   }
   // All HTTP connector clients throw `<Name> <METHOD> <path> -> <status>: <body>`;
   // classify from that anchored status FIRST so URL/path/body content (a PromQL
   // expr containing "auth", a "401" in an index name) can never override it.
   // `HTTP <status>` (no arrow) covers driver-style messages.
-  const status = (/->\s*(?:HTTP\s+)?(\d{3})\b/.exec(text) ?? /\bHTTP\s+(\d{3})\b/.exec(text))?.[1];
+  const status = (/->\s*(?:HTTP\s+)?(\d{3})\b/.exec(text) ??
+    /\bHTTP\s+(\d{3})\b/.exec(text))?.[1];
   if (status !== undefined) {
     if (status === '401' || status === '403') return 'auth failure';
     if (status === '429') return 'rate limited';
@@ -358,7 +391,11 @@ export function connectorFailureReason(err: unknown): string {
   }
   // Keyword fallbacks for non-HTTP errors (DB/queue drivers). Bare "auth" and
   // unanchored status digits are deliberately absent — too collision-prone.
-  if (/unauthoriz|forbidden|WRONGPASS|NOAUTH|authenticat|invalid[^']*(token|key|credential|password)/i.test(text)) {
+  if (
+    /unauthoriz|forbidden|WRONGPASS|NOAUTH|authenticat|invalid[^']*(token|key|credential|password)/i.test(
+      text,
+    )
+  ) {
     return 'auth failure';
   }
   if (/rate.?limit|too many requests/i.test(text)) return 'rate limited';
@@ -412,21 +449,41 @@ export function classifyLogRelevance(
   // louder error from another service onto this seed/path (HOR-338). Relevance must come
   // from DOMAIN terms, not the word "error".
   const GENERIC_TERMS = new Set([
-    'error', 'errors', 'err', 'fail', 'failed', 'failing', 'failure', 'exception',
-    'exceptions', 'crash', 'crashing', 'issue', 'problem', 'slow', 'timeout', 'broken',
-    'down', 'production', 'prod', 'staging',
+    'error',
+    'errors',
+    'err',
+    'fail',
+    'failed',
+    'failing',
+    'failure',
+    'exception',
+    'exceptions',
+    'crash',
+    'crashing',
+    'issue',
+    'problem',
+    'slow',
+    'timeout',
+    'broken',
+    'down',
+    'production',
+    'prod',
+    'staging',
   ]);
   const domainTerms = seedTerms.filter((t) => !GENERIC_TERMS.has(t));
   if (domainTerms.length === 0) {
-    return { relevanceClass: 'direct', relevanceReason: 'no specific seed context — included by default' };
+    return {
+      relevanceClass: 'direct',
+      relevanceReason: 'no specific seed context — included by default',
+    };
   }
 
   const keyTokens = tokenize(sigKey);
   const serviceTokens = sigServices.flatMap((s) => tokenize(s));
   const combined = [...keyTokens, ...serviceTokens];
 
-  const matchingTerms = domainTerms.filter(
-    (t) => combined.some((c) => c.includes(t) || t.includes(c)),
+  const matchingTerms = domainTerms.filter((t) =>
+    combined.some((c) => c.includes(t) || t.includes(c)),
   );
 
   if (matchingTerms.length > 0) {
@@ -568,7 +625,9 @@ export async function reseedFromLogs(
     if (records.length === 0) return null;
 
     // Components are the most likely class/file names to resolve to a symbol.
-    const candidates = [...new Set(records.map((r) => r.component).filter((c): c is string => !!c))];
+    const candidates = [
+      ...new Set(records.map((r) => r.component).filter((c): c is string => !!c)),
+    ];
     for (const name of candidates) {
       const syms = await code.searchSymbols(name, 5);
       if (syms.length > 0) {
@@ -903,7 +962,9 @@ function pascalTypeRoot(type: string): string | null {
  */
 export function detectPerSegmentDispatch(
   seedContext: SymbolContext,
-  queueHits: ReadonlyArray<Pick<QueueEdge, 'queueName' | 'producerSymbol' | 'workerSymbol'>>,
+  queueHits: ReadonlyArray<
+    Pick<QueueEdge, 'queueName' | 'producerSymbol' | 'workerSymbol'>
+  >,
   callers: ReadonlyArray<{ name?: string; sourceBody?: string }>,
 ): PerSegmentDispatch | null {
   const seedName = seedContext.symbol.name ?? '';
@@ -923,7 +984,10 @@ export function detectPerSegmentDispatch(
     const parsed = parseParam(p);
     if (parsed === null) continue;
     if (GENERIC_DISPATCH_PARAM_NAMES.has(parsed.name.toLowerCase())) continue;
-    if (SEGMENT_DIM_NAME_RE.test(parsed.name) || SEGMENT_DIM_NAME_RE.test(deCamel(parsed.name))) {
+    if (
+      SEGMENT_DIM_NAME_RE.test(parsed.name) ||
+      SEGMENT_DIM_NAME_RE.test(deCamel(parsed.name))
+    ) {
       match = { ...parsed, by: 'name' };
       break;
     }
@@ -958,7 +1022,13 @@ export function detectPerSegmentDispatch(
     if (callerLoops) fanOut = 'caller-loop';
   }
 
-  return { symbol: seedName, paramName: match.name, paramType: match.type, fanOut, matchedBy: match.by };
+  return {
+    symbol: seedName,
+    paramName: match.name,
+    paramType: match.type,
+    fanOut,
+    matchedBy: match.by,
+  };
 }
 
 /** Does `since` look like a range or a concrete ref worth diffing? */
@@ -1004,12 +1074,20 @@ export function looksExplanatory(hint: string): boolean {
   // "did Y regress") is a change-diff hunt, never an explanation — the strongest guard, it
   // overrides the behavior pairing below (so "what changed in the auth flow" is NOT routed to
   // a walkthrough just because it says "flow").
-  if (/\b(recently\s+changed|what\s+changed|changed\s+recently|regress|regression)\b/i.test(h)) {
+  if (
+    /\b(recently\s+changed|what\s+changed|changed\s+recently|regress|regression)\b/i.test(
+      h,
+    )
+  ) {
     return false;
   }
   // Question/behavior pairing: "how does X work", "what happens when a payment fails",
   // "why does … flow". Explanatory even when a failure path is named.
-  if (/\b(how|what|why|when|where)\b.*\b(work|works|working|do|does|done|happen|happens|flow|flows|behave|called|invoked|triggered|used)\b/i.test(h)) {
+  if (
+    /\b(how|what|why|when|where)\b.*\b(work|works|working|do|does|done|happen|happens|flow|flows|behave|called|invoked|triggered|used)\b/i.test(
+      h,
+    )
+  ) {
     return true;
   }
   // dogfood GAP E: a bare leading interrogative carrying SYMPTOM terms is an incident hunt,
@@ -1070,13 +1148,25 @@ export function parseSuggestedCauses(hint: string): string[] {
 
   // category → cue words. Conservative: only well-known incident vocabulary maps to a category.
   const CATEGORY_CUES: Array<[string, RegExp]> = [
-    ['deployment-regression', /\b(deploy(?:ment|ed)?|release|rollout|regression|recent change|shipped)\b/i],
-    ['infrastructure', /\b(database|db|infra(?:structure)?|network|cache|disk|memory|cpu|oom|out of memory|connection pool|datastore|redis|mongo|postgres)\b/i],
-    ['external-api-latency', /\b(upstream|external api|third[- ]party|downstream|api latency|timeout|slow (?:api|service)|gateway)\b/i],
+    [
+      'deployment-regression',
+      /\b(deploy(?:ment|ed)?|release|rollout|regression|recent change|shipped)\b/i,
+    ],
+    [
+      'infrastructure',
+      /\b(database|db|infra(?:structure)?|network|cache|disk|memory|cpu|oom|out of memory|connection pool|datastore|redis|mongo|postgres)\b/i,
+    ],
+    [
+      'external-api-latency',
+      /\b(upstream|external api|third[- ]party|downstream|api latency|timeout|slow (?:api|service)|gateway)\b/i,
+    ],
     ['retry-storm', /\b(retr(?:y|ies)|retry storm|thundering herd|amplif)/i],
     ['queue-backlog', /\b(queue|backlog|consumer lag|enqueue)\b/i],
     ['worker-slowdown', /\b(worker|consumer)\b/i],
-    ['benign-variance', /\b(per[- ]segment|per[- ]region|skew(?:ed)?|variance|expected variation|noise)\b/i],
+    [
+      'benign-variance',
+      /\b(per[- ]segment|per[- ]region|skew(?:ed)?|variance|expected variation|noise)\b/i,
+    ],
   ];
   const out: string[] = [];
   for (const [category, cue] of CATEGORY_CUES) {
@@ -1194,7 +1284,8 @@ export function buildBehavioralWalkthrough(
    */
   classMethods: Symbol[] = [],
 ): BehavioralWalkthrough {
-  const shortFile = (f: string): string => f.replace(/^.*?((?:src|app|lib|packages)\/.*)$/, '$1');
+  const shortFile = (f: string): string =>
+    f.replace(/^.*?((?:src|app|lib|packages)\/.*)$/, '$1');
   // Loggers / tracers are called by almost everything and tell you nothing about the flow.
   const isNoise = (s: Symbol): boolean =>
     /logger|logging|\.log\b|telemetry/i.test(s.filePath) ||
@@ -1204,7 +1295,11 @@ export function buildBehavioralWalkthrough(
   // seed itself sits mid-flow (e.g. an injected service).
   const flow = flows.slice().sort((a, b) => b.steps.length - a.steps.length)[0];
   const rawSteps: Symbol[] =
-    flow && flow.steps.length > 1 ? flow.steps : top ? [top, ...(ctx?.callees ?? [])] : ctx?.callees ?? [];
+    flow && flow.steps.length > 1
+      ? flow.steps
+      : top
+        ? [top, ...(ctx?.callees ?? [])]
+        : (ctx?.callees ?? []);
   const steps = rawSteps.filter((s) => !isNoise(s));
   const entry = steps[0] ?? top ?? null;
 
@@ -1223,40 +1318,70 @@ export function buildBehavioralWalkthrough(
     /(^|[._])(save|insert|upsert|persist|bulkwrite|find|findone|findmany|aggregate|delete|remove)\b|repositor|\brepo\b|\.model|entity|prisma|mongoose|typeorm|knex|\bdao\b|datasource/i;
   const EXTERNAL_RE =
     /(^|[._])(request|publish|enqueue|dispatch|emit|notify)\b|http|axios|\bapi\b|webhook|\bqueue\b|processor|producer|gateway|\.client\b/i;
-  const pool = dedup([...steps, ...(ctx?.callees ?? []), ...classMethods]).filter((s) => !isNoise(s));
-  const persistence = dedup(pool.filter((s) => PERSIST_RE.test(s.name) || PERSIST_RE.test(s.filePath)))
+  const pool = dedup([...steps, ...(ctx?.callees ?? []), ...classMethods]).filter(
+    (s) => !isNoise(s),
+  );
+  const persistence = dedup(
+    pool.filter((s) => PERSIST_RE.test(s.name) || PERSIST_RE.test(s.filePath)),
+  )
     .slice(0, 6)
     .map((s) => `${s.name} (${shortFile(s.filePath)})`);
   const persistNames = new Set(persistence.map((p) => p.split(' (')[0]));
   const externalCalls = dedup(
-    pool.filter((s) => (EXTERNAL_RE.test(s.name) || EXTERNAL_RE.test(s.filePath)) && !persistNames.has(s.name)),
+    pool.filter(
+      (s) =>
+        (EXTERNAL_RE.test(s.name) || EXTERNAL_RE.test(s.filePath)) &&
+        !persistNames.has(s.name),
+    ),
   )
     .slice(0, 6)
     .map((s) => `${s.name} (${shortFile(s.filePath)})`);
 
   const lines: string[] = [];
   if (entry) {
-    const loc = entry.startLine ? `${shortFile(entry.filePath)}:${entry.startLine}` : shortFile(entry.filePath);
+    const loc = entry.startLine
+      ? `${shortFile(entry.filePath)}:${entry.startLine}`
+      : shortFile(entry.filePath);
     lines.push(`Entry point: \`${entry.name}\` (${loc}).`);
   }
   const methodList = dedup(classMethods.filter((s) => !isNoise(s)));
   if (steps.length > 1) {
-    const chain = steps.slice(0, 12).map((s) => s.name).join(' → ');
-    lines.push(`Flow: ${chain}${steps.length > 12 ? ' → …' : ''}${flow ? ` (${flow.steps.length} steps)` : ''}.`);
+    const chain = steps
+      .slice(0, 12)
+      .map((s) => s.name)
+      .join(' → ');
+    lines.push(
+      `Flow: ${chain}${steps.length > 12 ? ' → …' : ''}${flow ? ` (${flow.steps.length} steps)` : ''}.`,
+    );
   } else if (entry && methodList.length > 0) {
     // The seed is a class: its methods are the entry points, not a single call chain.
-    const names = methodList.slice(0, 12).map((s) => s.name).join(', ');
+    const names = methodList
+      .slice(0, 12)
+      .map((s) => s.name)
+      .join(', ');
     lines.push(
       `\`${entry.name}\` is a class — its methods are the entry points: ${names}${methodList.length > 12 ? ', …' : ''}. Trace one with \`horus explain <method>\`.`,
     );
   } else if (entry) {
-    lines.push(`No multi-step execution flow was indexed for \`${entry.name}\` — showing its direct calls.`);
+    lines.push(
+      `No multi-step execution flow was indexed for \`${entry.name}\` — showing its direct calls.`,
+    );
   }
   if (externalCalls.length > 0) lines.push(`Calls out to: ${externalCalls.join(', ')}.`);
   if (persistence.length > 0) lines.push(`Persists via: ${persistence.join(', ')}.`);
-  if (lines.length === 0) lines.push('No execution flow could be reconstructed for this query from the source graph.');
+  if (lines.length === 0)
+    lines.push(
+      'No execution flow could be reconstructed for this query from the source graph.',
+    );
 
-  return { question: hint, entry, steps, externalCalls, persistence, narrative: lines.join('\n') };
+  return {
+    question: hint,
+    entry,
+    steps,
+    externalCalls,
+    persistence,
+    narrative: lines.join('\n'),
+  };
 }
 
 /** True when a symbol id resolves to a CLASS node (ids are prefixed by their graph label). */
@@ -1304,12 +1429,15 @@ export function isNoiseCommit(commit: Pick<GitCommit, 'subject' | 'author'>): bo
   if (/^merge\b/i.test(subject)) return true;
 
   // Release-prep / version bumps — "Prepare release", "chore(release): 1.2.3", "Bump version".
-  if (/^(prepare release|release|bump version|version bump|chore\(release\))/i.test(subject)) {
+  if (
+    /^(prepare release|release|bump version|version bump|chore\(release\))/i.test(subject)
+  ) {
     return true;
   }
 
   // pre-commit autoupdate / pre-commit.ci.
-  if (/pre-commit.*autoupdate/i.test(subject) || /\[pre-commit\.ci\]/i.test(subject)) return true;
+  if (/pre-commit.*autoupdate/i.test(subject) || /\[pre-commit\.ci\]/i.test(subject))
+    return true;
 
   // HOR-451: NON-CAUSAL commit types/intents — documentation, formatting/style, tests, CI config —
   // do not change runtime behaviour, so they must not earn the seed-touched regression boost.
@@ -1327,7 +1455,9 @@ export function isNoiseCommit(commit: Pick<GitCommit, 'subject' | 'author'>): bo
   // artifact (a docs *endpoint/API/service*), which are behavioural and can regress.
   if (
     /\b(documentation|docs|readme)\b/i.test(subject) &&
-    !/\b(endpoint|api|service|handler|controller|component|module|feature|migration|schema|query|cache|queue|webhook|sdk|cli|route)\b/i.test(subject)
+    !/\b(endpoint|api|service|handler|controller|component|module|feature|migration|schema|query|cache|queue|webhook|sdk|cli|route)\b/i.test(
+      subject,
+    )
   ) {
     return true;
   }
@@ -1420,7 +1550,9 @@ export const BROAD_CHANGE_FILE_THRESHOLD = 14;
  */
 export function isChoreLikeCommit(commit: Pick<GitCommit, 'subject'>): boolean {
   const subject = (commit.subject ?? '').trim();
-  return /^(chore|style|docs|ci|build)(\(|:)|\btypo\b|\bformatting\b|\blint\b/i.test(subject);
+  return /^(chore|style|docs|ci|build)(\(|:)|\btypo\b|\bformatting\b|\blint\b/i.test(
+    subject,
+  );
 }
 
 /**
@@ -1440,7 +1572,10 @@ export function formatRegressionCitation(
   seedFile?: string,
 ): { commitClause: string; symbolClause: string; maintenanceOnly: boolean } {
   const matchesSeed = (f: string): boolean =>
-    seedFile === undefined || f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile);
+    seedFile === undefined ||
+    f === seedFile ||
+    seedFile.endsWith(f) ||
+    f.endsWith(seedFile);
 
   // #3 (dogfood): attribute to the commit(s) that ACTUALLY touched the seed's file — NOT the two
   // newest commits in the --since window. The old behaviour blamed unrelated recent commits and
@@ -1539,18 +1674,37 @@ export async function investigate(
     return ev;
   }
 
-  const startupRecall = deps.store && !/^(0|false|off)$/i.test(process.env.HORUS_STARTUP_RECALL ?? '')
-    ? await recallStartupIncidents(deps.store, input, { syncScope: deps.memoryScope }).catch(() => []) : [];
+  const startupRecall =
+    deps.store && !/^(0|false|off)$/i.test(process.env.HORUS_STARTUP_RECALL ?? '')
+      ? await recallStartupIncidents(deps.store, input, {
+          syncScope: deps.memoryScope,
+          index: deps.recallIndex,
+        }).catch(() => [])
+      : [];
   // The same scope/status boundary applies to the older recurrence corroboration path.
-  const scopedMemories = deps.memoryScope && deps.store && input.repo ?
-    await deps.store.query({ repo: input.repo }).catch(() => []) : null;
-  const allowedPriorIds = scopedMemories ? new Set(scopedMemories.filter(item =>
-    !['forgotten', 'deprecated', 'contradicted'].includes(item.status) &&
-    (item.syncScope === null || item.syncScope === deps.memoryScope)).flatMap(item => {
-      const payload = (item.payload ?? {}) as Record<string, unknown>;
-      return [payload.investigationId, ...(Array.isArray(payload.investigationIds) ? payload.investigationIds : [])]
-        .filter((id): id is string => typeof id === 'string');
-    })) : null;
+  const scopedMemories =
+    deps.memoryScope && deps.store && input.repo
+      ? await deps.store.query({ repo: input.repo }).catch(() => [])
+      : null;
+  const allowedPriorIds = scopedMemories
+    ? new Set(
+        scopedMemories
+          .filter(
+            (item) =>
+              !['forgotten', 'deprecated', 'contradicted'].includes(item.status) &&
+              (item.syncScope === null || item.syncScope === deps.memoryScope),
+          )
+          .flatMap((item) => {
+            const payload = (item.payload ?? {}) as Record<string, unknown>;
+            return [
+              payload.investigationId,
+              ...(Array.isArray(payload.investigationIds)
+                ? payload.investigationIds
+                : []),
+            ].filter((id): id is string => typeof id === 'string');
+          }),
+      )
+    : null;
   deps.onStartupRecall?.(startupRecall);
   const recallTrace: NonNullable<InvestigationReport['recallTrace']> = [];
   // Check relevant history before broad collection; only returned LIVE evidence joins the report.
@@ -1558,14 +1712,39 @@ export async function investigate(
     const check = candidate.checks[0]!;
     try {
       // Supplier codes may live in context rather than the logger's native event-code field.
-      const records = deps.logs ? await deps.logs.queryEvidence({ service: input.service,
-        from: logWindowFrom(input.logsSince ?? input.since), limit: 10,
-        text: candidate.outcome?.applicability.errorCode ?? input.incident?.eventCode ??
-          candidate.outcome?.applicability.eventCode ?? input.hint, broadText: true }, collectedAt) : [];
-      const checked = records.map(ev => mkEv(ev.kind, ev.title, ev.payload, ev.links ?? {}, ev.timestamp, ev.relevance));
-      recallTrace.push({ memoryId: candidate.memoryId, check, stage: deps.logs ? 'before-broad-collection' : 'provider-unavailable', evidenceIds: checked.map(e => e.id) });
+      const records = deps.logs
+        ? await deps.logs.queryEvidence(
+            {
+              service: input.service,
+              from: logWindowFrom(input.logsSince ?? input.since),
+              limit: 10,
+              text:
+                candidate.outcome?.applicability.errorCode ??
+                input.incident?.eventCode ??
+                candidate.outcome?.applicability.eventCode ??
+                input.hint,
+              broadText: true,
+            },
+            collectedAt,
+          )
+        : [];
+      const checked = records.map((ev) =>
+        mkEv(ev.kind, ev.title, ev.payload, ev.links ?? {}, ev.timestamp, ev.relevance),
+      );
+      recallTrace.push({
+        memoryId: candidate.memoryId,
+        check,
+        stage: deps.logs ? 'before-broad-collection' : 'provider-unavailable',
+        evidenceIds: checked.map((e) => e.id),
+      });
     } catch (error) {
-      recallTrace.push({ memoryId: candidate.memoryId, check, stage: 'check-failed', evidenceIds: [], error: connectorFailureReason(error) });
+      recallTrace.push({
+        memoryId: candidate.memoryId,
+        check,
+        stage: 'check-failed',
+        evidenceIds: [],
+        error: connectorFailureReason(error),
+      });
     }
   }
 
@@ -1650,7 +1829,14 @@ export async function investigate(
   // lowercase receivers allowed when the hint IS the pair), then the conservative
   // prose parser (Capitalized `Class.method` / `path:symbol` inside a sentence).
   const seedQualifier = parseSymbolQuery(hint) ?? parseSeedQualifier(hint);
-  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode, seedQualifier, preferNamed);
+  const ranked = rankSeeds(
+    rawSeeds,
+    hintTokens,
+    changedFilePaths,
+    hintHasCode,
+    seedQualifier,
+    preferNamed,
+  );
   // Keep the top-ranked handful as candidate seeds — the wider pool was only needed so the
   // ranker could see (and promote) a lower-search-ranked implementation (HOR-361).
   let seeds = ranked.map((r) => r.symbol).slice(0, 5);
@@ -1660,7 +1846,11 @@ export async function investigate(
   // HOR-337: when a qualifier is present but the top seed isn't the exact symbol it names,
   // the full-hint search may not have surfaced it — re-search for the bare symbol name and
   // re-rank with the qualifier, promoting an exact (name + container) match when found.
-  if (seedQualifier && code && (!top || top.name.toLowerCase() !== seedQualifier.symbol.toLowerCase())) {
+  if (
+    seedQualifier &&
+    code &&
+    (!top || top.name.toLowerCase() !== seedQualifier.symbol.toLowerCase())
+  ) {
     const altRanked = rankSeeds(
       (await code.searchSymbols(seedQualifier.symbol, seedSearchLimit)).filter(inScope),
       hintTokens,
@@ -1688,9 +1878,12 @@ export async function investigate(
   if (top && code && isTypeLikeName(top.name)) {
     const base = executableBaseName(top.name);
     if (base) {
-      const altTop = rankSeeds((await code.searchSymbols(base, seedSearchLimit)).filter(inScope), hintTokens, undefined, hintHasCode).find(
-        (r) => !isTypeLikeName(r.symbol.name),
-      )?.symbol;
+      const altTop = rankSeeds(
+        (await code.searchSymbols(base, seedSearchLimit)).filter(inScope),
+        hintTokens,
+        undefined,
+        hintHasCode,
+      ).find((r) => !isTypeLikeName(r.symbol.name))?.symbol;
       if (altTop && altTop.id !== top.id) {
         seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)];
         top = altTop;
@@ -1702,7 +1895,11 @@ export async function investigate(
   // When the named symbol isn't already the top (the full-hint search may rank a central
   // controller/resolver higher), re-search for it and adopt — mirroring the HOR-337 qualifier
   // re-search/adopt mechanism, with `preferNamed` forcing the decisive boost on the re-rank.
-  if (preferNamed && code && (!top || top.name.toLowerCase() !== preferNamed.toLowerCase())) {
+  if (
+    preferNamed &&
+    code &&
+    (!top || top.name.toLowerCase() !== preferNamed.toLowerCase())
+  ) {
     const altRanked = rankSeeds(
       (await code.searchSymbols(preferNamed, seedSearchLimit)).filter(inScope),
       hintTokens,
@@ -1744,11 +1941,45 @@ export async function investigate(
   // Generic architectural/severity words match almost any file path ("service" is in
   // every *.service.ts) — they don't indicate the seed is what the hint actually named.
   const GENERIC_HINT_TOKENS = new Set([
-    'service', 'services', 'controller', 'controllers', 'resolver', 'resolvers', 'worker',
-    'workers', 'repository', 'provider', 'module', 'manager', 'util', 'utils', 'helper',
-    'handler', 'error', 'errors', 'exception', 'exceptions', 'fail', 'failed', 'failing',
-    'failure', 'throw', 'throwing', 'thrown', 'fatal', 'crash', 'crashing', 'timeout',
-    'production', 'prod', 'staging', 'application', 'issue', 'problem', 'broken', 'slow',
+    'service',
+    'services',
+    'controller',
+    'controllers',
+    'resolver',
+    'resolvers',
+    'worker',
+    'workers',
+    'repository',
+    'provider',
+    'module',
+    'manager',
+    'util',
+    'utils',
+    'helper',
+    'handler',
+    'error',
+    'errors',
+    'exception',
+    'exceptions',
+    'fail',
+    'failed',
+    'failing',
+    'failure',
+    'throw',
+    'throwing',
+    'thrown',
+    'fatal',
+    'crash',
+    'crashing',
+    'timeout',
+    'production',
+    'prod',
+    'staging',
+    'application',
+    'issue',
+    'problem',
+    'broken',
+    'slow',
   ]);
   const meaningfulHintTokens = hintTokens.filter((t) => !GENERIC_HINT_TOKENS.has(t));
   const seedIsLowConfidence =
@@ -1763,7 +1994,8 @@ export async function investigate(
   // evidence instead (HOR-319 layer-2).
   if (!top && !degradedNoSource) {
     const report: InvestigationReport = {
-    startupRecall, recallTrace,
+      startupRecall,
+      recallTrace,
       id: globalThis.crypto.randomUUID(),
       input,
       ...(investigationSubject(input) !== undefined
@@ -1849,16 +2081,17 @@ export async function investigate(
     // shared investigation DB (producer "constructor" -> worker "ZohoBatchProcessor") — match
     // any seed that merely has a constructor, leaking another repo's topology into the report.
     const symbolNames = new Set<string>(
-      [top.name, ...ctx.callers.map((s) => s.name), ...ctx.callees.map((s) => s.name)].filter(
-        (n) => n && !GENERIC_SYMBOL_NAMES.has(n),
-      ),
+      [
+        top.name,
+        ...ctx.callers.map((s) => s.name),
+        ...ctx.callees.map((s) => s.name),
+      ].filter((n) => n && !GENERIC_SYMBOL_NAMES.has(n)),
     );
     queueHits = edges.filter((e) => {
       const bySymbol =
         (e.producerSymbol !== null && symbolNames.has(e.producerSymbol)) ||
         (e.workerSymbol !== null && symbolNames.has(e.workerSymbol));
-      const byFile =
-        e.producerFile === top.filePath || e.workerFile === top.filePath;
+      const byFile = e.producerFile === top.filePath || e.workerFile === top.filePath;
       return bySymbol || byFile;
     });
 
@@ -1877,7 +2110,10 @@ export async function investigate(
       };
       const validated: QueueEdge[] = [];
       for (const e of queueHits) {
-        if ((await resolvesInRepo(e.producerSymbol)) || (await resolvesInRepo(e.workerSymbol))) {
+        if (
+          (await resolvesInRepo(e.producerSymbol)) ||
+          (await resolvesInRepo(e.workerSymbol))
+        ) {
           validated.push(e);
         }
       }
@@ -2028,7 +2264,13 @@ export async function investigate(
     const ev = mkEv(
       'commit',
       `Git history ${changeRangeLabel}: ${commits.length} commit(s), ${changedFiles.length} file(s) changed (+${totalInsertions} -${totalDeletions})`,
-      { commits: commits.slice(0, 10), changedFiles: changedFiles.slice(0, 30), totalInsertions, totalDeletions, source: 'git' },
+      {
+        commits: commits.slice(0, 10),
+        changedFiles: changedFiles.slice(0, 30),
+        totalInsertions,
+        totalDeletions,
+        source: 'git',
+      },
       {},
     );
     changeEvId = ev.id;
@@ -2039,7 +2281,11 @@ export async function investigate(
   // commit becomes a timed evidence entry (its author date), bounded so a busy window
   // stays scannable. `perCommit` marks them so the hypotheses engine keeps treating the
   // aggregate as THE change signal (these are timeline detail, not extra support).
-  if (recentChanges !== undefined && !recentChanges.degenerate && changeEvId !== undefined) {
+  if (
+    recentChanges !== undefined &&
+    !recentChanges.degenerate &&
+    changeEvId !== undefined
+  ) {
     const PER_COMMIT_EVENT_CAP = 8;
     const timedCommits = recentChanges.commits
       .filter((c) => !isNoiseCommit(c))
@@ -2187,9 +2433,15 @@ export async function investigate(
         // 'ambient' so unrelated high-volume errors don't dominate (HOR-156). In
         // degraded runtime-only mode there is no seed symbol, so terms come from the
         // hint alone (classifyLogRelevance handles an empty seed-term set).
-        const seedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+        const seedBase = top ? (top.filePath.split('/').pop() ?? '') : '';
         const logSeedTerms = top
-          ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)])]
+          ? [
+              ...new Set([
+                ...tokenize(hint),
+                ...tokenize(top.name),
+                ...tokenize(seedBase),
+              ]),
+            ]
           : [...new Set(tokenize(hint))];
 
         for (const s of analysis.signatures.slice(0, 15)) {
@@ -2206,7 +2458,8 @@ export async function investigate(
           else if (s.ratio !== undefined && Number.isFinite(s.ratio) && s.ratio >= 1.5) {
             tags.push(`spike x${s.ratio.toFixed(1)}`);
           }
-          const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
+          const svc =
+            s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
           const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
           // HOR-330: surface a representative message so the error means something beyond a
           // bare count — e.g. "Error checking brand order fulfillment" points straight at the
@@ -2241,10 +2494,10 @@ export async function investigate(
               ? s.isNew
                 ? 0.95
                 : s.ratio !== undefined && s.ratio >= 1.5
-                  ? 0.90
+                  ? 0.9
                   : 0.85
               : s.isNew
-                ? 0.70
+                ? 0.7
                 : s.ratio !== undefined && s.ratio >= 1.5
                   ? 0.55
                   : 0.35,
@@ -2256,7 +2509,11 @@ export async function investigate(
           logEvIds.push(ev.id);
           if (relevanceClass === 'direct') {
             directLogEvIds.push(ev.id);
-            directSignatures.push({ key: s.key, count: s.count, message: s.sampleMessage ?? '' });
+            directSignatures.push({
+              key: s.key,
+              count: s.count,
+              message: s.sampleMessage ?? '',
+            });
             if (!directEvIdByKey.has(s.key)) directEvIdByKey.set(s.key, ev.id);
           } else ambientLogEvIds.push(ev.id);
         }
@@ -2355,7 +2612,8 @@ export async function investigate(
               0.9,
             );
             if (sig.isNew) ev.isNew = sig.isNew;
-            if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio)) ev.ratio = sig.ratio;
+            if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio))
+              ev.ratio = sig.ratio;
             logEvIds.push(ev.id);
             directLogEvIds.push(ev.id);
             directSignatures.push({
@@ -2393,10 +2651,17 @@ export async function investigate(
         // scope is the precision guard; bounded by count + a hard cap to keep it cheap.
         if (top !== undefined && typeof deps.code?.searchSymbols === 'function') {
           const GAP_D_MAX_RESOLVE = 12;
-          const seedScope = new Set<string>([top.id, ...(ctx?.callees ?? []).map((c) => c.id)]);
+          const seedScope = new Set<string>([
+            top.id,
+            ...(ctx?.callees ?? []).map((c) => c.id),
+          ]);
           const alreadyEmitted = new Set(seedEmittedJoins.map((j) => j.code));
           const eligible = analysis.signatures.filter(
-            (s) => s.key !== '' && s.key !== '(none)' && s.count > 0 && !alreadyEmitted.has(s.key),
+            (s) =>
+              s.key !== '' &&
+              s.key !== '(none)' &&
+              s.count > 0 &&
+              !alreadyEmitted.has(s.key),
           );
           // Resolve the top codes BY COUNT, plus any code whose key/message is HINT-RELEVANT
           // even at lower volume (dogfood M1: "publishing products keeps failing" must reach
@@ -2411,7 +2676,9 @@ export async function investigate(
             );
           const candidates = [
             ...new Set([
-              ...[...eligible].sort((a, b) => b.count - a.count).slice(0, GAP_D_MAX_RESOLVE),
+              ...[...eligible]
+                .sort((a, b) => b.count - a.count)
+                .slice(0, GAP_D_MAX_RESOLVE),
               ...eligible.filter(hintRelevant).slice(0, GAP_D_MAX_RESOLVE),
             ]),
           ].slice(0, GAP_D_MAX_RESOLVE * 2);
@@ -2428,7 +2695,8 @@ export async function investigate(
             // the top few rather than only [0] — otherwise the seed's OWN error is missed and
             // a generic callee error headlines instead (dogfood GAP F).
             const raiser =
-              raisers.find((r) => r.id === top.id) ?? raisers.find((r) => seedScope.has(r.id));
+              raisers.find((r) => r.id === top.id) ??
+              raisers.find((r) => seedScope.has(r.id));
             if (raiser === undefined) continue;
 
             // Reuse the code's existing direct evidence if it already surfaced; otherwise
@@ -2466,10 +2734,15 @@ export async function investigate(
                 0.9,
               );
               if (sig.isNew) ev.isNew = sig.isNew;
-              if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio)) ev.ratio = sig.ratio;
+              if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio))
+                ev.ratio = sig.ratio;
               logEvIds.push(ev.id);
               directLogEvIds.push(ev.id);
-              directSignatures.push({ key: sig.key, count: sig.count, message: sig.sampleMessage ?? '' });
+              directSignatures.push({
+                key: sig.key,
+                count: sig.count,
+                message: sig.sampleMessage ?? '',
+              });
               directEvIdByKey.set(sig.key, ev.id);
               evId = ev.id;
             }
@@ -2563,9 +2836,15 @@ export async function investigate(
       const to = new Date().toISOString();
       // Seed terms mirror the log block: hint + seed symbol + seed file base, so a Sentry
       // frame that points at the implicated code is classified 'direct' (HOR-156).
-      const sentrySeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const sentrySeedBase = top ? (top.filePath.split('/').pop() ?? '') : '';
       const sentryTerms = top
-        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(sentrySeedBase)])]
+        ? [
+            ...new Set([
+              ...tokenize(hint),
+              ...tokenize(top.name),
+              ...tokenize(sentrySeedBase),
+            ]),
+          ]
         : [...new Set(tokenize(hint))];
       const seedFileBase = top ? (top.filePath.split('/').pop() ?? '').toLowerCase() : '';
 
@@ -2577,15 +2856,24 @@ export async function investigate(
         const { issue, frame } = sig;
         // A signature "key" the relevance classifier can tokenize: the issue title plus
         // culprit + frame symbol/file (so domain terms in any of them count).
-        const sigKey = [issue.title, issue.culprit ?? '', frame?.function ?? '', frame?.filename ?? '']
+        const sigKey = [
+          issue.title,
+          issue.culprit ?? '',
+          frame?.function ?? '',
+          frame?.filename ?? '',
+        ]
           .filter(Boolean)
           .join(' ');
         // The frame's file is the strongest link: when it matches the resolved seed file,
         // this issue IS the error at the seed — force 'direct'.
-        const frameFileBase = (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
+        const frameFileBase =
+          (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
         const frameMatchesSeed =
-          seedFileBase.length > 0 && frameFileBase.length > 0 &&
-          (frameFileBase === seedFileBase || frameFileBase.includes(seedFileBase) || seedFileBase.includes(frameFileBase));
+          seedFileBase.length > 0 &&
+          frameFileBase.length > 0 &&
+          (frameFileBase === seedFileBase ||
+            frameFileBase.includes(seedFileBase) ||
+            seedFileBase.includes(frameFileBase));
 
         const { relevanceClass: classified, relevanceReason } = classifyLogRelevance(
           sigKey,
@@ -2593,7 +2881,9 @@ export async function investigate(
           sentryTerms,
           input.service,
         );
-        const relevanceClass: LogRelevanceClass = frameMatchesSeed ? 'direct' : classified;
+        const relevanceClass: LogRelevanceClass = frameMatchesSeed
+          ? 'direct'
+          : classified;
         const reason = frameMatchesSeed
           ? `Sentry frame at seed file ${frame?.filename ?? ''}`
           : relevanceReason;
@@ -2638,16 +2928,16 @@ export async function investigate(
           issue.lastSeen || undefined,
           // Direct: full error weight, boosted when the raise-site frame is resolved.
           // Ambient: demoted so unrelated high-volume groups don't inflate confidence.
-          relevanceClass === 'direct'
-            ? frame?.filename
-              ? 0.95
-              : 0.85
-            : 0.4,
+          relevanceClass === 'direct' ? (frame?.filename ? 0.95 : 0.85) : 0.4,
         );
         logEvIds.push(ev.id);
         if (relevanceClass === 'direct') {
           directLogEvIds.push(ev.id);
-          directSignatures.push({ key: issue.title, count: issue.count, message: issue.title });
+          directSignatures.push({
+            key: issue.title,
+            count: issue.count,
+            message: issue.title,
+          });
         } else {
           ambientLogEvIds.push(ev.id);
         }
@@ -2675,9 +2965,15 @@ export async function investigate(
       const to = new Date().toISOString();
       // Seed terms mirror the log/Sentry blocks: hint + seed symbol + seed file base, so a
       // Lens report whose comment/error/frame names the implicated code is 'direct' (HOR-156).
-      const lensSeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const lensSeedBase = top ? (top.filePath.split('/').pop() ?? '') : '';
       const lensTerms = top
-        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(lensSeedBase)])]
+        ? [
+            ...new Set([
+              ...tokenize(hint),
+              ...tokenize(top.name),
+              ...tokenize(lensSeedBase),
+            ]),
+          ]
         : [...new Set(tokenize(hint))];
       const seedFileBase = top ? (top.filePath.split('/').pop() ?? '').toLowerCase() : '';
 
@@ -2690,15 +2986,24 @@ export async function investigate(
         // A signature "key" the relevance classifier can tokenize: the user comment plus the
         // captured top error message + frame symbol/file (so domain terms in any count). The
         // comment matters most — a user-filed report that names the hint is high-signal.
-        const sigKey = [sig.comment ?? '', sig.topErrorMessage ?? '', frame?.function ?? '', frame?.filename ?? '']
+        const sigKey = [
+          sig.comment ?? '',
+          sig.topErrorMessage ?? '',
+          frame?.function ?? '',
+          frame?.filename ?? '',
+        ]
           .filter(Boolean)
           .join(' ');
         // The frame's file is the strongest link: when it matches the resolved seed file,
         // this report IS the error at the seed — force 'direct'.
-        const frameFileBase = (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
+        const frameFileBase =
+          (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
         const frameMatchesSeed =
-          seedFileBase.length > 0 && frameFileBase.length > 0 &&
-          (frameFileBase === seedFileBase || frameFileBase.includes(seedFileBase) || seedFileBase.includes(frameFileBase));
+          seedFileBase.length > 0 &&
+          frameFileBase.length > 0 &&
+          (frameFileBase === seedFileBase ||
+            frameFileBase.includes(seedFileBase) ||
+            seedFileBase.includes(frameFileBase));
 
         const { relevanceClass: classified, relevanceReason } = classifyLogRelevance(
           sigKey,
@@ -2706,12 +3011,16 @@ export async function investigate(
           lensTerms,
           input.service,
         );
-        const relevanceClass: LogRelevanceClass = frameMatchesSeed ? 'direct' : classified;
+        const relevanceClass: LogRelevanceClass = frameMatchesSeed
+          ? 'direct'
+          : classified;
         const reason = frameMatchesSeed
           ? `Lens report frame at seed file ${frame?.filename ?? ''}`
           : relevanceReason;
 
-        const commentText = sig.comment ? redactSecrets(sig.comment).slice(0, 80) : '(no comment)';
+        const commentText = sig.comment
+          ? redactSecrets(sig.comment).slice(0, 80)
+          : '(no comment)';
         const where = sig.route ?? sig.url ?? '';
         const whereStr = where !== '' ? ` · ${where}` : '';
         const frameLoc = frame?.filename
@@ -2763,14 +3072,19 @@ export async function investigate(
           directLogEvIds.push(ev.id);
           // Key the signature on the comment (the user's own words) when present, else the
           // captured top error message — so recurring user reports group in directSignatures.
-          const sigLabel = sig.comment && sig.comment.trim() !== ''
-            ? redactSecrets(sig.comment).slice(0, 120)
-            : sig.topErrorMessage
-              ? redactSecrets(sig.topErrorMessage)
-              : `Lens report ${sig.id}`;
+          const sigLabel =
+            sig.comment && sig.comment.trim() !== ''
+              ? redactSecrets(sig.comment).slice(0, 120)
+              : sig.topErrorMessage
+                ? redactSecrets(sig.topErrorMessage)
+                : `Lens report ${sig.id}`;
           // A report is itself one occurrence — never push count 0 (a comment-only report
           // would otherwise render as "0x" in the top-signature line).
-          directSignatures.push({ key: sigLabel, count: Math.max(1, sig.errorCount), message: sigLabel });
+          directSignatures.push({
+            key: sigLabel,
+            count: Math.max(1, sig.errorCount),
+            message: sigLabel,
+          });
         } else {
           ambientLogEvIds.push(ev.id);
         }
@@ -2791,18 +3105,30 @@ export async function investigate(
   let axiomCollected = false;
   let axiomFailureReason: string | undefined;
   const cloudLogStatus: NonNullable<ConnectorFlags['cloudLogs']> = [];
-  for (const logSource of [deps.axiom, ...(deps.cloudLogs ?? [])].filter((p): p is StructuredLogSource => p != null)) {
+  for (const logSource of [deps.axiom, ...(deps.cloudLogs ?? [])].filter(
+    (p): p is StructuredLogSource => p != null,
+  )) {
     const sourceId = logSource === deps.axiom ? 'axiom' : logSource.id;
-    const sourceStatus = { id: sourceId, collected: false, failureReason: undefined as string | undefined };
+    const sourceStatus = {
+      id: sourceId,
+      collected: false,
+      failureReason: undefined as string | undefined,
+    };
     if (sourceId !== 'axiom') cloudLogStatus.push(sourceStatus);
     try {
       const from = logWindowFrom(input.logsSince ?? input.since);
       const to = new Date().toISOString();
       // Seed terms mirror the log/Sentry blocks: hint + seed symbol + seed file base, so a
       // row that mentions the implicated code/domain is classified 'direct' (HOR-156).
-      const axiomSeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const axiomSeedBase = top ? (top.filePath.split('/').pop() ?? '') : '';
       const axiomTerms = top
-        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(axiomSeedBase)])]
+        ? [
+            ...new Set([
+              ...tokenize(hint),
+              ...tokenize(top.name),
+              ...tokenize(axiomSeedBase),
+            ]),
+          ]
         : [...new Set(tokenize(hint))];
 
       const records = await logSource.collect({ from, to, hintTerms: axiomTerms });
@@ -2826,9 +3152,15 @@ export async function investigate(
         const lvl = level ? `[${level}] ` : '';
         const body = msg ?? '(log event)';
         const tag = relevanceClass === 'ambient' ? ' [ambient]' : '';
-        const title = `${sourceId === 'axiom' ? 'Axiom' : sourceId} log: ${lvl}${body}${tag}`.slice(0, 220);
+        const title =
+          `${sourceId === 'axiom' ? 'Axiom' : sourceId} log: ${lvl}${body}${tag}`.slice(
+            0,
+            220,
+          );
 
-        const isError = ['error', 'fatal', 'critical'].includes((level ?? '').toLowerCase());
+        const isError = ['error', 'fatal', 'critical'].includes(
+          (level ?? '').toLowerCase(),
+        );
         const ev = mkEv(
           'log',
           title,
@@ -2850,7 +3182,11 @@ export async function investigate(
         logEvIds.push(ev.id);
         if (relevanceClass === 'direct') {
           directLogEvIds.push(ev.id);
-          directSignatures.push({ key: msg ?? '(log event)', count: 1, message: msg ?? '' });
+          directSignatures.push({
+            key: msg ?? '(log event)',
+            count: 1,
+            message: msg ?? '',
+          });
         } else {
           ambientLogEvIds.push(ev.id);
         }
@@ -2858,7 +3194,10 @@ export async function investigate(
     } catch (axiomErr) {
       // Axiom failure must never break the investigation — continue without it.
       sourceStatus.failureReason = connectorFailureReason(axiomErr);
-      if (sourceId === 'axiom') { axiomCollected = false; axiomFailureReason = sourceStatus.failureReason; }
+      if (sourceId === 'axiom') {
+        axiomCollected = false;
+        axiomFailureReason = sourceStatus.failureReason;
+      }
     }
   }
 
@@ -2893,10 +3232,16 @@ export async function investigate(
       analyze: (o: DurationDimensionOptions) => Promise<DurationByDimension | null>;
     }> = [];
     if (deps.logs && typeof deps.logs.analyzeDurations === 'function') {
-      durationProviders.push({ source: 'elasticsearch', analyze: (o) => deps.logs!.analyzeDurations(o) });
+      durationProviders.push({
+        source: 'elasticsearch',
+        analyze: (o) => deps.logs!.analyzeDurations(o),
+      });
     }
     if (deps.axiom && typeof deps.axiom.analyzeDurations === 'function') {
-      durationProviders.push({ source: 'axiom', analyze: (o) => deps.axiom!.analyzeDurations(o) });
+      durationProviders.push({
+        source: 'axiom',
+        analyze: (o) => deps.axiom!.analyzeDurations(o),
+      });
     }
     for (const provider of durationProviders) {
       try {
@@ -2946,7 +3291,7 @@ export async function investigate(
   const stateProviders: Array<{ name: string; provider: StateProvider }> = [
     ...(deps.mongo ? [{ name: 'mongodb' as const, provider: deps.mongo }] : []),
     ...(deps.postgres ? [{ name: 'postgres' as const, provider: deps.postgres }] : []),
-    ...(deps.additionalState ?? []).map(provider => ({name:provider.id,provider})),
+    ...(deps.additionalState ?? []).map((provider) => ({ name: provider.id, provider })),
   ];
   // Undefined when NO state provider (Mongo/Postgres/Redis state) is configured, so old
   // reports and provider-less runs never fire the 'application state' gap; false when at
@@ -2963,7 +3308,14 @@ export async function investigate(
       // collections (e.g. "services", "handlers"). Domain context lives in the hint.
       const stateTerms = [...new Set(tokenize(hint))];
       for (const s of selectStateSignals(analysis, stateTerms)) {
-        const ev = mkEv('state', s.title, {...s.payload, provider:name, database:analysis.database}, {}, s.timestamp, s.relevance);
+        const ev = mkEv(
+          'state',
+          s.title,
+          { ...s.payload, provider: name, database: analysis.database },
+          {},
+          s.timestamp,
+          s.relevance,
+        );
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
         if (s.kind === 'anomaly') {
@@ -2991,7 +3343,14 @@ export async function investigate(
         // Boost relevance when a hint term appears in the signal's match text.
         const matched = redisTerms.some((t) => t.length > 2 && s.matchText.includes(t));
         const relevance = matched ? Math.min(1, s.relevance + 0.3) : s.relevance;
-        const ev = mkEv('redis-key', s.title, s.payload, {}, redisStateAnalysis.collectedAt, relevance);
+        const ev = mkEv(
+          'redis-key',
+          s.title,
+          s.payload,
+          {},
+          redisStateAnalysis.collectedAt,
+          relevance,
+        );
         redisStateEvIds.push(ev.id);
       }
     } catch (redisErr) {
@@ -3048,8 +3407,17 @@ export async function investigate(
       if (queueNames.length > 0) {
         queueRuntimeState = await deps.queue.analyzeQueues({ queueNames });
       }
-      for (const s of analyzeQueueRuntime(queueRuntimeState ?? { prefix: '', collectedAt: '', queues: [] })) {
-        const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
+      for (const s of analyzeQueueRuntime(
+        queueRuntimeState ?? { prefix: '', collectedAt: '', queues: [] },
+      )) {
+        const ev = mkEv(
+          'queue-state',
+          s.title,
+          s.payload,
+          { queueName: s.queueName },
+          s.timestamp,
+          s.relevance,
+        );
         queueRuntimeEvIds.push(ev.id);
         const perQueue = queueRuntimeEvIdsByQueue.get(s.queueName) ?? [];
         perQueue.push(ev.id);
@@ -3064,7 +3432,11 @@ export async function investigate(
           queueStarvationEvIdsByQueue.set(s.queueName, st);
         }
         if (s.kind === 'failed-breakdown') {
-          const p = s.payload as { topReason?: unknown; topCount?: unknown; topStale?: unknown };
+          const p = s.payload as {
+            topReason?: unknown;
+            topCount?: unknown;
+            topStale?: unknown;
+          };
           if (typeof p.topReason === 'string') {
             queueFailureSignals.push({
               reason: p.topReason,
@@ -3088,11 +3460,23 @@ export async function investigate(
   for (const provider of deps.additionalQueues ?? []) {
     try {
       for (const snapshot of await provider.collect()) {
-        mkEv('queue-state', snapshot.title, snapshot.payload, snapshot.links, snapshot.timestamp, snapshot.relevance);
+        mkEv(
+          'queue-state',
+          snapshot.title,
+          snapshot.payload,
+          snapshot.links,
+          snapshot.timestamp,
+          snapshot.relevance,
+        );
       }
       queueCollected = true;
     } catch (error) {
-      queueFailureReason = [queueFailureReason, `${provider.id}: ${connectorFailureReason(error)}`].filter(Boolean).join('; ');
+      queueFailureReason = [
+        queueFailureReason,
+        `${provider.id}: ${connectorFailureReason(error)}`,
+      ]
+        .filter(Boolean)
+        .join('; ');
     }
   }
 
@@ -3125,7 +3509,10 @@ export async function investigate(
     try {
       const fromMs = new Date(logWindowFrom(input.logsSince ?? input.since)).getTime();
       const toMs = Date.now();
-      metricsTimerId = setTimeout(() => ac.abort(new Error('metrics timeout')), METRICS_TIMEOUT_MS);
+      metricsTimerId = setTimeout(
+        () => ac.abort(new Error('metrics timeout')),
+        METRICS_TIMEOUT_MS,
+      );
       // unref() prevents the timer from keeping the Node process alive.
       (metricsTimerId as { unref?: () => void }).unref?.();
       const mFindings = await deps.metrics.analyze({
@@ -3148,8 +3535,12 @@ export async function investigate(
       // panel titles. Storing by canonical name ensures hypothesis lookup succeeds.
       const queueNormToCanonical = new Map<string, string>();
       for (const edge of queueHits) {
-        const norm = edge.queueName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        if (!queueNormToCanonical.has(norm)) queueNormToCanonical.set(norm, edge.queueName);
+        const norm = edge.queueName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+        if (!queueNormToCanonical.has(norm))
+          queueNormToCanonical.set(norm, edge.queueName);
       }
       const serviceFilter = (input.service ?? '').toLowerCase();
       const collectedAt = new Date().toISOString();
@@ -3179,7 +3570,8 @@ export async function investigate(
           // the matching x139 anomaly into a cause, not leave it unranked in evidence).
           const matchesService =
             serviceFilter.length > 0 &&
-            (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
+            (panelLower.includes(serviceFilter) ||
+              labelVals.some((v) => v.includes(serviceFilter)));
           // Only promote on a hint match when the hint is actually PERFORMANCE-flavored —
           // else a latency panel named after a domain noun (e.g. "GetProduct p95") gets
           // lifted into the cause for any "product …" hint and metric-anomaly headlines
@@ -3192,7 +3584,9 @@ export async function investigate(
             serviceFilter.length === 0 &&
             hintIsPerf &&
             hintTokens.some(
-              (t) => t.length >= 4 && (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
+              (t) =>
+                t.length >= 4 &&
+                (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
             );
           // GAP B: a generic latency hint ("checkout is slow") rarely shares a token with a
           // latency PANEL ("GraphQL p95 Latency"), so the token match above misses and the
@@ -3202,7 +3596,8 @@ export async function investigate(
           // spikes (not error-rate) and gated on hintIsPerf so non-perf hints never over-fire.
           const genericPerf =
             serviceFilter.length === 0 && hintIsPerf && f.anomaly === 'latency-spike';
-          if (matchesService || matchesHint || genericPerf) latencyMetricEvIds.push(ev.id);
+          if (matchesService || matchesHint || genericPerf)
+            latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'bimodal-population') {
           // HOR-435 (lever #3): a two-population panel (high-spike cluster AND low/zero
           // cluster) is possible per-segment variance, not a uniform regression — wire it to
@@ -3213,14 +3608,21 @@ export async function investigate(
           // Match using normalized panel/label strings with word-boundary checks so
           // 'orders' does not match inside 'preorders'. Store under canonical queue name
           // so hypothesis lookup (which uses original case) finds the entry.
-          const panelNorm = f.panelTitle.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-          const labelNorms = Object.values(f.labels).map(
-            (v) => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+          const panelNorm = f.panelTitle
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+          const labelNorms = Object.values(f.labels).map((v) =>
+            v
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, ' ')
+              .trim(),
           );
           for (const [norm, canonical] of queueNormToCanonical) {
             const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const re = new RegExp(`(?:^| )${escaped}(?:$| )`);
-            const matchesQueue = re.test(panelNorm) || labelNorms.some((lv) => re.test(lv));
+            const matchesQueue =
+              re.test(panelNorm) || labelNorms.some((lv) => re.test(lv));
             if (matchesQueue) {
               if (!seenQueueMetricEvIds.has(ev.id)) {
                 seenQueueMetricEvIds.add(ev.id);
@@ -3242,7 +3644,13 @@ export async function investigate(
         const ev = mkEv(
           'metric',
           `Metrics checked — ${mFindings.length} series across ${panels.length} panel(s), no anomalies in window`,
-          { seriesChecked: mFindings.length, panelCount: panels.length, panels: panels.slice(0, 10), anomalies: 0, stance: 'neutral' },
+          {
+            seriesChecked: mFindings.length,
+            panelCount: panels.length,
+            panels: panels.slice(0, 10),
+            anomalies: 0,
+            stance: 'neutral',
+          },
           {},
           collectedAt,
           0.2,
@@ -3293,9 +3701,15 @@ export async function investigate(
     try {
       const from = logWindowFrom(input.logsSince ?? input.since);
       const to = new Date().toISOString();
-      const shopifySeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const shopifySeedBase = top ? (top.filePath.split('/').pop() ?? '') : '';
       const shopifyTerms = top
-        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(shopifySeedBase)])]
+        ? [
+            ...new Set([
+              ...tokenize(hint),
+              ...tokenize(top.name),
+              ...tokenize(shopifySeedBase),
+            ]),
+          ]
         : [...new Set(tokenize(hint))];
 
       const records = await deps.shopify.collect({
@@ -3435,7 +3849,8 @@ export async function investigate(
     findings.push({
       kind: 'observation',
       title: logReseed.note,
-      detail: 'Seed was resolved by matching the hint against recent logs, not source search.',
+      detail:
+        'Seed was resolved by matching the hint against recent logs, not source search.',
       confidence: 0.6,
       evidenceIds: [seedEv.id],
     });
@@ -3488,8 +3903,7 @@ export async function investigate(
   }
 
   if (changes && changeEvId) {
-    const m =
-      changes.added.length + changes.removed.length + changes.modified.length;
+    const m = changes.added.length + changes.removed.length + changes.modified.length;
     findings.push({
       kind: 'observation',
       title: `${m} symbol(s) changed in range ${input.since}..HEAD`,
@@ -3548,7 +3962,7 @@ export async function investigate(
     findings.push({
       kind: 'observation',
       title: `${analysis.signatures.length} error signature(s) (${newN} new, ${analysis.totalErrors} error(s)) — affected: ${affected}${ambientSuffix}`,
-      confidence: hasDirectEvidence ? 0.65 : 0.40,
+      confidence: hasDirectEvidence ? 0.65 : 0.4,
       evidenceIds: logEvIds,
     });
 
@@ -3559,7 +3973,9 @@ export async function investigate(
     if (topDirectId !== undefined && topSig !== undefined) {
       const flag = topSig.isNew
         ? ' (NEW)'
-        : topSig.ratio !== undefined && Number.isFinite(topSig.ratio) && topSig.ratio >= 1.5
+        : topSig.ratio !== undefined &&
+            Number.isFinite(topSig.ratio) &&
+            topSig.ratio >= 1.5
           ? ` (spike x${topSig.ratio.toFixed(1)})`
           : '';
       findings.push({
@@ -3571,7 +3987,9 @@ export async function investigate(
     } else if (topSig !== undefined && ambientCount > 0) {
       const flag = topSig.isNew
         ? ' (NEW)'
-        : topSig.ratio !== undefined && Number.isFinite(topSig.ratio) && topSig.ratio >= 1.5
+        : topSig.ratio !== undefined &&
+            Number.isFinite(topSig.ratio) &&
+            topSig.ratio >= 1.5
           ? ` (spike x${topSig.ratio.toFixed(1)})`
           : '';
       findings.push({
@@ -3617,7 +4035,9 @@ export async function investigate(
 
   // Queue runtime findings (HOR-12)
   if (queueRuntimeState !== null && queueRuntimeEvIds.length > 0) {
-    const starved = queueRuntimeState.queues.filter((q) => q.waiting >= 10 && q.active === 0);
+    const starved = queueRuntimeState.queues.filter(
+      (q) => q.waiting >= 10 && q.active === 0,
+    );
     // Exclude starved queues: the analyzer emits worker-starvation instead of backlog for
     // them, so treating them as backlogged here would inflate finding confidence to 0.85.
     const starvedNames = new Set(starved.map((q) => q.queueName));
@@ -3637,7 +4057,9 @@ export async function investigate(
           `backlog: ${backlogged.map((q) => `${q.queueName} (${q.waiting})`).join(', ')}`,
         );
       if (failing.length > 0)
-        parts.push(`failures: ${failing.map((q) => `${q.queueName} (${q.failed})`).join(', ')}`);
+        parts.push(
+          `failures: ${failing.map((q) => `${q.queueName} (${q.failed})`).join(', ')}`,
+        );
       findings.push({
         kind: 'anomaly',
         title: `Queue runtime anomalies — ${parts.join('; ')}`,
@@ -3705,7 +4127,7 @@ export async function investigate(
           title: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
           category: 'queue-backlog',
           sourceEvidenceIds: queueRuntimeEvIdsByQueue.get(q.queueName) ?? [],
-          baseScore: clamp01(isStarved ? 0.45 : 0.45 + Math.min(q.waiting / 5_000, 0.20)),
+          baseScore: clamp01(isStarved ? 0.45 : 0.45 + Math.min(q.waiting / 5_000, 0.2)),
           metadata: { waitingCount: q.waiting, isStarved, blastRadius },
         });
       }
@@ -3786,7 +4208,11 @@ export async function investigate(
     // The seed reference in the confident title: name the SYMBOL only when a commit provably
     // touched its line range; otherwise name the FILE it lives in (honest, never overclaiming).
     const seedRef =
-      top !== undefined ? (rangeConfirmed ? `to ${top.name}` : `touching ${top.filePath ?? top.name}`) : '';
+      top !== undefined
+        ? rangeConfirmed
+          ? `to ${top.name}`
+          : `touching ${top.filePath ?? top.name}`
+        : '';
     // #3: only attribute the regression to the seed when an in-window commit actually touched the
     // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
     // pinning it on the newest unrelated commit.
@@ -3874,9 +4300,7 @@ export async function investigate(
     });
     const lead = ordered[0];
     if (lead !== undefined) {
-      const sourceEvidenceIds = [
-        ...new Set([...ordered.map((j) => j.evId), seedEv.id]),
-      ];
+      const sourceEvidenceIds = [...new Set([...ordered.map((j) => j.evId), seedEv.id])];
       const tier = seedEmittedSeverityTier(lead.level, lead.code, lead.message);
       const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, lead.count)) * 0.025);
       const msgClause = lead.message
@@ -3953,7 +4377,10 @@ export async function investigate(
         // applies the precision gate on the returned signatures.
         text: meaningfulHintTokens.filter((t) => t.length >= 4).join(' '),
       });
-      const picked = selectHintMatchedSignal(warnAnalysis.signatures ?? [], meaningfulHintTokens);
+      const picked = selectHintMatchedSignal(
+        warnAnalysis.signatures ?? [],
+        meaningfulHintTokens,
+      );
       if (picked) {
         const tier = seedEmittedSeverityTier(null, picked.code, picked.message);
         const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, picked.count)) * 0.03);
@@ -3962,7 +4389,10 @@ export async function investigate(
           : '';
         const ev = mkEv(
           'log',
-          `event_code ${picked.code}: ${picked.count}x in Elasticsearch — matches the reported symptom`.slice(0, 220),
+          `event_code ${picked.code}: ${picked.count}x in Elasticsearch — matches the reported symptom`.slice(
+            0,
+            220,
+          ),
           {
             signature: picked.code,
             count: picked.count,
@@ -3978,14 +4408,23 @@ export async function investigate(
         logEvIds.push(ev.id);
         causeInputs.push({
           id: 'cause:hint-matched-signal',
-          title: `Runtime signal ${picked.code} (${picked.count}x in Elasticsearch) matches the reported symptom but isn't structurally linked to ${top?.name ?? 'the seed'}${msgClause} — verify`.slice(0, 220),
+          title:
+            `Runtime signal ${picked.code} (${picked.count}x in Elasticsearch) matches the reported symptom but isn't structurally linked to ${top?.name ?? 'the seed'}${msgClause} — verify`.slice(
+              0,
+              220,
+            ),
           category: 'error-correlation',
           sourceEvidenceIds: [ev.id],
           // A signal whose event_code/message names the symptom is stronger evidence than a
           // diffuse recent commit that merely touched the seed's file (order-of-trust), so it
           // ranks above the broad-commit regression floor (~0.54). Still below a seed-LINKED error.
           baseScore: clamp01((tier === SEV_ERROR ? 0.6 : 0.56) + volumeBoost),
-          metadata: { blastRadius, hintMatched: true, code: picked.code, count: picked.count },
+          metadata: {
+            blastRadius,
+            hintMatched: true,
+            code: picked.code,
+            count: picked.count,
+          },
         });
       }
     } catch {
@@ -4004,7 +4443,10 @@ export async function investigate(
     // the lib fn a wrapper calls, a sibling method), so scan the top seed PLUS the next few ranked
     // seeds and the seed's direct callees (bounded). Each extra context is a best-effort fetch.
     const scanIds = [
-      ...new Set([...seeds.slice(1, 4).map((s) => s.id), ...(ctx.callees ?? []).slice(0, 4).map((c) => c.id)]),
+      ...new Set([
+        ...seeds.slice(1, 4).map((s) => s.id),
+        ...(ctx.callees ?? []).slice(0, 4).map((c) => c.id),
+      ]),
     ].filter((id) => id !== top.id);
     const extraCtxs = (
       await Promise.all(scanIds.map((id) => code.context(id).catch(() => null)))
@@ -4017,7 +4459,11 @@ export async function investigate(
         category: 'data-flow',
         sourceEvidenceIds: [seedEv.id],
         baseScore: dataFlow.baseScore,
-        metadata: { dataFlowPattern: dataFlow.pattern, matched: dataFlow.matched, blastRadius },
+        metadata: {
+          dataFlowPattern: dataFlow.pattern,
+          matched: dataFlow.matched,
+          blastRadius,
+        },
       });
     }
   }
@@ -4025,7 +4471,12 @@ export async function investigate(
   // Runtime-errors + queue-path cause: only when we have DIRECT error evidence AND a queue path.
   // Ambient-only signatures have no structural link to the seed and must not drive
   // cause ranking — they inflate confidence on unrelated high-volume errors.
-  if (analysis !== null && analysis.signatures.length > 0 && queueHits.length > 0 && directLogEvIds.length > 0) {
+  if (
+    analysis !== null &&
+    analysis.signatures.length > 0 &&
+    queueHits.length > 0 &&
+    directLogEvIds.length > 0
+  ) {
     const firstQueue = queueHits[0];
     const queueLabel =
       firstQueue !== undefined
@@ -4041,7 +4492,7 @@ export async function investigate(
       title: `Runtime errors (${directTotal}${directTop ? `, top ${directTop.key}` : ''}) directly linked to the implicated queue path ${queueLabel}`,
       category: 'error-correlation',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
-      baseScore: 0.30,
+      baseScore: 0.3,
       metadata: { blastRadius },
     });
   }
@@ -4129,7 +4580,7 @@ export async function investigate(
       title: `Queue-growth metric anomalies (${queueMetricEvIds.length} signal(s)) — worker throughput may be insufficient`,
       category: 'queue-backlog',
       sourceEvidenceIds: queueMetricEvIds,
-      baseScore: 0.40,
+      baseScore: 0.4,
       metadata: { blastRadius },
     });
   }
@@ -4139,10 +4590,10 @@ export async function investigate(
   // corroboration applied as factors.
   // Keys must match Evidence.source values (not provider .id) — see factorProviderReliability.
   const providerReliability: Record<string, number> = {
-    code: 0.80,
-    ...(deps.logs != null ? { logs: 0.70 } : {}),
+    code: 0.8,
+    ...(deps.logs != null ? { logs: 0.7 } : {}),
     ...(deps.mongo != null || deps.redisState != null ? { state: 0.85 } : {}),
-    ...(deps.queue != null ? { queue: 0.90 } : {}),
+    ...(deps.queue != null ? { queue: 0.9 } : {}),
     ...(deps.metrics != null ? { metrics: 0.75 } : {}),
   };
   // Incident memory (HOR-363): code areas touched by PRIOR credible investigations corroborate
@@ -4150,7 +4601,9 @@ export async function investigate(
   // ceiling. Build a node-id → prior-count map from the recent incident store.
   const priorIncidents = new Map<string, number>();
   try {
-    const priors = await listInvestigationsWithReports(deps.db, 50, { project: input.repo });
+    const priors = await listInvestigationsWithReports(deps.db, 50, {
+      project: input.repo,
+    });
     for (const row of priors) {
       if (allowedPriorIds && !allowedPriorIds.has(row.id)) continue;
       const rep = row.report as InvestigationReport | null | undefined;
@@ -4195,7 +4648,8 @@ export async function investigate(
       if (!STRUCTURAL_GUESS_CATEGORIES.has(c.category)) continue;
       c.finalScore = Math.min(c.finalScore, 0.18);
       if (!c.title.includes('unconfirmed structural guess')) {
-        c.title += ' — unconfirmed structural guess (vague performance hint: no metrics evidence, low-confidence seed)';
+        c.title +=
+          ' — unconfirmed structural guess (vague performance hint: no metrics evidence, low-confidence seed)';
       }
     }
     rankedCauses.sort((a, b) => b.finalScore - a.finalScore);
@@ -4217,7 +4671,8 @@ export async function investigate(
   let confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
   // h. summary
-  const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
+  const area =
+    ctx?.community?.name ?? top?.filePath ?? input.service ?? 'runtime evidence';
   // HOR — gate the headline on a STRUCTURAL LINK to the seed. A cause is "linked" when it cites
   // the seed's own evidence (its symbol / blast-impact) or a direct (seed-tied) log signature —
   // as opposed to purely co-occurring runtime noise (an unrelated stale queue, a data-state
@@ -4232,19 +4687,27 @@ export async function investigate(
     // a higher-volume but lower-severity log code.
     ...(looksPerformance(hint) ? latencyMetricEvIds : []),
   ]);
-  const isLinkedToSeed = (ids: string[]): boolean => ids.some((id) => seedLinkedEvIds.has(id));
+  const isLinkedToSeed = (ids: string[]): boolean =>
+    ids.some((id) => seedLinkedEvIds.has(id));
   // HOR-402 substage-1a: select the headline by finalScore ARGMAX (not array position) so the
   // confidence + unlinked-headline cap below stay correct even if rankCauses' output order ever
   // changes. No-op today — rankCauses already sorts by finalScore desc, so argmax == [0].
   // (HOR-340/336: a sub-threshold cause must not headline; selectHeadlineCause enforces the ≥0.2 bar.)
-  const { headlineCause, headlineLinked } = selectHeadlineCause(rankedCauses, isLinkedToSeed, rerank);
+  const { headlineCause, headlineLinked } = selectHeadlineCause(
+    rankedCauses,
+    isLinkedToSeed,
+    rerank,
+  );
   // #2 calibration — a headline that isn't structurally linked to the seed is a co-occurring
   // signal, not a verified diagnosis: cap it in the "possible" band so it never reads as a
   // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).
   // HOR-385: in source-impact mode the summary is the structural impact result, not a cause
   // headline, so the unlinked-headline cap is irrelevant — skip it.
-  if (headlineCause && !headlineLinked && !sourceImpactHint) confidence = Math.min(confidence, 0.6);
-  const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
+  if (headlineCause && !headlineLinked && !sourceImpactHint)
+    confidence = Math.min(confidence, 0.6);
+  const banner = degradedNoSource
+    ? 'Runtime-only (source intelligence unavailable). '
+    : '';
   // HOR-355: never present a weak semantic guess as "resolved to X" — it reads as a (wrong)
   // answer and undercuts the disclaimer. Only claim localization for a confident seed match;
   // otherwise say we couldn't localize and let the disclaimer point at how to refine.
@@ -4285,7 +4748,8 @@ export async function investigate(
   // interrogative to `looksExplanatory`, so source-impact must take precedence over the
   // behavioral walkthrough — exclude it here and lead with the impact result below instead.
   // (Incident and pure-explain hints are unaffected: sourceImpactHint is false for them.)
-  const explanatoryHint = looksExplanatory(hint) && input.since === undefined && !sourceImpactHint;
+  const explanatoryHint =
+    looksExplanatory(hint) && input.since === undefined && !sourceImpactHint;
   let behavioral: BehavioralWalkthrough | undefined;
   if (explanatoryHint) {
     // Gap #5: a "how does X work" hint is a request for an explanation, not a fault hunt —
@@ -4296,8 +4760,14 @@ export async function investigate(
     // injected service or a bare class) — the flow of an entry-point-like caller, so the
     // walkthrough roots at the controller/route rather than the service in the middle.
     let flowPool = flows;
-    const richestSeedFlow = flows.slice().sort((a, b) => b.steps.length - a.steps.length)[0];
-    if (code && (richestSeedFlow === undefined || richestSeedFlow.steps.length <= 1) && ctx?.callers?.length) {
+    const richestSeedFlow = flows
+      .slice()
+      .sort((a, b) => b.steps.length - a.steps.length)[0];
+    if (
+      code &&
+      (richestSeedFlow === undefined || richestSeedFlow.steps.length <= 1) &&
+      ctx?.callers?.length
+    ) {
       const ENTRY_RE =
         /controller|resolver|route|handler|command|consumer|listener|gateway|cron|scheduler|webhook|middleware/i;
       const entryCallers = ctx.callers
@@ -4320,7 +4790,13 @@ export async function investigate(
         classMethods = await fetchClassMethods(code, top as Symbol);
       }
     }
-    behavioral = buildBehavioralWalkthrough(hint, top, ctx ?? undefined, flowPool, classMethods);
+    behavioral = buildBehavioralWalkthrough(
+      hint,
+      top,
+      ctx ?? undefined,
+      flowPool,
+      classMethods,
+    );
     const noisy = hasIncidentSignal
       ? ' (note: live error signals also exist in this codebase — rephrase as a symptom like "X failing" for a fault hunt)'
       : '';
@@ -4333,7 +4809,12 @@ export async function investigate(
   // anchor to — say so instead of presenting an arbitrary low-confidence symbol as the finding.
   // Config drives the advice: `connect grafana` is only suggested when the config already
   // uses runtime connectors; a zero-connector config gets a neutral next step, not a nag.
-  if (!explanatoryHint && looksPerformance(hint) && deps.metrics == null && seedIsLowConfidence) {
+  if (
+    !explanatoryHint &&
+    looksPerformance(hint) &&
+    deps.metrics == null &&
+    seedIsLowConfidence
+  ) {
     const perfNext = hasAnyRuntimeConnector(deps.connectors ?? {})
       ? 'Connect a metrics source (`horus connect grafana`) and re-run, or name the specific slow operation.'
       : 'Name the specific slow operation for a structural walkthrough.';
@@ -4357,7 +4838,9 @@ export async function investigate(
     // verify-isolation: namedSymbols are positional — [0] = X (the seed), [1] = Y (isolation
     // target). Check whether Y is reachable in the impact set and render a verdict.
     const isolationTarget =
-      looksVerifyIsolation(hint) && namedSymbols.length >= 2 ? namedSymbols[1] : undefined;
+      looksVerifyIsolation(hint) && namedSymbols.length >= 2
+        ? namedSymbols[1]
+        : undefined;
     if (isolationTarget !== undefined) {
       const reachDepth = impact.byDepth.find((d) =>
         d.symbols.some((s) => s.name.toLowerCase() === isolationTarget.toLowerCase()),
@@ -4396,7 +4879,8 @@ export async function investigate(
   }
 
   const report: InvestigationReport = {
-    startupRecall, recallTrace,
+    startupRecall,
+    recallTrace,
     id: globalThis.crypto.randomUUID(),
     input,
     ...(investigationSubject(input) !== undefined
@@ -4421,7 +4905,12 @@ export async function investigate(
     ...(recentChanges !== undefined ? { recentChanges } : {}),
     ...(behavioral !== undefined ? { behavioral } : {}),
     ...(degradedNoSource
-      ? { degraded: { sourceIntelligence: false, reason: 'source-intelligence host unreachable' } }
+      ? {
+          degraded: {
+            sourceIntelligence: false,
+            reason: 'source-intelligence host unreachable',
+          },
+        }
       : {}),
   };
 
@@ -4463,7 +4952,8 @@ export async function investigate(
         lensCollected,
         lensFailureReason,
         cloudLogs: cloudLogStatus,
-        additionalState: !!deps.additionalState?.length || !!deps.connectors?.additionalState,
+        additionalState:
+          !!deps.additionalState?.length || !!deps.connectors?.additionalState,
         prometheus: deps.metrics?.id === 'prometheus',
         axiomCollected,
         axiomFailureReason,
@@ -4532,7 +5022,8 @@ export async function investigate(
   // HOR-335: a fuzzy/zero-support seed can never claim more than low confidence,
   // regardless of how much (unrelated) runtime evidence happens to be present. The named seed in
   // source-impact mode is intentional, not a weak guess — exempt it.
-  if (seedIsLowConfidence && !sourceImpactHint) report.confidence = Math.min(report.confidence, 0.45);
+  if (seedIsLowConfidence && !sourceImpactHint)
+    report.confidence = Math.min(report.confidence, 0.45);
   // HOR-336: the headline must reflect DIAGNOSIS strength, not just localization +
   // evidence volume. A run can localize a seed and surface lots of evidence yet
   // produce no meaningful root cause — that is "localized, cause unknown", not a
@@ -4544,7 +5035,10 @@ export async function investigate(
   // it never raises confidence.
   const topCauseScore = report.suspectedCauses[0]?.finalScore ?? 0;
   if (!sourceImpactHint) {
-    report.confidence = Math.min(report.confidence, confidenceCeilingForCause(topCauseScore));
+    report.confidence = Math.min(
+      report.confidence,
+      confidenceCeilingForCause(topCauseScore),
+    );
   }
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   // HOR-386 — deterministic next-step routing. The router is the SINGLE source of truth:
@@ -4577,9 +5071,17 @@ export async function investigate(
 
   for (const candidate of startupRecall) {
     const invalidators = candidate.outcome?.invalidatingConditions ?? [];
-    candidate.contradictingEvidenceIds = evidence.filter(ev => invalidators.some(condition =>
-      condition.length > 8 && JSON.stringify({ title: ev.title, payload: ev.payload }).toLowerCase().includes(condition.toLowerCase())
-    )).map(ev => ev.id);
+    candidate.contradictingEvidenceIds = evidence
+      .filter((ev) =>
+        invalidators.some(
+          (condition) =>
+            condition.length > 8 &&
+            JSON.stringify({ title: ev.title, payload: ev.payload })
+              .toLowerCase()
+              .includes(condition.toLowerCase()),
+        ),
+      )
+      .map((ev) => ev.id);
     if (candidate.contradictingEvidenceIds.length) candidate.validation = 'contradicted';
   }
 
@@ -4595,8 +5097,13 @@ export async function investigate(
   //    Past incidents are CONTEXT ONLY; they must never override report.confidence.
   if (persistedId !== null) {
     const tags = deriveTags(report);
-    report.similarIncidents = (await recallSimilar(db, tags, persistedId, input.repo ?? null))
-      .filter(item => !allowedPriorIds || (item.investigationId !== null && allowedPriorIds.has(item.investigationId)));
+    report.similarIncidents = (
+      await recallSimilar(db, tags, persistedId, input.repo ?? null)
+    ).filter(
+      (item) =>
+        !allowedPriorIds ||
+        (item.investigationId !== null && allowedPriorIds.has(item.investigationId)),
+    );
     await storeIncidentMemory(db, persistedId, report);
 
     // HOR-432 — auto-capture a recurrence-CONSOLIDATING memory from THIS investigation. Default ON
@@ -4614,7 +5121,20 @@ export async function investigate(
         // Deterministic "seen at" stamp — the persisted investigation's createdAt (never Date.now()
         // in the scoring path); falls back to a fresh Date only when the DB did not echo createdAt.
         const reportTime = persisted?.createdAt ?? new Date();
-        await captureInvestigationMemory(store, persistedId, report, reportTime, audit);
+        const captured = await captureInvestigationMemory(
+          store,
+          persistedId,
+          report,
+          reportTime,
+          audit,
+        );
+        if (deps.recallIndex && captured.memoryId && report.input.repo)
+          await indexIncidentHint(
+            deps.recallIndex,
+            report.input.repo,
+            captured.memoryId,
+            report.input.hint,
+          );
       } catch (error) {
         report.memoryCaptureError = connectorFailureReason(error);
         // Non-blocking — auto-memory must never prevent investigation delivery (spec §7/§8).
@@ -4662,11 +5182,15 @@ function buildNextActions(
     actions.push(`Check depth/failures of queue ${edge.queueName}`);
   }
   if (top && impact && impact.affected > 0) {
-    actions.push(`Review impact set of ${top.name} (${impact.affected} affected symbol(s))`);
+    actions.push(
+      `Review impact set of ${top.name} (${impact.affected} affected symbol(s))`,
+    );
   }
   if (top) {
     if (changes && input.since !== undefined) {
-      actions.push(`Diff recent commits touching ${top.filePath} in ${input.since}..HEAD`);
+      actions.push(
+        `Diff recent commits touching ${top.filePath} in ${input.since}..HEAD`,
+      );
     } else {
       actions.push(`Diff recent commits touching ${top.filePath}`);
     }
@@ -4696,72 +5220,77 @@ async function persist(
   try {
     report.createdAt ??= new Date().toISOString();
     const write = async (tx: HorusDb) => {
-    const inserted = await tx
-      .insert(investigationsTable)
-      .values({
-        id: input.reportId ?? report.id,
-        createdAt: new Date(report.createdAt!),
-        report: { ...report, id: input.reportId ?? report.id, persisted: true },
-        title: input.hint.trim() || 'Investigation',
-        incidentInput: input,
-        status: 'open',
-        summary: report.summary,
-        // Stamp the project so reads can scope — the shared DB leaked one
-        // project's investigations into another's lists/priors (dogfood N1).
-        project: input.repo ?? null,
-      })
-      .returning({ id: investigationsTable.id, createdAt: investigationsTable.createdAt });
+      const inserted = await tx
+        .insert(investigationsTable)
+        .values({
+          id: input.reportId ?? report.id,
+          createdAt: new Date(report.createdAt!),
+          report: { ...report, id: input.reportId ?? report.id, persisted: true },
+          title: input.hint.trim() || 'Investigation',
+          incidentInput: input,
+          status: 'open',
+          summary: report.summary,
+          // Stamp the project so reads can scope — the shared DB leaked one
+          // project's investigations into another's lists/priors (dogfood N1).
+          project: input.repo ?? null,
+        })
+        .returning({
+          id: investigationsTable.id,
+          createdAt: investigationsTable.createdAt,
+        });
 
-    const row = inserted[0];
-    if (!row) return null;
-    const investigationId = row.id;
+      const row = inserted[0];
+      if (!row) return null;
+      const investigationId = row.id;
 
-    if (report.evidence.length > 0) {
-      await tx.insert(evidenceTable).values(
-        report.evidence.map((e) => ({
-          id: e.id,
-          investigationId,
-          source: e.source,
-          kind: e.kind,
-          title: e.title,
-          timestamp: e.timestamp ? new Date(e.timestamp) : null,
-          relevance: e.relevance,
-          payload: e.payload,
-          links: e.links,
-          provenance: e.provenance,
-        })),
-      );
-    }
+      if (report.evidence.length > 0) {
+        await tx.insert(evidenceTable).values(
+          report.evidence.map((e) => ({
+            id: e.id,
+            investigationId,
+            source: e.source,
+            kind: e.kind,
+            title: e.title,
+            timestamp: e.timestamp ? new Date(e.timestamp) : null,
+            relevance: e.relevance,
+            payload: e.payload,
+            links: e.links,
+            provenance: e.provenance,
+          })),
+        );
+      }
 
-    if (report.findings.length > 0) {
-      await tx.insert(findingsTable).values(
-        report.findings.map((f) => ({
-          investigationId,
-          kind: f.kind,
-          title: f.title,
-          detail: f.detail ?? null,
-          confidence: f.confidence,
-          evidenceIds: f.evidenceIds,
-        })),
-      );
-    }
+      if (report.findings.length > 0) {
+        await tx.insert(findingsTable).values(
+          report.findings.map((f) => ({
+            investigationId,
+            kind: f.kind,
+            title: f.title,
+            detail: f.detail ?? null,
+            confidence: f.confidence,
+            evidenceIds: f.evidenceIds,
+          })),
+        );
+      }
 
-    if (report.hypotheses.length > 0) {
-      await tx.insert(hypothesesTable).values(
-        report.hypotheses.map((hyp, i) => ({
-          investigationId,
-          rank: i + 1,
-          statement: hyp.statement,
-          score: hyp.confidence,
-          supportingEvidence: hyp.supportingEvidenceIds,
-          verdict: hyp.verdict,
-        })),
-      );
-    }
+      if (report.hypotheses.length > 0) {
+        await tx.insert(hypothesesTable).values(
+          report.hypotheses.map((hyp, i) => ({
+            investigationId,
+            rank: i + 1,
+            statement: hyp.statement,
+            score: hyp.confidence,
+            supportingEvidence: hyp.supportingEvidenceIds,
+            verdict: hyp.verdict,
+          })),
+        );
+      }
 
-    return { id: investigationId, createdAt: row.createdAt ?? null };
+      return { id: investigationId, createdAt: row.createdAt ?? null };
     };
-    return input.reportId ? await db.transaction(tx => write(tx as unknown as HorusDb)) : await write(db);
+    return input.reportId
+      ? await db.transaction((tx) => write(tx as unknown as HorusDb))
+      : await write(db);
   } catch {
     return null;
   }

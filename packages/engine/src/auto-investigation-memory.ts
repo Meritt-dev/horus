@@ -1,4 +1,4 @@
-import { readIncidentDisposition } from './memory-recall.js';
+import { appendHint, readIncidentDisposition } from './memory-recall.js';
 /**
  * HOR-432 — auto-capture a recurrence-aware memory from EVERY investigation, CONSOLIDATING recurrences.
  *
@@ -139,6 +139,7 @@ export async function createInvestigationMemory(
     payload: {
       investigationId,
       hint: fields.hint,
+      hints: [fields.hint],
       topHypothesis: fields.topHypothesisCategory,
       // First sighting: a single investigation is "recurred 1×". Bumped on each later recurrence.
       recurrenceCount: 1,
@@ -215,7 +216,8 @@ export async function detectRecurrence(
         ))
     )
       continue;
-    const structuredMatch = a?.fingerprint && a.fingerprint === input?.incident?.fingerprint;
+    const structuredMatch =
+      a?.fingerprint && a.fingerprint === input?.incident?.fingerprint;
     const compared = {
       ...probe,
       payload: structuredMatch ? undefined : { hint: input?.hint ?? probe.hint },
@@ -280,6 +282,11 @@ export async function consolidateRecurrence(
     investigationIds,
     // Refresh the "latest finding" provenance; keep the original first-seen id for reference.
     hint: fields.hint,
+    // Every hint this incident was investigated under, so recall matches any earlier wording too.
+    hints: appendHint(
+      prev.hints ?? (typeof prev.hint === 'string' ? [prev.hint] : []),
+      fields.hint,
+    ),
     topHypothesis: fields.topHypothesisCategory,
     investigationId:
       typeof prev.investigationId === 'string'

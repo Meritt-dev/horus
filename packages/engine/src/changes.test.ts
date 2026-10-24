@@ -6,7 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { CodeProvider } from '@horus/connectors';
 import type { ChangeSet, Symbol, Flow } from '@horus/core';
-import { changeImpact } from './changes.js';
+import { changeImpact, incidentsTouchingChanges } from './changes.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -69,10 +69,7 @@ describe('changeImpact', () => {
   it('returns 0 affectedFlows when no changed symbol is in a flow', async () => {
     const sym = makeSymbol('SomeUtility');
 
-    const code = stubCode(
-      { added: [sym], modified: [], removed: [] },
-      {},
-    );
+    const code = stubCode({ added: [sym], modified: [], removed: [] }, {});
 
     const report = await changeImpact({ base: 'abc^', compare: 'abc' }, { code });
 
@@ -138,7 +135,9 @@ describe('changeImpact', () => {
       searchSymbols: vi.fn(),
       context: vi.fn(),
       impact: vi.fn(),
-      flowsFor: vi.fn(async () => { throw new Error('host unreachable'); }),
+      flowsFor: vi.fn(async () => {
+        throw new Error('host unreachable');
+      }),
       detectChanges: vi.fn(async () => ({ added: [sym], modified: [], removed: [] })),
     } as unknown as CodeProvider;
 
@@ -185,13 +184,24 @@ describe('changeImpact — structural truth hardening', () => {
   it('filters derived/synthetic nodes (community:/process:/folder:/empty filePath) from the changeset', async () => {
     const real = makeSymbol('OrderProcessor');
     const community: Symbol = { id: 'community:12', name: 'cluster-12', filePath: '' };
-    const process: Symbol = { id: 'process:emails', name: 'emails', filePath: 'src/x.ts' };
-    const folder: Symbol = { id: 'folder:src/services', name: 'services', filePath: 'src/services' };
+    const process: Symbol = {
+      id: 'process:emails',
+      name: 'emails',
+      filePath: 'src/x.ts',
+    };
+    const folder: Symbol = {
+      id: 'folder:src/services',
+      name: 'services',
+      filePath: 'src/services',
+    };
     const noFile: Symbol = { id: 'function:ghost', name: 'ghost', filePath: '' };
 
     const code = stubCode({
       added: [real, community, folder],
-      modified: [{ before: process, after: process }, { before: real, after: real }],
+      modified: [
+        { before: process, after: process },
+        { before: real, after: real },
+      ],
       removed: [noFile],
     });
     const report = await changeImpact({ base: 'HEAD~3', compare: 'HEAD' }, { code });
@@ -254,5 +264,60 @@ describe('changeImpact — structural truth hardening', () => {
       'flow:small-a',
       'flow:small-b',
     ]);
+  });
+});
+
+describe('incidentsTouchingChanges', () => {
+  const sym = (id: string) =>
+    ({ id, name: id.split(':').pop()!, filePath: 'src/a.ts' }) as Symbol;
+  const saved = (
+    id: string,
+    day: number,
+    hint: string,
+    band: string,
+    seeds: string[],
+  ) => ({
+    id,
+    createdAt: new Date(Date.UTC(2026, 8, day)),
+    report: {
+      input: { hint },
+      seeds: seeds.map((s) => ({ id: s })),
+      suspectedCauses: [{ title: `cause ${id}`, band }],
+    },
+  });
+  const change = {
+    modified: [
+      { before: sym('method:src/a.ts:A.run'), after: sym('method:src/a.ts:A.run') },
+    ],
+    removed: [],
+  };
+
+  it('lists confident past incidents whose top seeds the change touches, newest first, once per hint', () => {
+    const out = incidentsTouchingChanges(change, [
+      saved('old', 1, 'queue stuck', 'likely', ['method:src/a.ts:A.run']),
+      saved('new', 5, 'Queue stuck', 'highly-likely', ['method:src/a.ts:A.run']),
+      saved('other', 3, 'checkout slow', 'likely', [
+        'function:src/b.ts:pay',
+        'method:src/a.ts:A.run',
+      ]),
+    ]);
+    expect(out.map((i) => i.investigationId)).toEqual(['new', 'other']);
+    expect(out[0]!.matchedSymbols).toEqual(['method:src/a.ts:A.run']);
+  });
+
+  it('ignores weak causes, untouched code, file-level seeds and seeds beyond the top three', () => {
+    expect(
+      incidentsTouchingChanges(change, [
+        saved('weak', 1, 'a', 'possible', ['method:src/a.ts:A.run']),
+        saved('untouched', 2, 'b', 'likely', ['method:src/a.ts:A.stop']),
+        saved('file', 3, 'c', 'likely', ['file:src/a.ts']),
+        saved('deep', 4, 'd', 'likely', [
+          'method:x:1',
+          'method:x:2',
+          'method:x:3',
+          'method:src/a.ts:A.run',
+        ]),
+      ]),
+    ).toEqual([]);
   });
 });

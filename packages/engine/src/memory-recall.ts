@@ -19,7 +19,12 @@ import { createHash } from 'node:crypto';
 import { incidentHintOverlap } from './memory-store.js';
 import type { CodeProvider } from '@horus/connectors';
 import type { MemoryItem } from '@horus/db';
-import type { MemoryStore, MemoryQuery, MemoryStatus, MemoryVectorIndex } from './memory-store.js';
+import type {
+  MemoryStore,
+  MemoryQuery,
+  MemoryStatus,
+  MemoryVectorIndex,
+} from './memory-store.js';
 import { HIDDEN_STATUSES } from './memory-store.js';
 
 // ---------------------------------------------------------------------------
@@ -62,7 +67,9 @@ export interface RecallCodeProvider {
  * source body (falling back to the display snippet) and swallows all errors → null, so a down host
  * never breaks recall. This is the single wiring point used by the runner/`memory show`.
  */
-export function recallCodeProviderFromCodeProvider(code: CodeProvider): RecallCodeProvider {
+export function recallCodeProviderFromCodeProvider(
+  code: CodeProvider,
+): RecallCodeProvider {
   return {
     async getNodeContent(nodeId: string): Promise<string | null> {
       try {
@@ -250,7 +257,8 @@ async function detectDrift(
 function compareRecalled(a: RecalledMemory, b: RecalledMemory): number {
   if (b.rank !== a.rank) return b.rank - a.rank;
   if (b.relevance !== a.relevance) return b.relevance - a.relevance;
-  if (b.item.confidence !== a.item.confidence) return b.item.confidence - a.item.confidence;
+  if (b.item.confidence !== a.item.confidence)
+    return b.item.confidence - a.item.confidence;
   const av = toDate(a.item.lastVerifiedAt)?.getTime() ?? 0;
   const bv = toDate(b.item.lastVerifiedAt)?.getTime() ?? 0;
   if (bv !== av) return bv - av;
@@ -284,7 +292,8 @@ export async function recallMemory(
 
   const now = opts.now ?? new Date();
   const halfLifeDays = opts.halfLifeDays ?? FRESHNESS_HALF_LIFE_DAYS;
-  const limit = opts.limit !== undefined && opts.limit > 0 ? Math.floor(opts.limit) : DEFAULT_LIMIT;
+  const limit =
+    opts.limit !== undefined && opts.limit > 0 ? Math.floor(opts.limit) : DEFAULT_LIMIT;
 
   // 1. Authoritative candidate pool (no status filter here → apply it deterministically below).
   const pool = await store.query({
@@ -346,116 +355,471 @@ export async function recallMemory(
 
 /** Structured trigger context is available before hypotheses exist. */
 export interface IncidentContext {
-  fingerprint?: string; eventCode?: string; errorCode?: string; workflow?: string; operation?: string;
-  incidentId?: string; eventId?: string; occurredAt?: string; source?: string; sourceUrl?: string;
+  fingerprint?: string;
+  eventCode?: string;
+  errorCode?: string;
+  workflow?: string;
+  operation?: string;
+  incidentId?: string;
+  eventId?: string;
+  occurredAt?: string;
+  source?: string;
+  sourceUrl?: string;
 }
 export interface IncidentDisposition {
-  disposition: 'confirmed-incident' | 'expected-behavior' | 'duplicate-alert' | 'monitoring-error' | 'unknown';
-  certainty: 'confirmed' | 'inferred'; actualCause?: string; resolution?: string;
-  sourceInvestigation: string; sourceRefs: string[]; attester?: string; verifiedAt?: string;
-  applicability: Pick<IncidentContext, 'fingerprint' | 'eventCode' | 'errorCode' | 'workflow' | 'operation' | 'source' | 'eventId'> &
-    { service?: string; environment?: string; conditions?: string[] };
-  invalidatingConditions: string[]; checks: string[];
+  disposition:
+    | 'confirmed-incident'
+    | 'expected-behavior'
+    | 'duplicate-alert'
+    | 'monitoring-error'
+    | 'unknown';
+  certainty: 'confirmed' | 'inferred';
+  actualCause?: string;
+  resolution?: string;
+  sourceInvestigation: string;
+  sourceRefs: string[];
+  attester?: string;
+  verifiedAt?: string;
+  applicability: Pick<
+    IncidentContext,
+    | 'fingerprint'
+    | 'eventCode'
+    | 'errorCode'
+    | 'workflow'
+    | 'operation'
+    | 'source'
+    | 'eventId'
+  > & { service?: string; environment?: string; conditions?: string[] };
+  invalidatingConditions: string[];
+  checks: string[];
 }
 export interface StartupIncident {
-  memoryId: string; claim: string; incidentId?: string; reportRefs: Record<string, string>;
-  matchingFields: string[]; lastVerifiedAt: string | null; environment: string;
-  outcome: IncidentDisposition | null; checks: string[]; relevance: number;
-  validation: 'unverified' | 'contradicted'; contradictingEvidenceIds: string[];
+  memoryId: string;
+  claim: string;
+  incidentId?: string;
+  reportRefs: Record<string, string>;
+  matchingFields: string[];
+  lastVerifiedAt: string | null;
+  environment: string;
+  outcome: IncidentDisposition | null;
+  checks: string[];
+  relevance: number;
+  validation: 'unverified' | 'contradicted';
+  contradictingEvidenceIds: string[];
 }
 
 /** Reject malformed or unproven attestations; strip unknown nested fields before sync/prompt use. */
 export function readIncidentDisposition(value: unknown): IncidentDisposition | null {
   if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
-  const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(s => typeof s === 'string');
-  if (!['confirmed-incident', 'expected-behavior', 'duplicate-alert', 'monitoring-error', 'unknown'].includes(String(v.disposition)) ||
-      !['confirmed', 'inferred'].includes(String(v.certainty)) || typeof v.sourceInvestigation !== 'string' ||
-      !strings(v.sourceRefs) || !strings(v.invalidatingConditions) || !strings(v.checks) ||
-      !v.applicability || typeof v.applicability !== 'object') return null;
-  if (v.certainty === 'confirmed' && (typeof v.attester !== 'string' || !v.attester.trim() ||
-      typeof v.verifiedAt !== 'string' || !Number.isFinite(Date.parse(v.verifiedAt)) || !v.sourceRefs.length)) return null;
+  const strings = (x: unknown): x is string[] =>
+    Array.isArray(x) && x.every((s) => typeof s === 'string');
+  if (
+    ![
+      'confirmed-incident',
+      'expected-behavior',
+      'duplicate-alert',
+      'monitoring-error',
+      'unknown',
+    ].includes(String(v.disposition)) ||
+    !['confirmed', 'inferred'].includes(String(v.certainty)) ||
+    typeof v.sourceInvestigation !== 'string' ||
+    !strings(v.sourceRefs) ||
+    !strings(v.invalidatingConditions) ||
+    !strings(v.checks) ||
+    !v.applicability ||
+    typeof v.applicability !== 'object'
+  )
+    return null;
+  if (
+    v.certainty === 'confirmed' &&
+    (typeof v.attester !== 'string' ||
+      !v.attester.trim() ||
+      typeof v.verifiedAt !== 'string' ||
+      !Number.isFinite(Date.parse(v.verifiedAt)) ||
+      !v.sourceRefs.length)
+  )
+    return null;
   const applicability: IncidentDisposition['applicability'] = {};
   const a = v.applicability as Record<string, unknown>;
-  for (const key of ['fingerprint', 'eventCode', 'errorCode', 'workflow', 'operation', 'service', 'environment', 'source', 'eventId'] as const)
+  for (const key of [
+    'fingerprint',
+    'eventCode',
+    'errorCode',
+    'workflow',
+    'operation',
+    'service',
+    'environment',
+    'source',
+    'eventId',
+  ] as const)
     if (typeof a[key] === 'string') applicability[key] = a[key];
   if (strings(a.conditions)) applicability.conditions = a.conditions;
-  return { disposition: v.disposition as IncidentDisposition['disposition'], certainty: v.certainty as IncidentDisposition['certainty'],
-    sourceInvestigation: v.sourceInvestigation, sourceRefs: v.sourceRefs, invalidatingConditions: v.invalidatingConditions,
-    checks: v.checks, applicability,
+  return {
+    disposition: v.disposition as IncidentDisposition['disposition'],
+    certainty: v.certainty as IncidentDisposition['certainty'],
+    sourceInvestigation: v.sourceInvestigation,
+    sourceRefs: v.sourceRefs,
+    invalidatingConditions: v.invalidatingConditions,
+    checks: v.checks,
+    applicability,
     ...(typeof v.actualCause === 'string' ? { actualCause: v.actualCause } : {}),
     ...(typeof v.resolution === 'string' ? { resolution: v.resolution } : {}),
     ...(typeof v.attester === 'string' ? { attester: v.attester } : {}),
-    ...(typeof v.verifiedAt === 'string' ? { verifiedAt: v.verifiedAt } : {}) };
+    ...(typeof v.verifiedAt === 'string' ? { verifiedAt: v.verifiedAt } : {}),
+  };
 }
 
 /** Recognize only the watcher's native-code-only fingerprint, including its legacy errorCode fallback. */
 function loggerOnlyMessage(incident: IncidentContext, hint: string): string | undefined {
   const native = incident.eventCode ?? incident.errorCode;
-  if (incident.source !== 'elasticsearch' || !incident.eventId || !native ||
-      (incident.eventCode && incident.errorCode) || !hint.startsWith(`${native} `)) return;
-  const tail = incident.fingerprint?.startsWith(native) ? incident.fingerprint.slice(native.length) : undefined;
+  if (
+    incident.source !== 'elasticsearch' ||
+    !incident.eventId ||
+    !native ||
+    (incident.eventCode && incident.errorCode) ||
+    !hint.startsWith(`${native} `)
+  )
+    return;
+  const tail = incident.fingerprint?.startsWith(native)
+    ? incident.fingerprint.slice(native.length)
+    : undefined;
   if (tail === undefined || !/^(?::[1-5][0-9]{2})?$/.test(tail)) return;
   const message = hint.slice(native.length).trim().toLowerCase().replace(/\s+/g, ' ');
   const { shared } = incidentHintOverlap(message, message);
   // Generic wrapper messages cannot establish an operation across different logger codes.
-  if (shared.length < 2 || shared.every(word => ['store', 'client'].includes(word))) return;
+  if (shared.length < 2 || shared.every((word) => ['store', 'client'].includes(word)))
+    return;
   return `${tail}:${message}`;
+}
+
+// ---------------------------------------------------------------------------
+// Typed-hint matching (used when no structured incident field matches)
+// ---------------------------------------------------------------------------
+// Benchmarked on 207 chronological SAFQA investigations against two independent relevance label
+// sets (5-fold cross-validation): IDF keyword coverage + local nomic similarity of stored hints
+// found 83-85% of repeats with 95-96% of unrelated incidents left unmatched; keyword-only (host
+// down) 65-66% / 96-98%. The previous word-overlap rule found 39% / 100%.
+const HINT_KEYWORD_WEIGHT = 0.4;
+const HINT_COMBINED_MIN = 0.86;
+const HINT_KEYWORD_ONLY_MIN = 0.45;
+/** A shared exact code-shaped identifier carried by at most this many stored hints matches alone. */
+const RARE_CODE_MAX_HINTS = 2;
+const MAX_STORED_HINTS = 20;
+const BACKFILL_BUDGET_MS = 2000;
+const HINT_STOP = new Set([
+  'the',
+  'and',
+  'for',
+  'error',
+  'failed',
+  'failure',
+  'incident',
+  'investigation',
+  'with',
+  'from',
+  'are',
+  'not',
+  'that',
+  'this',
+  'what',
+  'how',
+  'does',
+  'why',
+  'when',
+  'keeps',
+  'keep',
+  'getting',
+  'was',
+  'were',
+  'has',
+  'have',
+  'into',
+  'after',
+  'its',
+  'all',
+  'any',
+  'can',
+  'could',
+  'should',
+  'did',
+  'work',
+  'works',
+  'working',
+]);
+
+function stemTerm(word: string): string {
+  for (const suffix of ['ments', 'ment', 'ings', 'ing', 'ed', 'es', 's'])
+    if (word.length - suffix.length >= 4 && word.endsWith(suffix))
+      return word.slice(0, -suffix.length);
+  return word;
+}
+
+/** Hint terms: exact code-shaped tokens (`#err4624`) plus stemmed camelCase/snake_case words. */
+export function hintTerms(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const token of text.match(/[A-Za-z0-9_]+/g) ?? []) {
+    if (/[0-9_]/.test(token) && token.length >= 4) out.add(`#${token.toLowerCase()}`);
+    for (const part of token.match(/[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g) ??
+      []) {
+      const word = part.toLowerCase();
+      if (word.length > 2 && !HINT_STOP.has(word) && !/^[0-9]+$/.test(word))
+        out.add(stemTerm(word));
+    }
+  }
+  return out;
+}
+
+/** Every hint a memory has been investigated under (oldest first), falling back to the latest hint/claim. */
+export function storedHints(item: MemoryItem): string[] {
+  const payload = (item.payload ?? {}) as Record<string, unknown>;
+  const hints = Array.isArray(payload.hints)
+    ? payload.hints.filter((h): h is string => typeof h === 'string' && h.trim() !== '')
+    : [];
+  if (hints.length) return hints;
+  return [typeof payload.hint === 'string' ? payload.hint : item.claim];
+}
+
+/** Append a hint to a memory's rolling hint history (deduplicated, bounded). */
+export function appendHint(previous: unknown, hint: string): string[] {
+  const prior = Array.isArray(previous)
+    ? previous.filter((h): h is string => typeof h === 'string')
+    : [];
+  return [...new Set([...prior, hint])].slice(-MAX_STORED_HINTS);
+}
+
+/** Separate per-repo partition in the local memory vector index, so hint vectors never mix with claims. */
+export function incidentHintPartition(repo: string): string {
+  return `${repo}#incident-hints`;
+}
+
+function hintVectorId(memoryId: string, hint: string): string {
+  return `${memoryId}#hint:${createHash('sha256').update(hint).digest('hex').slice(0, 16)}`;
+}
+
+/** Index one hint for embedding recall. Content-addressed and best-effort: never throws. */
+export async function indexIncidentHint(
+  index: MemoryVectorIndex,
+  repo: string,
+  memoryId: string,
+  hint: string,
+): Promise<void> {
+  if (!repo.trim() || !hint.trim()) return;
+  try {
+    await index.upsert({
+      memoryId: hintVectorId(memoryId, hint),
+      claim: hint,
+      repo: incidentHintPartition(repo),
+      scope: 'repo',
+    });
+  } catch {
+    // ignore — embedding recall degrades to keyword matching
+  }
+}
+
+/** Best stored-hint similarity per memory id. Empty on any index failure. */
+async function hintSimilarities(
+  index: MemoryVectorIndex,
+  repo: string,
+  hint: string,
+): Promise<Map<string, number>> {
+  const best = new Map<string, number>();
+  try {
+    for (const hit of await index.search({
+      query: hint,
+      repo: incidentHintPartition(repo),
+      limit: 200,
+    })) {
+      const memoryId = hit.memoryId.split('#hint:')[0]!;
+      best.set(memoryId, Math.max(best.get(memoryId) ?? -1, hit.score));
+    }
+  } catch {
+    // ignore — keyword matching still applies
+  }
+  return best;
+}
+
+interface HintMatch {
+  accepted: boolean;
+  score: number;
+  shared: string[];
+}
+
+/**
+ * Score one memory's stored hints against the query. Keyword coverage is an IDF-weighted f1 of
+ * query and stored-hint terms (>=2 shared terms); IDF comes from all stored hints in the pool.
+ */
+function matchHint(
+  query: Set<string>,
+  hints: Set<string>[],
+  df: Map<string, number>,
+  docs: number,
+  similarity: number | undefined,
+): HintMatch {
+  const idf = (t: string) =>
+    Math.log(1 + (docs - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  const queryWeight = [...query].reduce((sum, t) => sum + idf(t), 0) || 1;
+  let keyword = 0;
+  let rareCode = false;
+  const shared = new Set<string>();
+  for (const terms of hints) {
+    const hit = [...query].filter((t) => terms.has(t));
+    if (
+      hit.some(
+        (t) =>
+          t.startsWith('#') && t.length > 6 && (df.get(t) ?? 0) <= RARE_CODE_MAX_HINTS,
+      )
+    )
+      rareCode = true;
+    if (hit.length < 2) continue;
+    hit.forEach((t) => shared.add(t.replace(/^#/, '')));
+    const matched = hit.reduce((sum, t) => sum + idf(t), 0);
+    const q = matched / queryWeight;
+    const d = matched / ([...terms].reduce((sum, t) => sum + idf(t), 0) || 1);
+    keyword = Math.max(keyword, (2 * q * d) / (q + d));
+  }
+  const score =
+    similarity === undefined ? keyword : similarity + HINT_KEYWORD_WEIGHT * keyword;
+  const accepted =
+    rareCode ||
+    score >= (similarity === undefined ? HINT_KEYWORD_ONLY_MIN : HINT_COMBINED_MIN);
+  return { accepted, score, shared: [...shared].sort() };
 }
 
 /** Bounded, deterministic startup retrieval. No hypothesis/category from the current run is used. */
 export async function recallStartupIncidents(
   store: MemoryStore,
   input: import('./types.js').InvestigationInput,
-  opts: { syncScope?: string; now?: Date } = {},
+  opts: { syncScope?: string; now?: Date; index?: MemoryVectorIndex } = {},
 ): Promise<StartupIncident[]> {
   if (!input.repo?.trim()) return [];
-  const pool = await store.query({ repo: input.repo, kind: ['investigation', 'confirmed-outcome', 'incident-pattern'], limit: 200 });
+  const pool = await store.query({
+    repo: input.repo,
+    kind: ['investigation', 'confirmed-outcome', 'incident-pattern'],
+    limit: 200,
+  });
   const now = opts.now ?? new Date();
+  const queryTerms = hintTerms(input.hint);
+  const hintTermsById = new Map(
+    pool.map((item) => [item.id, storedHints(item).map(hintTerms)]),
+  );
+  const df = new Map<string, number>();
+  let hintDocs = 0;
+  for (const docs of hintTermsById.values())
+    for (const terms of docs) {
+      hintDocs++;
+      for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
+    }
+  const similarities = opts.index
+    ? await hintSimilarities(opts.index, input.repo, input.hint)
+    : new Map<string, number>();
+  // First run after upgrade: the hint partition is empty, so index the pool for later investigations.
+  // Bounded so a slow host can never hold up the investigation; unindexed memories use keyword matching.
+  if (opts.index && similarities.size === 0) {
+    const deadline = Date.now() + BACKFILL_BUDGET_MS;
+    backfill: for (const item of pool)
+      for (const hint of storedHints(item)) {
+        if (Date.now() > deadline) break backfill;
+        await indexIncidentHint(opts.index, input.repo, item.id, hint);
+      }
+  }
   const ranked: StartupIncident[] = [];
   for (const item of pool) {
-    if (item.repo !== input.repo || HIDDEN_STATUSES.includes(item.status as MemoryStatus) ||
-        (opts.syncScope !== undefined && item.syncScope !== null && item.syncScope !== opts.syncScope) || item.createdAt > now) continue;
+    if (
+      item.repo !== input.repo ||
+      HIDDEN_STATUSES.includes(item.status as MemoryStatus) ||
+      (opts.syncScope !== undefined &&
+        item.syncScope !== null &&
+        item.syncScope !== opts.syncScope) ||
+      item.createdAt > now
+    )
+      continue;
     const payload = (item.payload ?? {}) as Record<string, unknown>;
     const outcome = readIncidentDisposition(payload.outcome);
-    if (typeof payload.lastSeenAt === 'string' && Date.parse(payload.lastSeenAt) > now.getTime() ||
-        outcome?.verifiedAt && Date.parse(outcome.verifiedAt) > now.getTime()) continue;
+    if (
+      (typeof payload.lastSeenAt === 'string' &&
+        Date.parse(payload.lastSeenAt) > now.getTime()) ||
+      (outcome?.verifiedAt && Date.parse(outcome.verifiedAt) > now.getTime())
+    )
+      continue;
     const applicability = outcome?.applicability ?? {};
-    if (applicability.environment && input.environment && applicability.environment !== input.environment) continue;
-    if (applicability.service && input.service && applicability.service !== input.service) continue;
+    if (
+      applicability.environment &&
+      input.environment &&
+      applicability.environment !== input.environment
+    )
+      continue;
+    if (applicability.service && input.service && applicability.service !== input.service)
+      continue;
     const priorHint = typeof payload.hint === 'string' ? payload.hint : item.claim;
     const priorMessage = loggerOnlyMessage(applicability, priorHint);
     // This is useful prior operation context, not proof of a cause or recurrence consolidation.
-    const loggerContext = item.kind === 'investigation' && outcome?.disposition === 'unknown' &&
-      outcome.certainty === 'inferred' && !outcome.actualCause && !outcome.resolution &&
-      priorMessage !== undefined && priorMessage === loggerOnlyMessage(input.incident ?? {}, input.hint);
-    const fields: string[] = []; let mismatch = false;
+    const loggerContext =
+      item.kind === 'investigation' &&
+      outcome?.disposition === 'unknown' &&
+      outcome.certainty === 'inferred' &&
+      !outcome.actualCause &&
+      !outcome.resolution &&
+      priorMessage !== undefined &&
+      priorMessage === loggerOnlyMessage(input.incident ?? {}, input.hint);
+    const fields: string[] = [];
+    let mismatch = false;
     for (const key of ['fingerprint', 'errorCode', 'workflow', 'operation'] as const) {
       if (loggerContext && (key === 'fingerprint' || key === 'errorCode')) continue;
-      const expected = applicability[key]; const actual = input.incident?.[key];
-      if (expected && actual) { if (expected !== actual) mismatch = true; else fields.push(key); }
+      const expected = applicability[key];
+      const actual = input.incident?.[key];
+      if (expected && actual) {
+        if (expected !== actual) mismatch = true;
+        else fields.push(key);
+      }
     }
     if (mismatch) continue;
-    const { shared, overlap } = incidentHintOverlap(input.hint, priorHint);
-    // ponytail: conservative lexical fallback; replace only after chronological replay improves it.
-    if (!fields.length && (shared.length < 2 || overlap < 0.45)) continue;
-    if (shared.length) fields.push(`hint:${shared.join(',')}`);
-    const refs = payload.reportRefs && typeof payload.reportRefs === 'object' ? payload.reportRefs as Record<string, string> : {};
-    ranked.push({ memoryId: item.id, claim: item.claim, incidentId: typeof payload.investigationId === 'string' ? payload.investigationId : undefined,
-      reportRefs: refs, matchingFields: fields, lastVerifiedAt: outcome?.verifiedAt ?? item.lastVerifiedAt?.toISOString() ?? null,
-      environment: applicability.environment ?? 'unknown (legacy)', outcome,
-      checks: outcome?.checks.length ? outcome.checks : [`Check current evidence for ${typeof payload.hint === 'string' ? payload.hint : item.claim}`],
-      relevance: fields.filter(f => !f.startsWith('hint:')).length + overlap,
-      validation: 'unverified', contradictingEvidenceIds: [] });
+    const hint = matchHint(
+      queryTerms,
+      hintTermsById.get(item.id) ?? [],
+      df,
+      hintDocs,
+      similarities.get(item.id),
+    );
+    if (!fields.length && !hint.accepted) continue;
+    if (hint.shared.length) fields.push(`hint:${hint.shared.join(',')}`);
+    const refs =
+      payload.reportRefs && typeof payload.reportRefs === 'object'
+        ? (payload.reportRefs as Record<string, string>)
+        : {};
+    ranked.push({
+      memoryId: item.id,
+      claim: item.claim,
+      incidentId:
+        typeof payload.investigationId === 'string' ? payload.investigationId : undefined,
+      reportRefs: refs,
+      matchingFields: fields,
+      lastVerifiedAt: outcome?.verifiedAt ?? item.lastVerifiedAt?.toISOString() ?? null,
+      environment: applicability.environment ?? 'unknown (legacy)',
+      outcome,
+      checks: outcome?.checks.length
+        ? outcome.checks
+        : [
+            `Check current evidence for ${typeof payload.hint === 'string' ? payload.hint : item.claim}`,
+          ],
+      relevance: fields.filter((f) => !f.startsWith('hint:')).length + hint.score,
+      validation: 'unverified',
+      contradictingEvidenceIds: [],
+    });
   }
-  ranked.sort((a, b) => b.relevance - a.relevance || a.memoryId.localeCompare(b.memoryId));
+  ranked.sort(
+    (a, b) => b.relevance - a.relevance || a.memoryId.localeCompare(b.memoryId),
+  );
   const seen = new Set<string>();
-  return ranked.filter(c => {
-    const origin = c.outcome?.applicability;
-    const keys = [c.incidentId ?? c.claim.toLowerCase()];
-    if (origin?.source && origin.eventId) keys.push(JSON.stringify([origin.source, origin.eventId]));
-    if (keys.some(key => seen.has(key))) return false;
-    keys.forEach(key => seen.add(key));
-    return true;
-  }).slice(0, 3);
+  return ranked
+    .filter((c) => {
+      const origin = c.outcome?.applicability;
+      const keys = [c.incidentId ?? c.claim.toLowerCase()];
+      if (origin?.source && origin.eventId)
+        keys.push(JSON.stringify([origin.source, origin.eventId]));
+      if (keys.some((key) => seen.has(key))) return false;
+      keys.forEach((key) => seen.add(key));
+      return true;
+    })
+    .slice(0, 3);
 }

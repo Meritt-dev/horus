@@ -64,7 +64,7 @@ for (const file of files) {
     visit(ast);
   }
   const options = await prettier.resolveConfig(file);
-  const info = await prettier.getFileInfo(file);
+  const info = await prettier.getFileInfo(file, { ignorePath: '.prettierignore' });
   if (!info.inferredParser || info.ignored) continue;
   if (!(await prettier.check(source, { ...options, filepath: file }))) {
     const hash = createHash('sha256').update(source).digest('hex');
