@@ -215,7 +215,8 @@ export async function detectRecurrence(
         ))
     )
       continue;
-    const structuredMatch = a?.fingerprint && a.fingerprint === input?.incident?.fingerprint;
+    const structuredMatch =
+      a?.fingerprint && a.fingerprint === input?.incident?.fingerprint;
     const compared = {
       ...probe,
       payload: structuredMatch ? undefined : { hint: input?.hint ?? probe.hint },

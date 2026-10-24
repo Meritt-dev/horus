@@ -1,4 +1,10 @@
-import { cloudLogsForEnv, additionalStateForEnv, additionalQueuesForEnv, type QueueEvidenceProvider, type StructuredLogSource } from '@horus/connectors';
+import {
+  cloudLogsForEnv,
+  additionalStateForEnv,
+  additionalQueuesForEnv,
+  type QueueEvidenceProvider,
+  type StructuredLogSource,
+} from '@horus/connectors';
 import { syncLinkedMemory, memorySyncContext } from './cloud/memory-sync.js';
 /**
  * Shared investigation runner (HOR-CLI).
@@ -17,7 +23,11 @@ import { syncLinkedMemory, memorySyncContext } from './cloud/memory-sync.js';
  */
 
 import pc from 'picocolors';
-import { redactSecrets, type ResolvedEnvironment, type ShopifyQuerySpec } from '@horus/core';
+import {
+  redactSecrets,
+  type ResolvedEnvironment,
+  type ShopifyQuerySpec,
+} from '@horus/core';
 import {
   codeForEnv,
   codeForUrl,
@@ -58,8 +68,12 @@ import { readAuth } from './cloud/auth-store.js';
 import { readCloudConfig } from './cloud/context-store.js';
 
 /** Explain the startup match before current evidence is gathered. */
-export function formatStartupIncident(item: NonNullable<InvestigationReport['startupRecall']>[number]): string {
-  const refs = Object.entries(item.reportRefs).map(([local, cloud]) => `${local} (Cloud ${cloud})`);
+export function formatStartupIncident(
+  item: NonNullable<InvestigationReport['startupRecall']>[number],
+): string {
+  const refs = Object.entries(item.reportRefs).map(
+    ([local, cloud]) => `${local} (Cloud ${cloud})`,
+  );
   return redactSecrets(`Prior incident ${item.incidentId ?? item.memoryId} [${item.environment}; ${item.outcome?.certainty ?? 'inferred'}]: ${item.claim}
   Matched: ${item.matchingFields.join(', ') || 'unspecified'}; last verified: ${item.lastVerifiedAt ?? 'never'}.
   Reports: ${refs.join(', ') || item.outcome?.sourceInvestigation || 'unavailable'}; historical outcome: ${item.outcome?.disposition ?? 'unknown'}.
@@ -171,7 +185,11 @@ export async function buildInvestigationContext(
   const cloudCfg = readCloudConfig(renv.path);
   const lens =
     auth && cloudCfg?.workspace?.id
-      ? lensForCloud({ apiBaseUrl: auth.apiBaseUrl, token: auth.token, workspaceId: cloudCfg.workspace.id })
+      ? lensForCloud({
+          apiBaseUrl: auth.apiBaseUrl,
+          token: auth.token,
+          workspaceId: cloudCfg.workspace.id,
+        })
       : null;
   const axiom = axiomForEnv(renv);
   const shopify = shopifyForEnv(renv);
@@ -240,11 +258,15 @@ export interface RunInvestigationInput {
  * Fail-closed: any error (missing/corrupt/under-performing model) → undefined → Horus keeps its
  * deterministic ranking. The model only ever REORDERS the eligible causes the engine hands it.
  */
-function loadReranker(): ((causes: readonly CauseCandidate[]) => CauseCandidate[]) | undefined {
+function loadReranker():
+  | ((causes: readonly CauseCandidate[]) => CauseCandidate[])
+  | undefined {
   const flag = process.env.HORUS_RERANK;
   if (!flag || flag === '0' || flag.toLowerCase() === 'false') return undefined;
   try {
-    const blob: unknown = JSON.parse(readFileSync(join(homedir(), '.horus', 'reranker.json'), 'utf8'));
+    const blob: unknown = JSON.parse(
+      readFileSync(join(homedir(), '.horus', 'reranker.json'), 'utf8'),
+    );
     if (!isRerankerModel(blob)) return undefined;
     if ((blob.holdout?.delta ?? 0) <= 0) return undefined; // never apply a model that didn't beat baseline
     return (causes) => applyReranker(blob, causes);
@@ -266,21 +288,34 @@ export async function runOneInvestigation(
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
   if (input.reportId) {
-    const [saved] = await ctx.dbHandle.db.select().from(investigations).where(eq(investigations.id, input.reportId));
+    const [saved] = await ctx.dbHandle.db
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, input.reportId));
     if (saved) {
       const report = saved.report as InvestigationReport | null;
-      if (!report || saved.project !== renv.project || report.input.environment !== renv.env) throw new Error('Saved report identity/scope mismatch');
+      if (
+        !report ||
+        saved.project !== renv.project ||
+        report.input.environment !== renv.env
+      )
+        throw new Error('Saved report identity/scope mismatch');
       return report;
     }
   }
   const rerank = loadReranker();
   opts.onActivity?.('recall');
-  try { await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true }); }
-  catch (error) { console.error(`Memory refresh unavailable: ${(error as Error).message}`); }
+  try {
+    await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project, { startup: true });
+  } catch (error) {
+    console.error(`Memory refresh unavailable: ${(error as Error).message}`);
+  }
   // Stale-index freshness feeds the engine's next-step routing: when the index is
   // behind, `horus init` must appear as a real next step, not only as a banner caveat.
   const indexMeta = readIndexMeta(renv.path);
-  const indexedAtMs = indexMeta?.lastIndexedAt ? Date.parse(indexMeta.lastIndexedAt) : NaN;
+  const indexedAtMs = indexMeta?.lastIndexedAt
+    ? Date.parse(indexMeta.lastIndexedAt)
+    : NaN;
   const staleIndex =
     !Number.isNaN(indexedAtMs) && Date.now() - indexedAtMs > STALE_INDEX_MS;
   const investigation = investigate(
@@ -298,16 +333,20 @@ export async function runOneInvestigation(
         : {}),
       // Invocation-time Shopify queries override the connector's config defaults; when
       // omitted the provider falls back to `connectors.shopify.queries` (e.g. under watch).
-      ...(input.shopifyQueries !== undefined ? { shopifyQueries: input.shopifyQueries } : {}),
+      ...(input.shopifyQueries !== undefined
+        ? { shopifyQueries: input.shopifyQueries }
+        : {}),
     },
     {
       code: ctx.code,
       db: ctx.dbHandle.db,
       // HOR-432 — the authored-memory store so every investigation auto-captures a recurrence-aware
       // memory. Best-effort + CONTEXT-ONLY in the engine (never feeds scoring, never blocks delivery).
-      store: createLocalMemoryStore(ctx.dbHandle.db, { syncScope: memorySyncContext(renv.path, renv.project)?.scope }),
+      store: createLocalMemoryStore(ctx.dbHandle.db, {
+        syncScope: memorySyncContext(renv.path, renv.project)?.scope,
+      }),
       memoryScope: memorySyncContext(renv.path, renv.project)?.scope,
-      onStartupRecall: items => {
+      onStartupRecall: (items) => {
         if (!items.length) console.error('Prior incidents: no relevant match.');
         for (const item of items) console.error(formatStartupIncident(item));
         opts.onActivity?.('collect');
@@ -354,13 +393,16 @@ export async function runOneInvestigation(
   );
 
   const timeoutMs =
-    opts.timeoutMs ??
-    (Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) || 120) * 1000;
+    opts.timeoutMs ?? (Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) || 120) * 1000;
   const report = await withDeadline(investigation, timeoutMs);
   try {
     const sync = await syncLinkedMemory(ctx.dbHandle.db, renv.path, renv.project);
-    console.error(`Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`);
-  } catch (error) { console.error(`Memory is not durably saved: ${(error as Error).message}`); }
+    console.error(
+      `Memory: ${sync.state}; ${sync.pending} pending${sync.error ? ` — ${sync.error}` : ''}`,
+    );
+  } catch (error) {
+    console.error(`Memory is not durably saved: ${(error as Error).message}`);
+  }
   return report;
 }
 
@@ -369,9 +411,12 @@ export async function runOneInvestigation(
  * alive, so the CLI prints its output but never exits. Idempotent-friendly: each close is
  * guarded and best-effort.
  */
-export async function disposeInvestigationContext(ctx: InvestigationContext): Promise<void> {
+export async function disposeInvestigationContext(
+  ctx: InvestigationContext,
+): Promise<void> {
   await safeClose(() => ctx.dbHandle.sql.end());
-  for (const provider of ctx.additionalState ?? []) await safeClose(() => provider.close());
+  for (const provider of ctx.additionalState ?? [])
+    await safeClose(() => provider.close());
   if (ctx.mongo) await safeClose(() => ctx.mongo!.close());
   if (ctx.postgres) await safeClose(() => ctx.postgres!.close());
   if (ctx.redisState) await safeClose(() => ctx.redisState!.close());

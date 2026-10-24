@@ -80,7 +80,9 @@ const JSON_FLOW_SYMBOL_CAP = 10;
  * and the timeline/what-changed serializers that embed a change impact. Always
  * carries full `counts`; sets `truncated`/`truncatedCount` when lists were capped.
  */
-export function changeImpactToCompactObject(r: ChangeImpactReport): Record<string, unknown> {
+export function changeImpactToCompactObject(
+  r: ChangeImpactReport,
+): Record<string, unknown> {
   const sym = (s: Symbol): { name: string; filePath: string } => ({
     name: s.name,
     filePath: s.filePath,
@@ -93,7 +95,8 @@ export function changeImpactToCompactObject(r: ChangeImpactReport): Record<strin
     changedSymbols: f.changedSymbols.slice(0, JSON_FLOW_SYMBOL_CAP),
   }));
   const truncatedCount =
-    (r.added.length - added.length) +
+    r.added.length -
+    added.length +
     (r.removed.length - removed.length) +
     (r.modified.length - modified.length) +
     (r.affectedFlows.length - affectedFlows.length);
@@ -112,13 +115,20 @@ export function changeImpactToCompactObject(r: ChangeImpactReport): Record<strin
     modified,
     affectedFlows,
     ...(truncatedCount > 0
-      ? { truncated: true, truncatedCount, hint: 're-run with --full for the complete structure' }
+      ? {
+          truncated: true,
+          truncatedCount,
+          hint: 're-run with --full for the complete structure',
+        }
       : {}),
   };
 }
 
 /** Stable JSON serialization — compact by default; `full` restores the raw report. */
-export function changeImpactToJSON(r: ChangeImpactReport, opts?: { full?: boolean }): string {
+export function changeImpactToJSON(
+  r: ChangeImpactReport,
+  opts?: { full?: boolean },
+): string {
   if (opts?.full) return JSON.stringify(r, null, 2);
   return JSON.stringify(changeImpactToCompactObject(r), null, 2);
 }

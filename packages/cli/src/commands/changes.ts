@@ -45,9 +45,7 @@ export async function runChanges(
 
     const health = await code.health();
     if (!health.ok) {
-      console.error(
-        pc.red('Source-intelligence host unreachable — run: horus init'),
-      );
+      console.error(pc.red('Source-intelligence host unreachable — run: horus init'));
       return 1;
     }
 

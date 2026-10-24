@@ -5,7 +5,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { InvestigationReport } from './types.js';
 import type { HorusDb } from '@horus/db';
-import { moduleArea, tagOverlap, deriveTags, deriveSignature, recallSimilar, storeIncidentMemory } from './memory.js';
+import {
+  moduleArea,
+  tagOverlap,
+  deriveTags,
+  deriveSignature,
+  recallSimilar,
+  storeIncidentMemory,
+} from './memory.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,7 +111,12 @@ describe('deriveTags', () => {
       timeline: {
         events: [],
         boundaryCrossings: [
-          { queueName: 'orders', producer: 'OrderService', worker: 'OrderProcessor', evidenceId: 'ev1' },
+          {
+            queueName: 'orders',
+            producer: 'OrderService',
+            worker: 'OrderProcessor',
+            evidenceId: 'ev1',
+          },
         ],
       },
     });
@@ -204,7 +216,12 @@ describe('deriveTags', () => {
       timeline: {
         events: [],
         boundaryCrossings: [
-          { queueName: 'payments', producer: 'PayService', worker: 'PayWorker', evidenceId: 'ev1' },
+          {
+            queueName: 'payments',
+            producer: 'PayService',
+            worker: 'PayWorker',
+            evidenceId: 'ev1',
+          },
         ],
       },
     });
@@ -250,7 +267,12 @@ describe('deriveSignature', () => {
       timeline: {
         events: [],
         boundaryCrossings: [
-          { queueName: 'orders', producer: 'OrderService', worker: 'OrderWorker', evidenceId: 'ev1' },
+          {
+            queueName: 'orders',
+            producer: 'OrderService',
+            worker: 'OrderWorker',
+            evidenceId: 'ev1',
+          },
         ],
       },
     });
@@ -294,23 +316,31 @@ describe('deriveSignature', () => {
 /** Builds a DB mock that ignores WHERE clauses and always returns the given rows.
  *  This lets isolation tests verify in-memory project filtering even if the
  *  DB layer were to return rows from other projects. */
-function makeIsolationDb(rows: {
-  id: string;
-  investigationId: string | null;
-  project: string | null;
-  title: string;
-  summary: string | null;
-  signature: string | null;
-  tags: string[] | null;
-  payload: unknown;
-  createdAt: Date;
-}[]): HorusDb {
+function makeIsolationDb(
+  rows: {
+    id: string;
+    investigationId: string | null;
+    project: string | null;
+    title: string;
+    summary: string | null;
+    signature: string | null;
+    tags: string[] | null;
+    payload: unknown;
+    createdAt: Date;
+  }[],
+): HorusDb {
   return {
     select() {
       const chain: Record<string, unknown> = {
-        from(_table: unknown) { return chain; },
-        where(_cond: unknown) { return chain; },
-        limit(_n: number) { return Promise.resolve(rows); },
+        from(_table: unknown) {
+          return chain;
+        },
+        where(_cond: unknown) {
+          return chain;
+        },
+        limit(_n: number) {
+          return Promise.resolve(rows);
+        },
       };
       return chain;
     },
@@ -361,7 +391,12 @@ describe('recallSimilar — project isolation (HOR-46)', () => {
     ];
     // Mock returns rows from BOTH projects — in-memory filter must exclude project-b.
     const db = makeIsolationDb(rows);
-    const results = await recallSimilar(db, ['src/modules/orders', 'orders'], null, 'project-a');
+    const results = await recallSimilar(
+      db,
+      ['src/modules/orders', 'orders'],
+      null,
+      'project-a',
+    );
     expect(results.every((r) => r.title !== 'Incident B')).toBe(true);
     expect(results.some((r) => r.title === 'Incident A')).toBe(true);
   });
@@ -372,7 +407,12 @@ describe('recallSimilar — project isolation (HOR-46)', () => {
       makeMemoryRow('project-b', 'Incident B', ['src/modules/payments', 'payments']),
     ];
     const db = makeIsolationDb(rows);
-    const results = await recallSimilar(db, ['src/modules/payments', 'payments'], null, 'project-b');
+    const results = await recallSimilar(
+      db,
+      ['src/modules/payments', 'payments'],
+      null,
+      'project-b',
+    );
     expect(results.every((r) => r.title !== 'Incident A')).toBe(true);
     expect(results.some((r) => r.title === 'Incident B')).toBe(true);
   });
@@ -382,7 +422,12 @@ describe('recallSimilar — project isolation (HOR-46)', () => {
       makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders']),
     ];
     const db = makeIsolationDb(rows);
-    const results = await recallSimilar(db, ['src/modules/orders', 'orders'], null, 'project-b');
+    const results = await recallSimilar(
+      db,
+      ['src/modules/orders', 'orders'],
+      null,
+      'project-b',
+    );
     expect(results).toHaveLength(0);
   });
 
@@ -399,23 +444,34 @@ describe('recallSimilar — project isolation (HOR-46)', () => {
 
   it('fails closed — null project returns empty without querying the DB', async () => {
     // The mock would return rows if reached; null project must short-circuit.
-    const rows = [makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders'])];
+    const rows = [
+      makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders']),
+    ];
     const db = makeIsolationDb(rows);
     const results = await recallSimilar(db, ['src/modules/orders', 'orders'], null, null);
     expect(results).toHaveLength(0);
   });
 
   it('fails closed — empty string project is treated as missing', async () => {
-    const rows = [makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders'])];
+    const rows = [
+      makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders']),
+    ];
     const db = makeIsolationDb(rows);
     const results = await recallSimilar(db, ['src/modules/orders', 'orders'], null, '');
     expect(results).toHaveLength(0);
   });
 
   it('fails closed — whitespace-only project is treated as missing', async () => {
-    const rows = [makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders'])];
+    const rows = [
+      makeMemoryRow('project-a', 'Incident A', ['src/modules/orders', 'orders']),
+    ];
     const db = makeIsolationDb(rows);
-    const results = await recallSimilar(db, ['src/modules/orders', 'orders'], null, '   ');
+    const results = await recallSimilar(
+      db,
+      ['src/modules/orders', 'orders'],
+      null,
+      '   ',
+    );
     expect(results).toHaveLength(0);
   });
 });
@@ -428,21 +484,43 @@ describe('storeIncidentMemory — project persistence (HOR-46)', () => {
   it('persists project from r.input.repo', async () => {
     const inserted: unknown[] = [];
     const db = {
-      select() { return { from() { return Promise.resolve([]); } }; },
+      select() {
+        return {
+          from() {
+            return Promise.resolve([]);
+          },
+        };
+      },
       insert(_table: unknown) {
         return {
           values(row: unknown) {
             inserted.push(row);
-            return { returning() { return Promise.resolve([{ id: 'mock-id' }]); } };
+            return {
+              returning() {
+                return Promise.resolve([{ id: 'mock-id' }]);
+              },
+            };
           },
         };
       },
       update(_table: unknown) {
-        return { set(_v: unknown) { return { where() { return Promise.resolve(); } }; } };
+        return {
+          set(_v: unknown) {
+            return {
+              where() {
+                return Promise.resolve();
+              },
+            };
+          },
+        };
       },
     } as unknown as HorusDb;
 
-    await storeIncidentMemory(db, null, makeReport({ input: { hint: 'test', repo: 'my-repo' } }));
+    await storeIncidentMemory(
+      db,
+      null,
+      makeReport({ input: { hint: 'test', repo: 'my-repo' } }),
+    );
     expect(inserted).toHaveLength(1);
     expect((inserted[0] as { project: string }).project).toBe('my-repo');
   });
@@ -450,41 +528,85 @@ describe('storeIncidentMemory — project persistence (HOR-46)', () => {
   it('skips storage when r.input.repo is blank', async () => {
     const insertSpy = vi.fn();
     const db = {
-      select() { return { from() { return Promise.resolve([]); } }; },
+      select() {
+        return {
+          from() {
+            return Promise.resolve([]);
+          },
+        };
+      },
       insert(_table: unknown) {
         return {
           values(row: unknown) {
             insertSpy(row);
-            return { returning() { return Promise.resolve([{ id: 'mock-id' }]); } };
+            return {
+              returning() {
+                return Promise.resolve([{ id: 'mock-id' }]);
+              },
+            };
           },
         };
       },
       update(_table: unknown) {
-        return { set(_v: unknown) { return { where() { return Promise.resolve(); } }; } };
+        return {
+          set(_v: unknown) {
+            return {
+              where() {
+                return Promise.resolve();
+              },
+            };
+          },
+        };
       },
     } as unknown as HorusDb;
 
-    await storeIncidentMemory(db, null, makeReport({ input: { hint: 'test', repo: '' } }));
+    await storeIncidentMemory(
+      db,
+      null,
+      makeReport({ input: { hint: 'test', repo: '' } }),
+    );
     expect(insertSpy).not.toHaveBeenCalled();
 
-    await storeIncidentMemory(db, null, makeReport({ input: { hint: 'test', repo: '   ' } }));
+    await storeIncidentMemory(
+      db,
+      null,
+      makeReport({ input: { hint: 'test', repo: '   ' } }),
+    );
     expect(insertSpy).not.toHaveBeenCalled();
   });
 
   it('skips storage when r.input.repo is absent', async () => {
     const insertSpy = vi.fn();
     const db = {
-      select() { return { from() { return Promise.resolve([]); } }; },
+      select() {
+        return {
+          from() {
+            return Promise.resolve([]);
+          },
+        };
+      },
       insert(_table: unknown) {
         return {
           values(row: unknown) {
             insertSpy(row);
-            return { returning() { return Promise.resolve([{ id: 'mock-id' }]); } };
+            return {
+              returning() {
+                return Promise.resolve([{ id: 'mock-id' }]);
+              },
+            };
           },
         };
       },
       update(_table: unknown) {
-        return { set(_v: unknown) { return { where() { return Promise.resolve(); } }; } };
+        return {
+          set(_v: unknown) {
+            return {
+              where() {
+                return Promise.resolve();
+              },
+            };
+          },
+        };
       },
     } as unknown as HorusDb;
 

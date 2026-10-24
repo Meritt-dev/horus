@@ -69,10 +69,7 @@ describe('changeImpact', () => {
   it('returns 0 affectedFlows when no changed symbol is in a flow', async () => {
     const sym = makeSymbol('SomeUtility');
 
-    const code = stubCode(
-      { added: [sym], modified: [], removed: [] },
-      {},
-    );
+    const code = stubCode({ added: [sym], modified: [], removed: [] }, {});
 
     const report = await changeImpact({ base: 'abc^', compare: 'abc' }, { code });
 
@@ -138,7 +135,9 @@ describe('changeImpact', () => {
       searchSymbols: vi.fn(),
       context: vi.fn(),
       impact: vi.fn(),
-      flowsFor: vi.fn(async () => { throw new Error('host unreachable'); }),
+      flowsFor: vi.fn(async () => {
+        throw new Error('host unreachable');
+      }),
       detectChanges: vi.fn(async () => ({ added: [sym], modified: [], removed: [] })),
     } as unknown as CodeProvider;
 
@@ -185,13 +184,24 @@ describe('changeImpact — structural truth hardening', () => {
   it('filters derived/synthetic nodes (community:/process:/folder:/empty filePath) from the changeset', async () => {
     const real = makeSymbol('OrderProcessor');
     const community: Symbol = { id: 'community:12', name: 'cluster-12', filePath: '' };
-    const process: Symbol = { id: 'process:emails', name: 'emails', filePath: 'src/x.ts' };
-    const folder: Symbol = { id: 'folder:src/services', name: 'services', filePath: 'src/services' };
+    const process: Symbol = {
+      id: 'process:emails',
+      name: 'emails',
+      filePath: 'src/x.ts',
+    };
+    const folder: Symbol = {
+      id: 'folder:src/services',
+      name: 'services',
+      filePath: 'src/services',
+    };
     const noFile: Symbol = { id: 'function:ghost', name: 'ghost', filePath: '' };
 
     const code = stubCode({
       added: [real, community, folder],
-      modified: [{ before: process, after: process }, { before: real, after: real }],
+      modified: [
+        { before: process, after: process },
+        { before: real, after: real },
+      ],
       removed: [noFile],
     });
     const report = await changeImpact({ base: 'HEAD~3', compare: 'HEAD' }, { code });

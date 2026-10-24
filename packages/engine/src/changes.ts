@@ -20,7 +20,9 @@ export interface AffectedFlow {
  */
 function isDerivedNode(s: Symbol): boolean {
   return (
-    /^(community|process|folder):/.test(s.id) || s.filePath == null || s.filePath.trim() === ''
+    /^(community|process|folder):/.test(s.id) ||
+    s.filePath == null ||
+    s.filePath.trim() === ''
   );
 }
 
@@ -65,7 +67,9 @@ export async function changeImpact(
   const changes: ChangeSet = {
     added: raw.added.filter((s) => !isDerivedNode(s)),
     removed: raw.removed.filter((s) => !isDerivedNode(s)),
-    modified: raw.modified.filter((m) => !isDerivedNode(m.after) && !isDerivedNode(m.before)),
+    modified: raw.modified.filter(
+      (m) => !isDerivedNode(m.after) && !isDerivedNode(m.before),
+    ),
   };
 
   // All "present-day" changed symbols — added + modified afters
@@ -75,9 +79,7 @@ export async function changeImpact(
   ];
 
   // Cap at 25 to bound source-intelligence calls; skip file-label ids for flow mapping
-  const capped = presentSymbols
-    .filter((s) => !s.id.startsWith('file:'))
-    .slice(0, 25);
+  const capped = presentSymbols.filter((s) => !s.id.startsWith('file:')).slice(0, 25);
 
   // For each changed symbol, fetch flows (treat errors as no flows)
   const flowsPerSymbol: Flow[][] = await Promise.all(

@@ -20,7 +20,12 @@ const DEFAULT_SINCE = '7 days ago';
 export function looksLikeGitRef(s: string): boolean {
   const t = s.trim();
   if (/\s/.test(t) || /^\d{4}-\d{2}-\d{2}/.test(t)) return false; // "7 days ago", ISO date
-  return /[~^]/.test(t) || /^HEAD\b/.test(t) || /^[0-9a-f]{7,40}$/i.test(t) || /^v?\d+\.\d+/.test(t);
+  return (
+    /[~^]/.test(t) ||
+    /^HEAD\b/.test(t) ||
+    /^[0-9a-f]{7,40}$/i.test(t) ||
+    /^v?\d+\.\d+/.test(t)
+  );
 }
 
 export const WHAT_CHANGED_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
@@ -91,7 +96,9 @@ export async function runWhatChanged(
       { code },
     );
 
-    console.log(opts.json ? whatChangedToJSON(r, { full: opts.full }) : renderWhatChanged(r));
+    console.log(
+      opts.json ? whatChangedToJSON(r, { full: opts.full }) : renderWhatChanged(r),
+    );
 
     if (opts.ai && !opts.json) {
       const result = await renderAiInterpretation({
@@ -125,18 +132,19 @@ export async function runWhatChanged(
  * see it in the dashboard. Best-effort: a missing login/link or a network error
  * warns but never fails the command (the local report already printed).
  */
-async function pushChangeReport(
-  r: WhatChangedReport,
-  repoCwd?: string,
-): Promise<void> {
+async function pushChangeReport(r: WhatChangedReport, repoCwd?: string): Promise<void> {
   const session = authedClient();
   if (!session) {
-    console.error(pc.yellow('[cloud] not logged in — run `horus login` to push reports.'));
+    console.error(
+      pc.yellow('[cloud] not logged in — run `horus login` to push reports.'),
+    );
     return;
   }
   const cfg = readCloudConfig(repoRootOrCwd(repoCwd));
   if (!isCloudActive(cfg)) {
-    console.error(pc.yellow('[cloud] repo not linked — run `horus cloud link` to push reports.'));
+    console.error(
+      pc.yellow('[cloud] repo not linked — run `horus cloud link` to push reports.'),
+    );
     return;
   }
   const projectId = cfg.project?.id;

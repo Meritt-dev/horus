@@ -431,7 +431,9 @@ function normalizeStoredSignature(sig: string | null | undefined): string | null
 }
 
 /** Lowercase + dedupe + drop-empty stored tags; an empty result is stored as null. */
-function normalizeStoredTags(tags: readonly string[] | null | undefined): string[] | null {
+function normalizeStoredTags(
+  tags: readonly string[] | null | undefined,
+): string[] | null {
   if (!tags || tags.length === 0) return null;
   const seen = new Set<string>();
   const out: string[] = [];
@@ -486,10 +488,20 @@ function statusAction(status: MemoryStatus): string {
  * HONESTY INVARIANT (spec §8): this is storage only. Nothing here is read by the confidence/verdict
  * scoring path.
  */
-export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string } = {}): LocalMemoryStore {
-  const scopeFilter = opts.syncScope === undefined ? undefined : or(isNull(memoryItem.syncScope), eq(memoryItem.syncScope, opts.syncScope));
+export function createLocalMemoryStore(
+  db: HorusDb,
+  opts: { syncScope?: string } = {},
+): LocalMemoryStore {
+  const scopeFilter =
+    opts.syncScope === undefined
+      ? undefined
+      : or(isNull(memoryItem.syncScope), eq(memoryItem.syncScope, opts.syncScope));
   const getById = async (id: string): Promise<MemoryItem | null> => {
-    const rows = await db.select().from(memoryItem).where(and(eq(memoryItem.id, id), scopeFilter)).limit(1);
+    const rows = await db
+      .select()
+      .from(memoryItem)
+      .where(and(eq(memoryItem.id, id), scopeFilter))
+      .limit(1);
     return rows[0] ?? null;
   };
 
@@ -552,7 +564,8 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       assertClaimClean(item.claim);
 
       const repo = (item.repo ?? '').trim();
-      if (repo === '') throw new Error('memory_item requires a repo (HOR-46 fail-closed)');
+      if (repo === '')
+        throw new Error('memory_item requires a repo (HOR-46 fail-closed)');
 
       const id = (item.id ?? '').trim() || genId('mem');
       const status = item.status ?? 'fresh';
@@ -565,7 +578,9 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       // other kind stores neither (so it can never be a recurrence candidate). These are CONTEXT for
       // the auto-detectors and are NEVER read by the confidence/verdict scoring path (spec §8).
       const isIncidentDerived = INCIDENT_DERIVED_KINDS.has(item.kind);
-      const signature = isIncidentDerived ? normalizeStoredSignature(item.signature) : null;
+      const signature = isIncidentDerived
+        ? normalizeStoredSignature(item.signature)
+        : null;
       const tags = isIncidentDerived ? normalizeStoredTags(item.tags) : null;
 
       const inserted = await db
@@ -636,7 +651,8 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       if (q.origin !== undefined) conds.push(eq(memoryItem.origin, q.origin));
       if (q.visibility !== undefined) conds.push(eq(memoryItem.visibility, q.visibility));
       if (q.orgId !== undefined) conds.push(eq(memoryItem.orgId, q.orgId));
-      if (q.workspaceId !== undefined) conds.push(eq(memoryItem.workspaceId, q.workspaceId));
+      if (q.workspaceId !== undefined)
+        conds.push(eq(memoryItem.workspaceId, q.workspaceId));
       if (q.userId !== undefined) conds.push(eq(memoryItem.userId, q.userId));
       if (q.status && q.status.length > 0) {
         const ors = q.status.map((s) => eq(memoryItem.status, s));
@@ -654,7 +670,13 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
         // Deterministic: newest first, id as the stable tie-break.
         .orderBy(desc(memoryItem.createdAt), memoryItem.id);
 
-      rows = rows.filter((r) => r.repo === repo && (opts.syncScope === undefined || r.syncScope === null || r.syncScope === opts.syncScope)); // defense in depth (never leak another repo)
+      rows = rows.filter(
+        (r) =>
+          r.repo === repo &&
+          (opts.syncScope === undefined ||
+            r.syncScope === null ||
+            r.syncScope === opts.syncScope),
+      ); // defense in depth (never leak another repo)
       if (q.limit !== undefined && q.limit > 0) rows = rows.slice(0, Math.floor(q.limit));
       return rows;
     },
@@ -728,7 +750,9 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
 
       // Gate: an M1 rel (any toKind) OR a memory rel that explicitly targets another memory item.
       if (!M1_RELS.has(rel as Rel) && !(isMemoryRel && link.toKind === 'memory')) {
-        throw new Error(`unsupported memory_link rel in M1: ${rel} (toKind=${link.toKind})`);
+        throw new Error(
+          `unsupported memory_link rel in M1: ${rel} (toKind=${link.toKind})`,
+        );
       }
 
       let fromId = link.fromMemoryId;
@@ -738,10 +762,13 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       // repo, and not be a self-link. `recurs-with` is canonicalized + deduped (symmetric).
       if (isMemoryRel) {
         if (fromId === toRef) {
-          throw new Error(`memory_link rejects a self-link: ${rel} ${fromId} -> ${toRef}`);
+          throw new Error(
+            `memory_link rejects a self-link: ${rel} ${fromId} -> ${toRef}`,
+          );
         }
         const fromItem = await getById(fromId);
-        if (fromItem === null) throw new Error(`memory_link from item not found: ${fromId}`);
+        if (fromItem === null)
+          throw new Error(`memory_link from item not found: ${fromId}`);
         const toItem = await getById(toRef);
         if (toItem === null) throw new Error(`memory_link to item not found: ${toRef}`);
         if (fromItem.repo !== toItem.repo) {
@@ -854,9 +881,9 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       const direction = opts?.direction ?? 'both';
       const relFilter =
         opts?.rels && opts.rels.length > 0
-          ? (opts.rels.length === 1
-              ? eq(memoryLink.rel, opts.rels[0]!)
-              : or(...opts.rels.map((r) => eq(memoryLink.rel, r)))!)
+          ? opts.rels.length === 1
+            ? eq(memoryLink.rel, opts.rels[0]!)
+            : or(...opts.rels.map((r) => eq(memoryLink.rel, r)))!
           : undefined;
 
       const out: AnnotatedMemoryLink[] = [];
@@ -864,7 +891,10 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       if (direction === 'out' || direction === 'both') {
         const conds = [eq(memoryLink.fromMemoryId, id)];
         if (relFilter) conds.push(relFilter);
-        const rows = await db.select().from(memoryLink).where(and(...conds));
+        const rows = await db
+          .select()
+          .from(memoryLink)
+          .where(and(...conds));
         for (const r of rows) out.push({ ...r, direction: 'out' });
       }
 
@@ -872,7 +902,10 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
         // Incoming = a memory→memory edge pointing AT this item.
         const conds = [eq(memoryLink.toKind, 'memory'), eq(memoryLink.toRef, id)];
         if (relFilter) conds.push(relFilter);
-        const rows = await db.select().from(memoryLink).where(and(...conds));
+        const rows = await db
+          .select()
+          .from(memoryLink)
+          .where(and(...conds));
         for (const r of rows) out.push({ ...r, direction: 'in' });
       }
 
@@ -886,12 +919,14 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
     },
 
     async history(id: string): Promise<MemoryAudit[]> {
-      return db
-        .select()
-        .from(memoryAudit)
-        .where(eq(memoryAudit.memoryId, id))
-        // Most-recent-first; id as the stable tie-break for same-instant rows.
-        .orderBy(desc(memoryAudit.at), desc(memoryAudit.id));
+      return (
+        db
+          .select()
+          .from(memoryAudit)
+          .where(eq(memoryAudit.memoryId, id))
+          // Most-recent-first; id as the stable tie-break for same-instant rows.
+          .orderBy(desc(memoryAudit.at), desc(memoryAudit.id))
+      );
     },
 
     // ---- HOR-464 / M4: disposable team-memory read-cache + one-way promote ----
@@ -900,9 +935,11 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
       assertClaimClean(item.claim);
 
       const repo = (item.repo ?? '').trim();
-      if (repo === '') throw new Error('memory_item requires a repo (HOR-46 fail-closed)');
+      if (repo === '')
+        throw new Error('memory_item requires a repo (HOR-46 fail-closed)');
       const id = (item.id ?? '').trim();
-      if (id === '') throw new Error('upsertCached requires a stable item id (the origin client id)');
+      if (id === '')
+        throw new Error('upsertCached requires a stable item id (the origin client id)');
 
       const status = item.status ?? 'fresh';
       const now = new Date();
@@ -961,7 +998,10 @@ export function createLocalMemoryStore(db: HorusDb, opts: { syncScope?: string }
         fromStatus: null,
         toStatus: status,
         note: audit.note ?? null,
-        detail: { origin: 'cloud', ...(values.cloudId ? { cloudId: values.cloudId } : {}) },
+        detail: {
+          origin: 'cloud',
+          ...(values.cloudId ? { cloudId: values.cloudId } : {}),
+        },
       });
       return row;
     },
