@@ -39,9 +39,9 @@ def search(body: SearchRequest, request: Request) -> dict:
     """Run hybrid search (FTS + optional vector) and return results."""
     storage = request.app.state.storage
 
-    query_embedding = embed_query(body.query)
+    query_embedding = embed_query(body.query, wait_for_model=False)
     if query_embedding is None:
-        logger.warning("Embedding failed for query %r; falling back to FTS-only", body.query)
+        logger.debug("Query embeddings unavailable or warming; using lexical search")
 
     try:
         results = hybrid_search(

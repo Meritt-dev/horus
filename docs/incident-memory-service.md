@@ -43,6 +43,20 @@ the local macOS user who will own the service. Verify the selected organization,
 workspace, project, and environment. Existing local runtime connector credentials
 and read-only access policies remain authoritative.
 
+## Source query readiness
+
+Interactive HTTP and persistent MCP search use indexed lexical results while the
+local embedding model initializes, then resume vector search from the ready model.
+Memory recall follows its existing lexical fallback during warmup. One-shot CLI
+queries and batch embedding still wait for their required model. A failed
+interactive loader waits one minute before another background attempt.
+
+The watcher initializes the model outside the shared MCP storage lock. Structural
+updates remain serialized; failed model work retains only the pending embedding
+files and retries with backoff from one to five minutes, without replaying
+communities, processes or full-text indexes. New file changes still receive their
+structural update during that backoff.
+
 ## Memory
 
 Investigations refresh memory before collection, surface up to three relevant

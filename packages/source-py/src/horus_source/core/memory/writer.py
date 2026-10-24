@@ -95,7 +95,9 @@ class MemoryWriter:
     async def search(self, query: str, repo: str, limit: int = 10) -> list[MemorySearchHit]:
         """Cosine-rank the repo's claims against *query* (off-loop, never raises)."""
         try:
-            return await asyncio.to_thread(self._store.search, query, repo, limit)
+            return await asyncio.to_thread(
+                self._store.search, query, repo, limit, wait_for_model=False,
+            )
         except Exception:
             logger.warning("memory search failed (returning empty)", exc_info=True)
             return []

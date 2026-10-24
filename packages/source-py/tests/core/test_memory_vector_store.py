@@ -43,7 +43,7 @@ def stub_embeddings(monkeypatch: pytest.MonkeyPatch):
             return None
         return _unit(registry[text])
 
-    def _query(query: str) -> list[float] | None:
+    def _query(query: str, *, wait_for_model: bool = True) -> list[float] | None:
         if query not in registry:
             return None
         return _unit(registry[query])
