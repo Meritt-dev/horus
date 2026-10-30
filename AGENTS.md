@@ -1,5 +1,21 @@
 # Horus agent guide
 
+## Sunset: this TypeScript implementation is retired
+
+Horus now ships from the Rust implementation in
+[Meritt-dev/horus-rust](https://github.com/Meritt-dev/horus-rust), starting with
+0.24.0. The `horus` binary on npm (`@merittdev/horus`) and Homebrew is the Rust
+build. This repository's Release and NPM Publish workflows are disabled.
+
+Put new features, fixes and releases in horus-rust. Change this repository only
+when a task explicitly asks for it, and treat it as a reference for how
+behaviour worked before the port.
+
+One exception stays live: every Rust release builds its source-intelligence
+backend wheel from `packages/source-py` here (`HORUS_SOURCE_REF`, see
+horus-rust `docs/RELEASE.md`). Changes to that package still ship, through the
+next Rust release.
+
 ## Execution constraints
 
 Never run unit or end-to-end tests locally. Integration, replay and service
