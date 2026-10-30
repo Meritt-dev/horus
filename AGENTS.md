@@ -11,6 +11,11 @@ Put new features, fixes and releases in horus-rust. Change this repository only
 when a task explicitly asks for it, and treat it as a reference for how
 behaviour worked before the port.
 
+One exception stays live: every Rust release builds its source-intelligence
+backend wheel from `packages/source-py` here (`HORUS_SOURCE_REF`, see
+horus-rust `docs/RELEASE.md`). Changes to that package still ship, through the
+next Rust release.
+
 ## Execution constraints
 
 Never run unit or end-to-end tests locally. Integration, replay and service
