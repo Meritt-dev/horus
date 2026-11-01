@@ -1,7 +1,7 @@
 # Custom dist publish job (dist-workspace.toml: publish-jobs = ["./publish-npm"]).
 # Turns the release archives into npm packages (release/npm/build.mjs) and publishes them.
 # Authenticates with npm trusted publishing (GitHub OIDC, no token). Each package has a trusted
-# publisher for Meritt-dev/horus-rust .github/workflows/release.yml (see docs/RELEASE.md).
+# publisher for Meritt-dev/horus .github/workflows/release.yml (see docs/RELEASE.md).
 name: Publish npm packages
 
 on:
