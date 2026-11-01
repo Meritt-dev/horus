@@ -8,9 +8,9 @@
 
 Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis (incl. BullMQ queues), Axiom logs, Shopify Admin, Azure Monitor, CloudWatch Logs, Google Cloud Logging, Prometheus, Azure Service Bus, Kafka, Firestore, SQL Server, and source intelligence into deterministic reports.
 
-CLI-only, shipped as a single native binary. Read-only against production systems. Horus never writes to your infrastructure.
+Horus is a single native CLI binary, and it only reads from production.
 
-**Website:** [horus.sh](https://horus.sh) · **Source:** [github.com/meritt-dev/horus](https://github.com/meritt-dev/horus)
+[horus.sh](https://horus.sh) · [github.com/meritt-dev/horus](https://github.com/meritt-dev/horus)
 
 ```bash
 curl -fsSL https://horus.sh/install.sh | bash
@@ -22,23 +22,11 @@ brew install meritt-dev/tap/horus
 
 ## What Horus does
 
-Horus reads from your existing systems and reconstructs the incident through evidence, correlation, and ranked hypotheses.
+Horus reads from the systems you already run and rebuilds the incident from what they recorded.
 
-It does not dump thousands of logs. It connects runtime signals to source context and returns a **deterministic report**: suspected causes (ranked), hypotheses, evidence, gaps, and next actions. Evidence before inference. Optional `--ai` adds an Anthropic narrative on top.
+Instead of a page of raw logs, you get a **deterministic report** that links runtime signals to the code behind them. It lists suspected causes (ranked), hypotheses, evidence, gaps, and next actions. Optional `--ai` adds an Anthropic narrative on top, written from that evidence.
 
-Every incident leaves evidence.
-
-## What Horus is not
-
-| | |
-|---|---|
-| **Monitoring** | Detects problems |
-| **Observability** | Shows signals |
-| **Horus** | Reconstructs what happened |
-
-Horus is not another dashboard, alerting tool, or log viewer. It sits on top of the systems you already use.
-
-> Monitoring detects. Observability shows. Horus reconstructs.
+Horus sits on top of the monitoring and observability tools you already run. They detect problems and show signals. Horus reads from them and works out what happened.
 
 ## Getting started
 
@@ -57,9 +45,7 @@ horus postmortem <id>
 
 ## How it works
 
-**Evidence in. Explanation out.**
-
-| Runtime + Source | Investigation Engine | Investigation Report |
+| Runtime and source | Investigation engine | Report |
 |---|---|---|
 | Elasticsearch · Axiom · cloud logs · Sentry errors | Correlation | Suspected causes (ranked) |
 | Grafana · Prometheus metrics | Timeline | Hypotheses + confidence |
@@ -99,15 +85,15 @@ Hint: checkout latency spike
 
 ## Principles
 
-**Read-only.** Horus never writes to your production systems.
+Horus only reads. It never writes to your production systems.
 
-**Deterministic first.** The engine is deterministic; optional `--ai` adds an Anthropic narrative.
+The engine is deterministic. The same evidence gives the same report, and `--ai` only adds a narrative on top.
 
-**Local-first.** Connectors read from your own clusters, not a hosted black box. Investigations and incident memory live in a local SQLite store (`~/.horus/horus-rust.db`), synced with Horus Cloud when the repo is linked.
+Connectors read straight from your own clusters. Investigations and incident memory stay in a local SQLite store (`~/.horus/horus-rust.db`) and sync with Horus Cloud when the repo is linked.
 
-**Project-scoped.** The repo you run in (its `.horus/config.json`) is the project identity; `--config <path>` targets another repo.
+The repo you run in is the project. Its `.horus/config.json` holds the config, and `--config <path>` points Horus at another repo.
 
-**Agent-ready.** Every investigation/analysis command takes `--json` (compact by default, `--full` for the raw structure) with a `nextSteps` array to chain from. `horus packet` builds a compact, honesty-framed briefing sized for an agent's context window.
+Every investigation and analysis command takes `--json` (compact by default, `--full` for the raw structure). Each result carries a `nextSteps` array that an agent can follow.
 
 ## Core commands
 
@@ -118,7 +104,7 @@ Hint: checkout latency spike
 | `horus status [--env]` | Per-project/env connector-health matrix |
 | `horus doctor` | Check local readiness: CLI version, git root, `.horus` config, source-intelligence setup |
 | `horus investigate --env <e> "<hint>"` | Full deterministic investigation report |
-| `horus packet <hint\|savedId> [--for claude] [--json]` | Compact briefing for a coding-agent context window |
+| `horus packet <hint\|savedId> [--for claude] [--json]` | Short briefing sized for a coding agent's context window, with confidence stated plainly |
 | `horus logs` · `state` · `metrics` · `queues [--live]` | Single-source evidence: error signatures, application state, metrics, queue topology and live depths |
 | `horus search` · `explain` · `blast-radius` · `architecture` · `what-changed` · `changes` | Source-aware code intelligence |
 | `horus memory <show\|add\|list\|link\|...>` | Inspect and author incident memory |
@@ -129,7 +115,7 @@ Hint: checkout latency spike
 
 ## For coding agents
 
-Horus is built to be an agent's evidence layer. Install a skill that teaches your agent to reach for Horus before guessing:
+Coding agents can call Horus for evidence before they guess at a cause. Install a skill that tells your agent when to use it, or expose the knowledge index over MCP:
 
 ```bash
 horus skill install claude    # also: codex · gemini · cursor · generic
@@ -138,20 +124,17 @@ horus mcp                     # expose the local knowledge index to agents over 
 
 ## Configuration
 
-The config model separates **code** from **runtime**:
-
-- **Code belongs to the project.** `repositories[]`, each served by its own source-intelligence host.
-- **Runtime belongs to the environment.** `environments[].connectors`, scoped per project and environment. There are no global connector defaults.
+Config keeps code and runtime apart. Code belongs to the project: `repositories[]`, each served by its own source-intelligence host. Runtime belongs to the environment: `environments[].connectors`, scoped per project and environment, with no global connector defaults.
 
 A repo carries `.horus/config.json`, discovered by walking up from the working directory like `.git`. `horus.config.{js,ts}` files are also supported and are loaded through an installed `node`.
 
-**Secrets are never committed.** `horus connect` encrypts connector credentials into `.horus/secrets.local.json` (never `config.json`) and adds `.horus/` to `.gitignore`. Environment variables also work at runtime. See [horus.sh/docs/security](https://horus.sh/docs/security).
+Secrets stay out of git. `horus connect` encrypts connector credentials into `.horus/secrets.local.json` (never `config.json`) and adds `.horus/` to `.gitignore`. Environment variables also work at runtime. See [horus.sh/docs/security](https://horus.sh/docs/security).
 
 ## Source intelligence
 
-Source intelligence is a core layer, not an optional integration. The bundled backend (code graph, semantic search, impact analysis, ownership, tree-sitter across TypeScript/JavaScript, Python, Go, Java and Rust) ships as `horus_source.whl` beside the binary, and `horus init` installs it with [uv](https://docs.astral.sh/uv/). Horus talks to it over HTTP/MCP only.
+Horus expects source intelligence to be present. The bundled backend (code graph, semantic search, impact analysis, ownership, tree-sitter across TypeScript/JavaScript, Python, Go, Java and Rust) ships as `horus_source.whl` beside the binary, and `horus init` installs it with [uv](https://docs.astral.sh/uv/). Horus talks to it over HTTP/MCP only.
 
-The one code-intelligence gap Horus fills itself is **queue-boundary stitching**: connecting a producer's `queue.add(...)` to the consumer's `@Processor` handler.
+Horus adds one thing the backend lacks. It stitches queue boundaries, linking a producer's `queue.add(...)` to the consumer's `@Processor` handler.
 
 > If the backend is unavailable, Horus still collects runtime evidence, but source context, impact analysis, change analysis and queue stitching are degraded.
 
@@ -175,21 +158,23 @@ If something goes wrong, run `horus doctor`.
 
 From 0.24.0 Horus is this Rust implementation, on every channel. It is a command-for-command port of the TypeScript CLI (now archived at [Meritt-dev/horus-ts](https://github.com/Meritt-dev/horus-ts)): same commands, flags, help text, output and exit codes.
 
-- **npm:** `npm i -g @merittdev/horus@latest`.
-- **Homebrew:** `brew upgrade horus`. The formula no longer depends on `node`.
-- **curl install:** re-run `curl -fsSL https://horus.sh/install.sh | bash`.
-- **Config and secrets** in `~/.horus` and `.horus/config.json` are read as-is.
-- **Local history.** The TS CLI kept investigations and memory in PGlite at `~/.horus/horus.db`. Copy them into the new SQLite store once (needs `node`/`npx`; the TS store is only read):
+| Installed with | Upgrade |
+| --- | --- |
+| npm | `npm i -g @merittdev/horus@latest` |
+| Homebrew | `brew upgrade horus` (the formula no longer depends on `node`) |
+| curl | `curl -fsSL https://horus.sh/install.sh \| bash` |
 
-  ```sh
-  horus db migrate-from-ts
-  ```
+Config and secrets in `~/.horus` and `.horus/config.json` are read as they are.
 
-  Until you do, `horus` prints a one-line reminder while the new store is empty. Re-running the migration is safe.
+The TS CLI kept investigations and memory in PGlite at `~/.horus/horus.db`. Copy them into the new SQLite store once (needs `node`/`npx`; the TS store is only read):
 
-IncidentBench, the open startup-recall benchmark, is in [docs/incident-bench.md](docs/incident-bench.md).
+```sh
+horus db migrate-from-ts
+```
 
-Compared with the TS CLI, on 12 real repositories ([docs/BENCHMARK.md](docs/BENCHMARK.md)): 5 ms vs 158 ms cold start, 10 MB vs 153 MB idle memory, 2.5–11.8× faster per project, and 98–100% output parity. Intended differences are listed in [DIVERGENCES.md](DIVERGENCES.md).
+Until you do, `horus` prints a one-line reminder while the new store is empty. Re-running the migration is safe.
+
+We benchmarked both CLIs on 12 real repositories ([docs/BENCHMARK.md](docs/BENCHMARK.md)). The Rust build starts in 5 ms instead of 158 ms, idles at 10 MB instead of 153 MB, and runs 2.5 to 11.8× faster per project. Output matched 98 to 100% on 11 of the repos, and 66 of 76 cases were identical on the main one. The rest differ only by local history, live data or the clock. Intended differences are listed in [DIVERGENCES.md](DIVERGENCES.md).
 
 ## Build from source
 
@@ -211,6 +196,8 @@ crates/
   eval/         read-only accuracy harness
   cli/          the horus binary
 ```
+
+IncidentBench, the open benchmark for startup recall, is described in [docs/incident-bench.md](docs/incident-bench.md).
 
 ## License
 
