@@ -1,0 +1,23 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Horus logo mark</title>
+  <desc id="desc">A refined geometric H monogram with a central investigation node.</desc>
+  <style>
+    :root { --logo-fill: #0a0e14; }
+    @media (prefers-color-scheme: dark) { :root { --logo-fill: #ffffff; } }
+  </style>
+  <defs>
+    <mask id="horus-mark-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="black"/>
+      <rect x="88" y="76" width="112" height="360" rx="18" fill="white"/>
+      <rect x="312" y="76" width="112" height="360" rx="18" fill="white"/>
+      <rect x="176" y="184" width="160" height="50" rx="8" fill="white"/>
+      <rect x="176" y="278" width="160" height="50" rx="8" fill="white"/>
+      <rect x="151" y="154" width="20" height="204" rx="10" fill="black"/>
+      <rect x="341" y="154" width="20" height="204" rx="10" fill="black"/>
+      <rect x="151" y="246" width="83" height="20" rx="10" fill="black"/>
+      <rect x="278" y="246" width="83" height="20" rx="10" fill="black"/>
+      <rect x="219" y="219" width="74" height="74" rx="10" fill="black"/>
+    </mask>
+  </defs>
+  <rect width="512" height="512" fill="var(--logo-fill)" mask="url(#horus-mark-cutouts)"/>
+</svg>

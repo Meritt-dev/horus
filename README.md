@@ -132,7 +132,7 @@ Secrets stay out of git. `horus connect` encrypts connector credentials into `.h
 
 ## Source intelligence
 
-Horus expects source intelligence to be present. The bundled backend (code graph, semantic search, impact analysis, ownership, tree-sitter across TypeScript/JavaScript, Python, Go, Java and Rust) ships as `horus_source.whl` beside the binary, and `horus init` installs it with [uv](https://docs.astral.sh/uv/). Horus talks to it over HTTP/MCP only.
+Horus expects source intelligence to be present. The bundled backend (code graph, semantic search, impact analysis, ownership, tree-sitter across TypeScript/JavaScript, Python, Go, Java and Rust) lives in [`packages/source-py`](packages/source-py) and ships as `horus_source.whl` beside the binary. `horus init` installs it with [uv](https://docs.astral.sh/uv/). Horus talks to it over HTTP/MCP only.
 
 Horus adds one thing the backend lacks. It stitches queue boundaries, linking a producer's `queue.add(...)` to the consumer's `@Processor` handler.
 
@@ -182,7 +182,7 @@ We benchmarked both CLIs on 12 real repositories ([docs/BENCHMARK.md](docs/BENCH
 HORUS_VERSION=0.24.5 cargo build --release -p horus-cli   # → target/release/horus
 ```
 
-Cross-platform builds are covered in [PORTING.md](PORTING.md), and cutting a release in [docs/RELEASE.md](docs/RELEASE.md).
+Cross-platform builds are covered in [PORTING.md](PORTING.md), and cutting a release in [docs/RELEASE.md](docs/RELEASE.md). To build the backend wheel, run `scripts/release/build-source-wheel.sh` (needs uv, Python 3.11+ and Node.js).
 
 ```
 crates/
@@ -195,6 +195,8 @@ crates/
   knowledge/    local project-knowledge index
   eval/         read-only accuracy harness
   cli/          the horus binary
+packages/
+  source-py/    source-intelligence backend (Python), built into horus_source.whl
 ```
 
 IncidentBench, the open benchmark for startup recall, is described in [docs/incident-bench.md](docs/incident-bench.md).
