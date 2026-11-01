@@ -179,7 +179,7 @@ We benchmarked both CLIs on 12 real repositories ([docs/BENCHMARK.md](docs/BENCH
 ## Build from source
 
 ```sh
-HORUS_VERSION=0.24.4 cargo build --release -p horus-cli   # → target/release/horus
+HORUS_VERSION=0.24.5 cargo build --release -p horus-cli   # → target/release/horus
 ```
 
 Cross-platform builds are covered in [PORTING.md](PORTING.md), and cutting a release in [docs/RELEASE.md](docs/RELEASE.md).
