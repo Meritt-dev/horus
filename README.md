@@ -1,42 +1,185 @@
+<p align="center">
+  <img src="https://meritt-dev-assets.s3.eu-central-1.amazonaws.com/public/horus-logo-dark-20260614171147.svg" width="72" alt="Horus" />
+</p>
+
 # Horus
 
-[Horus](https://horus.sh), the incident-investigation CLI. From 0.24.0 this Rust implementation **is** `horus`: the npm package `@merittdev/horus`, the Homebrew formula `horus` and the GitHub release binaries all ship it.
-It traces a production symptom through the code (via the source-intelligence backend) and your runtime systems:
-- logs
-- metrics
-- queues
-- databases
-- error trackers
-- past incidents in local memory (synced with Horus Cloud when the repo is linked)
+**Understand what happened.**
 
-It then ranks the likely causes and states its confidence plainly.
+Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis (incl. BullMQ queues), Axiom logs, Shopify Admin, Azure Monitor, CloudWatch Logs, Google Cloud Logging, Prometheus, Azure Service Bus, Kafka, Firestore, SQL Server, and source intelligence into deterministic reports.
 
-It is a command-for-command port of the TypeScript `horus` 0.23.0 ([Meritt-dev/horus](https://github.com/Meritt-dev/horus)): same commands, flags, help text, output and exit codes, now as a single native binary.
+CLI-only, shipped as a single native binary. Read-only against production systems. Horus never writes to your infrastructure.
 
-New in 0.24.3:
-- **Hybrid startup recall.** An investigation opens with matching past incidents, scored by exact code-shaped terms plus local embedding similarity against every hint an incident was seen under. `HORUS_STARTUP_RECALL=off` disables it.
-- **Past incidents in this code.** `horus changes` and `horus what-changed` list earlier investigations whose top code seeds (a method or function behind a cause rated likely or highly likely) the change modifies or removes (`relatedIncidents` in JSON). Context, not a gate.
-- **IncidentBench**, an open benchmark for startup recall: [docs/incident-bench.md](docs/incident-bench.md).
-- Investigations record the calling agent session from `HORUS_AGENT_SESSION` or `CLAUDE_CODE_SESSION_ID`.
+**Website:** [horus.sh](https://horus.sh) · **Source:** [github.com/meritt-dev/horus](https://github.com/meritt-dev/horus)
+
+```bash
+curl -fsSL https://horus.sh/install.sh | bash
+npm install -g @merittdev/horus
+brew install meritt-dev/tap/horus
+```
+
+---
+
+## What Horus does
+
+Horus reads from your existing systems and reconstructs the incident through evidence, correlation, and ranked hypotheses.
+
+It does not dump thousands of logs. It connects runtime signals to source context and returns a **deterministic report**: suspected causes (ranked), hypotheses, evidence, gaps, and next actions. Evidence before inference. Optional `--ai` adds an Anthropic narrative on top.
+
+Every incident leaves evidence.
+
+## What Horus is not
+
+| | |
+|---|---|
+| **Monitoring** | Detects problems |
+| **Observability** | Shows signals |
+| **Horus** | Reconstructs what happened |
+
+Horus is not another dashboard, alerting tool, or log viewer. It sits on top of the systems you already use.
+
+> Monitoring detects. Observability shows. Horus reconstructs.
+
+## Getting started
+
+```bash
+cd your-service
+horus init                    # index the repo, start the source host, write .horus/config.json
+horus connect elasticsearch   # optional runtime connectors (see `horus connect --help`)
+horus doctor
+horus investigate "checkout latency spike"
+horus investigations          # list saved IDs
+horus replay <id>
+horus postmortem <id>
+```
+
+`horus --help` lists every command.
+
+## How it works
+
+**Evidence in. Explanation out.**
+
+| Runtime + Source | Investigation Engine | Investigation Report |
+|---|---|---|
+| Elasticsearch · Axiom · cloud logs · Sentry errors | Correlation | Suspected causes (ranked) |
+| Grafana · Prometheus metrics | Timeline | Hypotheses + confidence |
+| MongoDB · Postgres · SQL Server · Firestore · Redis state | Cause ranking | Evidence + gaps |
+| BullMQ · Kafka · Azure Service Bus queues | | Next actions |
+| Source graph + git | | |
+
+Pipeline: **Evidence → Correlation → Hypotheses → Timeline → Report**
+
+## Example output (illustrative)
+
+```bash
+cd ~/code/atlas-payments
+horus investigate --env production "checkout latency spike"
+```
+
+```text
+# Investigation inv-347
+Hint: checkout latency spike
+
+## Suspected causes (ranked)
+1. [0.82 / high] Redis connection pool exhaustion [↑ queue]
+
+## Hypotheses
+  [supported] [0.78] queue: backlog growth preceded latency spike
+
+## Evidence gaps
+  - queue runtime state: worker heartbeat unavailable
+
+## Evidence
+- ev-01 [elasticsearch/error] Request timeout increase
+- ev-04 [bullmq/queue] checkout-jobs backlog growth
+
+## Next actions
+- Inspect worker concurrency changes in deploy #784
+```
+
+## Principles
+
+**Read-only.** Horus never writes to your production systems.
+
+**Deterministic first.** The engine is deterministic; optional `--ai` adds an Anthropic narrative.
+
+**Local-first.** Connectors read from your own clusters, not a hosted black box. Investigations and incident memory live in a local SQLite store (`~/.horus/horus-rust.db`), synced with Horus Cloud when the repo is linked.
+
+**Project-scoped.** The repo you run in (its `.horus/config.json`) is the project identity; `--config <path>` targets another repo.
+
+**Agent-ready.** Every investigation/analysis command takes `--json` (compact by default, `--full` for the raw structure) with a `nextSteps` array to chain from. `horus packet` builds a compact, honesty-framed briefing sized for an agent's context window.
+
+## Core commands
+
+| Command | What it does |
+| --- | --- |
+| `horus init [--env <e>]` | Set up the current repo: config, source-intelligence host, index, queue map |
+| `horus connect <type>` | Add or update a runtime connector (`horus connect --help` lists the types), or `ai` for an AI provider |
+| `horus status [--env]` | Per-project/env connector-health matrix |
+| `horus doctor` | Check local readiness: CLI version, git root, `.horus` config, source-intelligence setup |
+| `horus investigate --env <e> "<hint>"` | Full deterministic investigation report |
+| `horus packet <hint\|savedId> [--for claude] [--json]` | Compact briefing for a coding-agent context window |
+| `horus logs` · `state` · `metrics` · `queues [--live]` | Single-source evidence: error signatures, application state, metrics, queue topology and live depths |
+| `horus search` · `explain` · `blast-radius` · `architecture` · `what-changed` · `changes` | Source-aware code intelligence |
+| `horus memory <show\|add\|list\|link\|...>` | Inspect and author incident memory |
+| `horus feedback <id> [--resolved] [--note] [--cause]` | Record the outcome of an investigation |
+| `horus hosts [--reap]` · `horus stop [--all]` | List or stop source-intelligence hosts |
+| `horus report` | File a Horus bug or capability gap as a pre-filled GitHub issue (nothing is sent automatically) |
+| `horus update` | Update Horus (through npm or Homebrew when installed that way) |
+
+## For coding agents
+
+Horus is built to be an agent's evidence layer. Install a skill that teaches your agent to reach for Horus before guessing:
+
+```bash
+horus skill install claude    # also: codex · gemini · cursor · generic
+horus mcp                     # expose the local knowledge index to agents over MCP (stdio)
+```
+
+## Configuration
+
+The config model separates **code** from **runtime**:
+
+- **Code belongs to the project.** `repositories[]`, each served by its own source-intelligence host.
+- **Runtime belongs to the environment.** `environments[].connectors`, scoped per project and environment. There are no global connector defaults.
+
+A repo carries `.horus/config.json`, discovered by walking up from the working directory like `.git`. `horus.config.{js,ts}` files are also supported and are loaded through an installed `node`.
+
+**Secrets are never committed.** `horus connect` encrypts connector credentials into `.horus/secrets.local.json` (never `config.json`) and adds `.horus/` to `.gitignore`. Environment variables also work at runtime. See [horus.sh/docs/security](https://horus.sh/docs/security).
+
+## Source intelligence
+
+Source intelligence is a core layer, not an optional integration. The bundled backend (code graph, semantic search, impact analysis, ownership, tree-sitter across TypeScript/JavaScript, Python, Go, Java and Rust) ships as `horus_source.whl` beside the binary, and `horus init` installs it with [uv](https://docs.astral.sh/uv/). Horus talks to it over HTTP/MCP only.
+
+The one code-intelligence gap Horus fills itself is **queue-boundary stitching**: connecting a producer's `queue.add(...)` to the consumer's `@Processor` handler.
+
+> If the backend is unavailable, Horus still collects runtime evidence, but source context, impact analysis, change analysis and queue stitching are degraded.
 
 ## Install
 
+See [horus.sh/docs/installation](https://horus.sh/docs/installation) for full install, update and uninstall instructions.
+
 ```sh
+curl -fsSL https://horus.sh/install.sh | bash   # binary + backend
 npm i -g @merittdev/horus                       # npm (macOS / Linux, arm64 / x64)
 brew install meritt-dev/tap/horus               # Homebrew
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Meritt-dev/horus-rust/releases/latest/download/horus-cli-installer.sh | sh
-horus update --force                            # after the curl installer: installs the bundled backend
 ```
 
-The npm and Homebrew packages bundle the matching source-intelligence backend wheel. `horus init` installs it with [uv](https://docs.astral.sh/uv/).
+The npm and Homebrew packages bundle the matching backend wheel. If you install the bare binary from [GitHub Releases](https://github.com/meritt-dev/horus/releases), run `horus update --force` once to fetch the wheel.
+
+Requirements: macOS or Linux (arm64 / x64), `git`, and Python 3.11+ with uv for the source backend. The binary itself needs no Node.js.
+
+If something goes wrong, run `horus doctor`.
 
 ## Upgrading from the TypeScript horus (≤ 0.23.0)
 
-- **npm:** `npm i -g @merittdev/horus@latest` (or `horus update`) replaces the TS build with this one. Node is still required for npm itself, not for Horus.
+From 0.24.0 Horus is this Rust implementation, on every channel. It is a command-for-command port of the TypeScript CLI (now archived at [Meritt-dev/horus-ts](https://github.com/Meritt-dev/horus-ts)): same commands, flags, help text, output and exit codes.
+
+- **npm:** `npm i -g @merittdev/horus@latest`.
 - **Homebrew:** `brew upgrade horus`. The formula no longer depends on `node`.
+- **curl install:** re-run `curl -fsSL https://horus.sh/install.sh | bash`.
 - **Config and secrets** in `~/.horus` and `.horus/config.json` are read as-is.
-- **Local history.** The TS CLI kept investigations and memory in a PGlite store at `~/.horus/horus.db`. This build uses SQLite at `~/.horus/horus-rust.db`. Copy the history over once (needs `node`/`npx`; the TS store is only read):
+- **Local history.** The TS CLI kept investigations and memory in PGlite at `~/.horus/horus.db`. Copy them into the new SQLite store once (needs `node`/`npx`; the TS store is only read):
 
   ```sh
   horus db migrate-from-ts
@@ -44,30 +187,9 @@ The npm and Homebrew packages bundle the matching source-intelligence backend wh
 
   Until you do, `horus` prints a one-line reminder while the new store is empty. Re-running the migration is safe.
 
-## Use
+IncidentBench, the open startup-recall benchmark, is in [docs/incident-bench.md](docs/incident-bench.md).
 
-```sh
-cd your-service
-horus init                       # index the repo, start the source host, write .horus/config.json
-horus connect elasticsearch …    # add runtime connectors (see `horus connect --help`)
-horus doctor
-horus investigate "checkout requests timing out since the last deploy"
-```
-
-`horus --help` lists every command.
-
-## How it compares to the TypeScript CLI
-
-We ran side-by-side benchmarks against 12 real repositories ([docs/BENCHMARK.md](docs/BENCHMARK.md)):
-- **Startup:** 5 ms vs 158 ms cold start.
-- **Memory:** 10 MB vs 153 MB idle; 140–175 MB vs about 1 GB for a full investigation.
-- **Speed:** 2.5–11.8× faster per project.
-- **Output parity:** 98–100% mean match on the 11 other repos; 66/76 identical cases on the main project (the rest differ only by local history, live data or clock).
-
-The intended differences are listed in [DIVERGENCES.md](DIVERGENCES.md). The main ones:
-- **Local database.** History lives in `~/.horus/horus-rust.db` (SQLite), not the TS CLI's PGlite `~/.horus/horus.db`; `horus db migrate-from-ts` copies it over. Horus Cloud memory syncs into both.
-- **JS/TS config files.** `horus.config.{js,ts}` is loaded through an installed `node`. `.horus/config.json` needs nothing extra.
-- **Cloud writes switch.** `HORUS_RUST_CLOUD_WRITE=0` keeps a run local: no Cloud writes and no telemetry.
+Compared with the TS CLI, on 12 real repositories ([docs/BENCHMARK.md](docs/BENCHMARK.md)): 5 ms vs 158 ms cold start, 10 MB vs 153 MB idle memory, 2.5–11.8× faster per project, and 98–100% output parity. Intended differences are listed in [DIVERGENCES.md](DIVERGENCES.md).
 
 ## Build from source
 
@@ -75,18 +197,20 @@ The intended differences are listed in [DIVERGENCES.md](DIVERGENCES.md). The mai
 HORUS_VERSION=0.24.4 cargo build --release -p horus-cli   # → target/release/horus
 ```
 
-Cross-platform release builds are covered in [PORTING.md](PORTING.md), and cutting a release in [docs/RELEASE.md](docs/RELEASE.md).
+Cross-platform builds are covered in [PORTING.md](PORTING.md), and cutting a release in [docs/RELEASE.md](docs/RELEASE.md).
 
-The workspace mirrors the TS monorepo crate-for-package:
-- `core`
-- `connectors`
-- `db`
-- `stitcher`
-- `engine`
-- `ai`
-- `knowledge`
-- `eval`
-- `cli`
+```
+crates/
+  core/         evidence model, config schema, project/env resolution, version pins
+  connectors/   provider contracts, source intelligence client, runtime connectors
+  stitcher/     queue-boundary stitcher
+  db/           local SQLite store
+  engine/       deterministic investigation pipeline (timeline, correlation, hypotheses, gaps)
+  ai/           optional narrative layer
+  knowledge/    local project-knowledge index
+  eval/         read-only accuracy harness
+  cli/          the horus binary
+```
 
 ## License
 

@@ -47,8 +47,8 @@ const common = {
   license: 'MIT',
   keywords: ['incident-investigation', 'observability', 'sre', 'debugging', 'cli'],
   homepage: 'https://horus.sh',
-  repository: { type: 'git', url: 'https://github.com/Meritt-dev/horus-rust' },
-  bugs: { url: 'https://github.com/Meritt-dev/horus-rust/issues' },
+  repository: { type: 'git', url: 'https://github.com/Meritt-dev/horus' },
+  bugs: { url: 'https://github.com/Meritt-dev/horus/issues' },
 };
 const write = (dir, json) => {
   fs.mkdirSync(dir, { recursive: true });

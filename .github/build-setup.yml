@@ -5,11 +5,11 @@
 - name: Stamp HORUS_VERSION from the release tag
   shell: bash
   run: echo "HORUS_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-- name: Check out the source backend (Meritt-dev/horus)
+- name: Check out the source backend (Meritt-dev/horus-ts)
   uses: actions/checkout@v6
   with:
-    repository: Meritt-dev/horus
-    # Meritt-dev/horus is public; no token. The backend is versioned independently of this CLI:
+    repository: Meritt-dev/horus-ts
+    # Meritt-dev/horus-ts (the archived TS repo) is public; no token. The backend is versioned independently of this CLI:
     # repo variable HORUS_SOURCE_REF picks the ref, else v0.23.0 (bcdc5f0, the commit npm
     # @merittdev/horus@0.23.0 was published from). The wheel is restamped to HORUS_VERSION below.
     ref: ${{ vars.HORUS_SOURCE_REF || 'v0.23.0' }}

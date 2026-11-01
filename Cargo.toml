@@ -8,7 +8,7 @@ edition = "2021"
 license = "MIT"
 # GitHub repo that hosts the Rust release archives. dist, cargo-binstall and `horus update`
 # (via CARGO_PKG_REPOSITORY) all read it from here. Open decision: see docs/RELEASE.md.
-repository = "https://github.com/Meritt-dev/horus-rust"
+repository = "https://github.com/Meritt-dev/horus"
 publish = false
 
 [workspace.dependencies]

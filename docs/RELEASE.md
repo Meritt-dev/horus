@@ -4,10 +4,13 @@ From 0.24.0 this Rust implementation **is** `horus`. It replaces the TypeScript 
 to 0.23.0, on every channel: npm `@merittdev/horus`, the Homebrew formula `horus` in
 `Meritt-dev/homebrew-tap`, and the curl installer. The executable is `horus`.
 
-**The TS repo must stay out of publishing.** `Meritt-dev/horus`'s `Release` and `NPM Publish` workflows
-are disabled. If anyone re-enables them, they would publish `@merittdev/horus` and overwrite
-`Formula/horus.rb` with the TS build. Keep them disabled, or strip their npm and Homebrew steps.
-`Meritt-dev/horus` stays the source of the backend wheel (see "Wheel source").
+This repo was `Meritt-dev/horus-rust` until the rename; GitHub redirects the old URL here. The
+TypeScript implementation now lives in `Meritt-dev/horus-ts`, which is archived (read-only).
+
+**The TS repo must stay out of publishing.** `Meritt-dev/horus-ts`'s `Release` and `NPM Publish`
+workflows are disabled. If anyone re-enables them, they would publish `@merittdev/horus` and
+overwrite `Formula/horus.rb` with the TS build. Keep them disabled, or strip their npm and Homebrew
+steps. `Meritt-dev/horus-ts` stays the source of the backend wheel (see "Wheel source").
 
 One tag builds native binaries for four targets and ships them through GitHub Releases, a shell
 installer, Homebrew, npm and (optionally) cargo-binstall. Every archive carries `horus` plus
@@ -33,7 +36,7 @@ dynamic executable"; both musl builds passed in CI on the v0.23.0 attempt). They
 | `dist-workspace.toml` | [dist](https://opensource.axo.dev/cargo-dist/) config: targets, installers, tap, custom jobs |
 | `Cargo.toml` `[workspace.package]` | `version` (= the release tag) and `repository` (the repo that hosts releases; dist, binstall, `horus update` and the update notifier read it) |
 | `crates/cli/Cargo.toml` `[package.metadata.dist]` | opts the CLI into dist (crates are `publish = false`) and adds `horus_source.whl` to every archive |
-| `.github/build-setup.yml` | dist inserts these steps before every build: sets `HORUS_VERSION` from the tag, checks out `Meritt-dev/horus` at `HORUS_SOURCE_REF`, stamps `packages/source-py` to `HORUS_VERSION`, runs `scripts/release/build-source-wheel.sh`, and stages the wheel at `crates/cli/horus_source.whl` |
+| `.github/build-setup.yml` | dist inserts these steps before every build: sets `HORUS_VERSION` from the tag, checks out `Meritt-dev/horus-ts` at `HORUS_SOURCE_REF`, stamps `packages/source-py` to `HORUS_VERSION`, runs `scripts/release/build-source-wheel.sh`, and stages the wheel at `crates/cli/horus_source.whl` |
 | `.github/workflows/release.yml` | **generated** by `dist generate`; do not edit by hand |
 | `.github/workflows/publish-homebrew.yml` | custom publish job: pushes `Formula/horus.rb` to the tap with a deploy key |
 | `.github/workflows/publish-npm.yml` | custom publish job: archives → npm packages → `npm publish` |
@@ -48,10 +51,10 @@ the regenerated `release.yml`. `dist plan` shows what a tag would build.
 | Channel | Install | What lands on disk | `horus update` does |
 | ------- | ------- | ------------------ | ------------------- |
 | GitHub release | download `horus-cli-<target>.tar.gz` | whatever the user extracts | self-replace (below) |
-| Shell installer | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Meritt-dev/horus-rust/releases/latest/download/horus-cli-installer.sh \| sh` | `horus` in `$XDG_BIN_HOME`, else `~/.local/bin`; **no wheel** (dist installers copy binaries only) | self-replace from the archive; that also puts the wheel beside the binary |
+| Shell installer | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Meritt-dev/horus/releases/latest/download/horus-cli-installer.sh \| sh` | `horus` in `$XDG_BIN_HOME`, else `~/.local/bin`; **no wheel** (dist installers copy binaries only) | self-replace from the archive; that also puts the wheel beside the binary |
 | Homebrew | `brew install meritt-dev/tap/horus` | `bin/horus` → Cellar, wheel in `share/horus/` | `brew upgrade horus`, then the new binary pins the backend |
 | npm | `npm i -g @merittdev/horus` | launcher + one `@merittdev/horus-<os>-<cpu>` with `bin/horus` and `bin/horus_source.whl` | `npm install -g --prefix <same prefix> @merittdev/horus@latest`, then the new binary pins the backend |
-| cargo-binstall | `cargo binstall --git https://github.com/Meritt-dev/horus-rust horus-cli` | `horus` in `~/.cargo/bin`; no wheel | self-replace from the archive |
+| cargo-binstall | `cargo binstall --git https://github.com/Meritt-dev/horus horus-cli` | `horus` in `~/.cargo/bin`; no wheel | self-replace from the archive |
 | Source build | `cargo install --git … horus-cli` | `horus` only, version `dev` unless `HORUS_VERSION` is set | self-replace refuses `dev` (unparseable version) |
 
 The executable path decides the channel (`crates/cli/src/commands/update.rs`, `detect_channel`):
@@ -72,7 +75,7 @@ resolved binary and in `../share/<exe name>/`. When neither has it, `horus init`
 config, skips indexing and prints the installer hint. Fix it with `horus update --force`, which
 fetches this release's archive and writes the wheel beside the binary. A source build can't
 carry the wheel and runs with `HORUS_VERSION=dev`, so it can't enforce the backend pin. Install
-the backend yourself (`uv tool install` on a `horus_source` wheel built from `Meritt-dev/horus`).
+the backend yourself (`uv tool install` on a `horus_source` wheel built from `Meritt-dev/horus-ts`).
 
 ### npm layout (esbuild/biome pattern)
 
@@ -98,8 +101,8 @@ Secrets and variables in the release repo (Settings → Secrets and variables �
 | Name | Kind | Needed for | When absent |
 | ---- | ---- | ---------- | ----------- |
 | `HOMEBREW_TAP_DEPLOY_KEY` | secret | write deploy key on `Meritt-dev/homebrew-tap` | the Homebrew job prints a notice and skips |
-| npm trusted publisher | npm package setting | each of `@merittdev/horus` and the four `@merittdev/horus-<platform>` packages trusts GitHub Actions `Meritt-dev/horus-rust` → `release.yml` (no token, no OTP; the account enforces 2FA on publishing, so tokens get `EOTP`) | the npm job fails with `ENEEDAUTH`/`E404`; publish the release by hand with `npm publish <tgz>` (2FA) and add the trust |
-| `HORUS_SOURCE_REF` | variable | `Meritt-dev/horus` ref the wheel is built from | defaults to `v0.23.0` |
+| npm trusted publisher | npm package setting | each of `@merittdev/horus` and the four `@merittdev/horus-<platform>` packages trusts GitHub Actions `Meritt-dev/horus` → `release.yml` (no token, no OTP; the account enforces 2FA on publishing, so tokens get `EOTP`) | the npm job fails with `ENEEDAUTH`/`E404`; publish the release by hand with `npm publish <tgz>` (2FA) and add the trust |
+| `HORUS_SOURCE_REF` | variable | `Meritt-dev/horus-ts` ref the wheel is built from | defaults to `v0.23.0` |
 | `CODESIGN_CERTIFICATE`, `CODESIGN_CERTIFICATE_PASSWORD`, `CODESIGN_IDENTITY` | secrets | Developer ID signing (base64 `.p12`, its password, e.g. `Developer ID Application: Meritt Dev (TEAMID)`) | unused while `macos-sign = false` |
 | `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | secrets | `notarytool` (app-specific password) | the notarize job prints a notice and skips (it also needs `CODESIGN_IDENTITY`) |
 
@@ -114,12 +117,13 @@ Notarization doesn't modify the archives. A bare Mach-O can't be stapled, so Gat
 the ticket online. The first signed release should confirm that dist signs with the hardened
 runtime and a timestamp, which notarization requires.
 
-**Wheel source.** `Meritt-dev/horus` is public, so the checkout needs no token. The backend is
+**Wheel source.** `Meritt-dev/horus-ts` is public, so the checkout needs no token. The backend is
 versioned on its own: the checkout uses `vars.HORUS_SOURCE_REF`, falling back to `v0.23.0`
 (`bcdc5f0`, the commit npm `@merittdev/horus@0.23.0` was built from). The wheel step then stamps
 `packages/source-py` to `HORUS_VERSION` (e.g. 0.20.0 → 0.24.0), so the bundled wheel always
-equals `PINNED_SOURCE_VERSION`. When the backend changes, tag it in `Meritt-dev/horus` and point
-`HORUS_SOURCE_REF` at the tag.
+equals `PINNED_SOURCE_VERSION`. `Meritt-dev/horus-ts` is archived, so the backend is frozen at
+that ref: to change it, unarchive the repo, tag the change and point `HORUS_SOURCE_REF` at the tag,
+or move `packages/source-py` into this repo.
 
 ## Cutting a release
 
@@ -146,9 +150,9 @@ installed (see PORTING.md for the Docker volume layout).
 
 ## Upgrading from the TypeScript horus (≤ 0.23.0)
 
-- **npm:** `npm i -g @merittdev/horus@latest` (or the TS `horus update`, which self-replaces from
-  `Meritt-dev/horus` releases and therefore stays on TS; use npm). It swaps the TS bundle for the
-  launcher and native binary.
+- **npm:** `npm i -g @merittdev/horus@latest` swaps the TS bundle for the launcher and native
+  binary. The TS `horus update` reads `Meritt-dev/horus` releases, which are now this repo's: it
+  reports the new version, finds no TS-style asset, and prints the curl installer as the fallback.
 - **Homebrew:** `brew upgrade horus` once the tap's `horus.rb` is the Rust formula. It drops
   `depends_on "node"`.
 - **Config and secrets** (`~/.horus`, `.horus/config.json`, encrypted `secrets.local.json`) are
@@ -198,7 +202,7 @@ trusts this repo's release workflow (needs npm ≥ 11.10 for `npm trust`; run wi
 ```sh
 for p in @merittdev/horus @merittdev/horus-darwin-arm64 @merittdev/horus-darwin-x64 \
          @merittdev/horus-linux-arm64 @merittdev/horus-linux-x64; do
-  npx -y npm@latest trust github "$p" --file release.yml --repo Meritt-dev/horus-rust --allow-publish -y
+  npx -y npm@latest trust github "$p" --file release.yml --repo Meritt-dev/horus --allow-publish -y
 done
 ```
 

@@ -26,7 +26,7 @@ use crate::lib::bundled_backend::install_bundled_backend;
 use crate::lib::cloud::session::repo_root_or_cwd;
 use crate::lib::format::{bold, cyan, dim, green, red, yellow};
 
-/// Release repo, from the workspace `repository` (Cargo.toml), e.g. `Meritt-dev/horus-rust`.
+/// Release repo, from the workspace `repository` (Cargo.toml), e.g. `Meritt-dev/horus`.
 fn release_repo() -> &'static str {
     env!("CARGO_PKG_REPOSITORY").trim_start_matches("https://github.com/").trim_end_matches('/')
 }
