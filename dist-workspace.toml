@@ -19,7 +19,7 @@ tap = "Meritt-dev/homebrew-tap"
 formula = "horus"
 publish-jobs = ["./publish-homebrew", "./publish-npm"]
 post-announce-jobs = ["./notarize-macos"]
-# Builds horus_source.whl from Meritt-dev/horus-ts and stamps HORUS_VERSION before `dist build`.
+# Builds horus_source.whl from packages/source-py and stamps HORUS_VERSION before `dist build`.
 github-build-setup = "../build-setup.yml"
 # Off until the Apple certificate secrets exist: dist 0.33 does NOT skip signing when
 # CODESIGN_* are empty, it fails the macOS builds. Set to true once CODESIGN_CERTIFICATE,

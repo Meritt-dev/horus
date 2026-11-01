@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# The frontend dist is a build artifact: built by scripts/release/build-source-wheel.sh
+# at release time and shipped inside the wheel — never committed.
+
+# Virtual environments
+.venv
+
+# Horus index data
+.horus/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+docs/
+node_modules/
+.claude/
+.agents/

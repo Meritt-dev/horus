@@ -1,0 +1,657 @@
+from __future__ import annotations
+
+import pytest
+
+from horus_source.core.graph.graph import KnowledgeGraph
+from horus_source.core.graph.model import (
+    GraphNode,
+    GraphRelationship,
+    NodeLabel,
+    RelType,
+    generate_id,
+)
+from horus_source.core.ingestion.dead_code import process_dead_code
+
+
+def _add_file_node(graph: KnowledgeGraph, path: str) -> str:
+    """Add a File node and return its ID."""
+    node_id = generate_id(NodeLabel.FILE, path)
+    graph.add_node(
+        GraphNode(
+            id=node_id,
+            label=NodeLabel.FILE,
+            name=path.rsplit("/", 1)[-1],
+            file_path=path,
+        )
+    )
+    return node_id
+
+def _add_symbol_node(
+    graph: KnowledgeGraph,
+    label: NodeLabel,
+    file_path: str,
+    name: str,
+    *,
+    is_entry_point: bool = False,
+    is_exported: bool = False,
+    class_name: str = "",
+) -> str:
+    """Add a symbol node and return its ID."""
+    symbol_name = (
+        f"{class_name}.{name}" if label == NodeLabel.METHOD and class_name else name
+    )
+    node_id = generate_id(label, file_path, symbol_name)
+    graph.add_node(
+        GraphNode(
+            id=node_id,
+            label=label,
+            name=name,
+            file_path=file_path,
+            class_name=class_name,
+            is_entry_point=is_entry_point,
+            is_exported=is_exported,
+        )
+    )
+    return node_id
+
+def _add_calls_relationship(
+    graph: KnowledgeGraph,
+    source_id: str,
+    target_id: str,
+) -> None:
+    """Add a CALLS relationship from *source_id* to *target_id*."""
+    rel_id = f"calls:{source_id}->{target_id}"
+    graph.add_relationship(
+        GraphRelationship(
+            id=rel_id,
+            type=RelType.CALLS,
+            source=source_id,
+            target=target_id,
+        )
+    )
+
+@pytest.fixture()
+def graph() -> KnowledgeGraph:
+    """Build a graph matching the test fixture specification.
+
+    - Function:src/main.py:main         (entry point, no incoming calls)
+    - Function:src/auth.py:validate     (has incoming calls from main)
+    - Function:src/auth.py:unused_helper (no calls, not entry point) -> DEAD
+    - Method:src/models.py:User.__init__ (no calls, constructor)    -> NOT dead
+    - Function:src/tests/test_auth.py:test_validate (test function) -> NOT dead
+    - Function:src/utils.py:orphan_function (no calls, not entry)   -> DEAD
+    """
+    g = KnowledgeGraph()
+
+    # Files
+    _add_file_node(g, "src/main.py")
+    _add_file_node(g, "src/auth.py")
+    _add_file_node(g, "src/models.py")
+    _add_file_node(g, "src/tests/test_auth.py")
+    _add_file_node(g, "src/utils.py")
+
+    # Symbols
+    main_id = _add_symbol_node(
+        g, NodeLabel.FUNCTION, "src/main.py", "main", is_entry_point=True
+    )
+    validate_id = _add_symbol_node(
+        g, NodeLabel.FUNCTION, "src/auth.py", "validate"
+    )
+    _add_symbol_node(
+        g, NodeLabel.FUNCTION, "src/auth.py", "unused_helper"
+    )
+    _add_symbol_node(
+        g,
+        NodeLabel.METHOD,
+        "src/models.py",
+        "__init__",
+        class_name="User",
+    )
+    _add_symbol_node(
+        g, NodeLabel.FUNCTION, "src/tests/test_auth.py", "test_validate"
+    )
+    _add_symbol_node(
+        g, NodeLabel.FUNCTION, "src/utils.py", "orphan_function"
+    )
+
+    # CALLS: main -> validate
+    _add_calls_relationship(g, main_id, validate_id)
+
+    return g
+
+class TestDetectsUnusedFunction:
+    def test_detects_unused_function(self, graph: KnowledgeGraph) -> None:
+        process_dead_code(graph)
+
+        unused_id = generate_id(
+            NodeLabel.FUNCTION, "src/auth.py", "unused_helper"
+        )
+        node = graph.get_node(unused_id)
+        assert node is not None
+        assert node.is_dead is True
+
+class TestSkipsEntryPoints:
+    def test_skips_entry_points(self, graph: KnowledgeGraph) -> None:
+        process_dead_code(graph)
+
+        main_id = generate_id(NodeLabel.FUNCTION, "src/main.py", "main")
+        node = graph.get_node(main_id)
+        assert node is not None
+        assert node.is_dead is False
+
+class TestSkipsCalledFunctions:
+    def test_skips_called_functions(self, graph: KnowledgeGraph) -> None:
+        process_dead_code(graph)
+
+        validate_id = generate_id(
+            NodeLabel.FUNCTION, "src/auth.py", "validate"
+        )
+        node = graph.get_node(validate_id)
+        assert node is not None
+        assert node.is_dead is False
+
+class TestSkipsConstructors:
+    def test_skips_constructors(self, graph: KnowledgeGraph) -> None:
+        process_dead_code(graph)
+
+        init_id = generate_id(
+            NodeLabel.METHOD, "src/models.py", "User.__init__"
+        )
+        node = graph.get_node(init_id)
+        assert node is not None
+        assert node.is_dead is False
+
+class TestSkipsTestFunctions:
+    def test_skips_test_functions(self, graph: KnowledgeGraph) -> None:
+        process_dead_code(graph)
+
+        test_id = generate_id(
+            NodeLabel.FUNCTION, "src/tests/test_auth.py", "test_validate"
+        )
+        node = graph.get_node(test_id)
+        assert node is not None
+        assert node.is_dead is False
+
+class TestSkipsDunderMethods:
+    def test_skips_dunder_methods(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/models.py")
+        _add_symbol_node(
+            g,
+            NodeLabel.METHOD,
+            "src/models.py",
+            "__str__",
+            class_name="User",
+        )
+        _add_symbol_node(
+            g,
+            NodeLabel.METHOD,
+            "src/models.py",
+            "__repr__",
+            class_name="User",
+        )
+
+        process_dead_code(g)
+
+        str_id = generate_id(
+            NodeLabel.METHOD, "src/models.py", "User.__str__"
+        )
+        repr_id = generate_id(
+            NodeLabel.METHOD, "src/models.py", "User.__repr__"
+        )
+
+        str_node = g.get_node(str_id)
+        repr_node = g.get_node(repr_id)
+
+        assert str_node is not None
+        assert str_node.is_dead is False
+
+        assert repr_node is not None
+        assert repr_node.is_dead is False
+
+class TestReturnsCount:
+    def test_returns_count(self, graph: KnowledgeGraph) -> None:
+        count = process_dead_code(graph)
+
+        # unused_helper and orphan_function are the two dead symbols.
+        assert count == 2
+
+class TestEmptyGraph:
+    def test_empty_graph(self) -> None:
+        g = KnowledgeGraph()
+        count = process_dead_code(g)
+        assert count == 0
+
+def _add_uses_type_relationship(
+    graph: KnowledgeGraph,
+    source_id: str,
+    target_id: str,
+) -> None:
+    """Add a USES_TYPE relationship from *source_id* to *target_id*."""
+    rel_id = f"uses_type:{source_id}->{target_id}"
+    graph.add_relationship(
+        GraphRelationship(
+            id=rel_id,
+            type=RelType.USES_TYPE,
+            source=source_id,
+            target=target_id,
+        )
+    )
+
+class TestSkipsTypeReferencedClasses:
+    def test_class_with_uses_type_not_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/models.py")
+        _add_file_node(g, "src/handler.py")
+
+        class_id = _add_symbol_node(
+            g, NodeLabel.CLASS, "src/models.py", "Status"
+        )
+        func_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/handler.py", "handle",
+            is_entry_point=True,
+        )
+        _add_uses_type_relationship(g, func_id, class_id)
+
+        process_dead_code(g)
+
+        node = g.get_node(class_id)
+        assert node is not None
+        assert node.is_dead is False
+
+    def test_function_with_only_uses_type_still_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/utils.py")
+        _add_file_node(g, "src/handler.py")
+
+        func_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/utils.py", "unused_func"
+        )
+        other_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/handler.py", "handle",
+            is_entry_point=True,
+        )
+        _add_uses_type_relationship(g, other_id, func_id)
+
+        process_dead_code(g)
+
+        node = g.get_node(func_id)
+        assert node is not None
+        assert node.is_dead is True
+
+class TestSkipsFrameworkDecoratedFunctions:
+    def test_framework_decorated_function_not_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/server.py")
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/server.py", "list_tools"
+        )
+        node = g.get_node(node_id)
+        assert node is not None
+        node.properties["decorators"] = ["server.list_tools"]
+
+        process_dead_code(g)
+
+        assert node.is_dead is False
+
+    def test_simple_decorator_still_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/utils.py")
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/utils.py", "unused"
+        )
+        node = g.get_node(node_id)
+        assert node is not None
+        node.properties["decorators"] = ["staticmethod"]
+
+        process_dead_code(g)
+
+        assert node.is_dead is True
+
+    def test_typing_overload_decorator_exempts(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/utils.py")
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/utils.py", "overloaded"
+        )
+        node = g.get_node(node_id)
+        assert node is not None
+        node.properties["decorators"] = ["typing.overload"]
+
+        process_dead_code(g)
+
+        assert node.is_dead is False
+
+    def test_functools_wraps_still_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/utils.py")
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/utils.py", "wrapper"
+        )
+        node = g.get_node(node_id)
+        assert node is not None
+        node.properties["decorators"] = ["functools.wraps"]
+
+        process_dead_code(g)
+
+        assert node.is_dead is True
+
+class TestProtocolConformance:
+    def test_conforming_class_methods_not_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/base.py")
+        _add_file_node(g, "src/impl.py")
+        _add_file_node(g, "src/main.py")
+
+        # Protocol class with is_protocol annotation
+        proto_id = _add_symbol_node(
+            g, NodeLabel.CLASS, "src/base.py", "StorageBackend"
+        )
+        proto_node = g.get_node(proto_id)
+        assert proto_node is not None
+        proto_node.properties["is_protocol"] = True
+
+        # Protocol methods
+        proto_init_id = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/base.py", "initialize",
+            class_name="StorageBackend",
+        )
+        proto_close_id = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/base.py", "close",
+            class_name="StorageBackend",
+        )
+
+        # Concrete class structurally conforming (has both methods)
+        _add_symbol_node(
+            g, NodeLabel.CLASS, "src/impl.py", "KuzuBackend"
+        )
+        impl_init_id = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/impl.py", "initialize",
+            class_name="KuzuBackend",
+        )
+        impl_close_id = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/impl.py", "close",
+            class_name="KuzuBackend",
+        )
+
+        # A caller calls StorageBackend.initialize (not KuzuBackend)
+        caller_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "src/main.py", "main",
+            is_entry_point=True,
+        )
+        _add_calls_relationship(g, caller_id, proto_init_id)
+        _add_calls_relationship(g, caller_id, proto_close_id)
+
+        process_dead_code(g)
+
+        # Protocol methods are alive (have incoming CALLS)
+        assert g.get_node(proto_init_id).is_dead is False
+        assert g.get_node(proto_close_id).is_dead is False
+
+        # Concrete methods should be un-flagged by Protocol conformance
+        assert g.get_node(impl_init_id).is_dead is False
+        assert g.get_node(impl_close_id).is_dead is False
+
+    def test_non_conforming_class_still_dead(self) -> None:
+        g = KnowledgeGraph()
+        _add_file_node(g, "src/base.py")
+        _add_file_node(g, "src/partial.py")
+
+        proto_id = _add_symbol_node(
+            g, NodeLabel.CLASS, "src/base.py", "Backend"
+        )
+        proto_node = g.get_node(proto_id)
+        assert proto_node is not None
+        proto_node.properties["is_protocol"] = True
+
+        _add_symbol_node(
+            g, NodeLabel.METHOD, "src/base.py", "initialize",
+            class_name="Backend",
+        )
+        _add_symbol_node(
+            g, NodeLabel.METHOD, "src/base.py", "close",
+            class_name="Backend",
+        )
+
+        # Partial class only has "initialize", not "close"
+        _add_symbol_node(
+            g, NodeLabel.CLASS, "src/partial.py", "Partial"
+        )
+        partial_method_id = _add_symbol_node(
+            g, NodeLabel.METHOD, "src/partial.py", "initialize",
+            class_name="Partial",
+        )
+
+        process_dead_code(g)
+
+        partial_method = g.get_node(partial_method_id)
+        assert partial_method is not None
+        assert partial_method.is_dead is True
+
+
+class TestMultiLanguageExemptions:
+    """Go/Java/Rust symbols must not be flagged dead just because the
+    Python-centric heuristics don't recognize their conventions (HS-6)."""
+
+    def test_main_is_never_dead(self) -> None:
+        # Go/Rust/Java program entry point — parsers don't all set is_entry_point.
+        for path in ("cmd/app/main.go", "src/main.rs", "Main.java"):
+            g = KnowledgeGraph()
+            node_id = _add_symbol_node(g, NodeLabel.FUNCTION, path, "main")
+            process_dead_code(g)
+            assert g.get_node(node_id).is_dead is False, path
+
+    def test_go_test_and_benchmark_funcs_are_exempt(self) -> None:
+        g = KnowledgeGraph()
+        ids = [
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "TestSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "BenchmarkSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "ExampleSync"),
+            _add_symbol_node(g, NodeLabel.FUNCTION, "pkg/svc_test.go", "FuzzSync"),
+        ]
+        process_dead_code(g)
+        for nid in ids:
+            assert g.get_node(nid).is_dead is False
+
+    def test_exported_symbol_is_exempt(self) -> None:
+        # is_exported is set by the parsers (Go uppercase, Rust pub, Java public).
+        g = KnowledgeGraph()
+        node_id = _add_symbol_node(
+            g, NodeLabel.FUNCTION, "pkg/svc.go", "DoThing", is_exported=True
+        )
+        process_dead_code(g)
+        assert g.get_node(node_id).is_dead is False
+
+    def test_go_test_prefixes_do_not_over_exempt_other_languages(self) -> None:
+        # A non-.go class named like a Go example must still be flagged dead —
+        # the Benchmark/Example/Fuzz exemption is gated to .go files.
+        g = KnowledgeGraph()
+        node_id = _add_symbol_node(g, NodeLabel.CLASS, "src/widgets.py", "ExampleWidget")
+        process_dead_code(g)
+        assert g.get_node(node_id).is_dead is True
+
+
+class TestExportedClassMethodExemption:
+    """Dogfood P1: 345 of hono's 375 dead flags were public methods of exported
+    classes — the library surface itself. Methods inherit export status."""
+
+    def test_public_method_of_exported_class_not_dead(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/handler.ts")
+        _add_symbol_node(
+            graph, NodeLabel.CLASS, "src/handler.ts", "LambdaAdapter", is_exported=True
+        )
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "getPath", class_name="LambdaAdapter"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is False
+
+    def test_private_methods_of_exported_class_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/handler.ts")
+        _add_symbol_node(
+            graph, NodeLabel.CLASS, "src/handler.ts", "LambdaAdapter", is_exported=True
+        )
+        conv = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "_internal", class_name="LambdaAdapter"
+        )
+        hard = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/handler.ts", "#hidden", class_name="LambdaAdapter"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(conv).is_dead is True
+        assert graph.get_node(hard).is_dead is True
+
+    def test_method_of_unexported_class_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/util.ts")
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/util.ts", "Scratch")
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/util.ts", "compute", class_name="Scratch"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is True
+
+    def test_same_class_name_in_other_file_not_exempted(self) -> None:
+        # The exemption is keyed by (file_path, class_name) — an exported `Foo` in
+        # one file must not launder an unexported `Foo` elsewhere.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/a.ts")
+        _add_file_node(graph, "src/b.ts")
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/a.ts", "Foo", is_exported=True)
+        _add_symbol_node(graph, NodeLabel.CLASS, "src/b.ts", "Foo")
+        method_id = _add_symbol_node(
+            graph, NodeLabel.METHOD, "src/b.ts", "run", class_name="Foo"
+        )
+        process_dead_code(graph)
+        assert graph.get_node(method_id).is_dead is True
+
+
+class TestNonProductDirExemption:
+    """Benchmarks/examples are exercised by external runners — never dead."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "benchmarks/http/index.ts",
+            "examples/web/app.py",
+            "perf-measures/startup/run.ts",
+            "runtime-tests/deno/x.ts",
+            "demo/quickstart.go",
+        ],
+    )
+    def test_non_product_paths_exempt(self, path: str) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, path)
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "helper")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is False
+
+    def test_src_still_eligible(self) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/inner/util.ts")
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/inner/util.ts", "unused")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is True
+
+
+class TestColocatedJsTestFiles:
+    @pytest.mark.parametrize(
+        "path",
+        ["src/jsx/index.test.tsx", "src/router.test.ts", "lib/api.spec.js"],
+    )
+    def test_js_colocated_test_files_exempt(self, path: str) -> None:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, path)
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "fixtureHelper")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is False
+
+    def test_dotted_prod_name_not_over_matched(self) -> None:
+        # 'latest.ts' / 'contest.py' style names must NOT be treated as tests.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/contest.py")
+        fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/contest.py", "unused")
+        process_dead_code(graph)
+        assert graph.get_node(fn_id).is_dead is True
+
+
+def test_cfg_test_symbols_exempt() -> None:
+    """Rust `#[cfg(test)] mod` symbols carry a decorator marker — never dead."""
+    graph = KnowledgeGraph()
+    _add_file_node(graph, "src/lib.rs")
+    fn_id = generate_id(NodeLabel.FUNCTION, "src/lib.rs", "helper")
+    graph.add_node(
+        GraphNode(
+            id=fn_id,
+            label=NodeLabel.FUNCTION,
+            name="helper",
+            file_path="src/lib.rs",
+            properties={"decorators": ["cfg(test)"]},
+        )
+    )
+    process_dead_code(graph)
+    assert graph.get_node(fn_id).is_dead is False
+
+
+class TestTestOnlyCallers:
+    """Test usage is not product usage: a private helper whose ONLY callers are
+    tests is dead product code — while a single product caller keeps it alive."""
+
+    def _build(self, *, with_product_caller: bool) -> tuple[KnowledgeGraph, str]:
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/util.py")
+        helper_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/util.py", "_normalize")
+
+        _add_file_node(graph, "tests/test_util.py")
+        test_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "tests/test_util.py", "test_normalize"
+        )
+        _add_calls_relationship(graph, test_id, helper_id)
+
+        if with_product_caller:
+            _add_file_node(graph, "src/app.py")
+            caller_id = _add_symbol_node(graph, NodeLabel.FUNCTION, "src/app.py", "serve")
+            _add_calls_relationship(graph, caller_id, helper_id)
+        return graph, helper_id
+
+    def test_helper_called_only_from_tests_is_dead(self) -> None:
+        graph, helper_id = self._build(with_product_caller=False)
+        process_dead_code(graph)
+        assert graph.get_node(helper_id).is_dead is True
+
+    def test_product_caller_keeps_helper_alive(self) -> None:
+        graph, helper_id = self._build(with_product_caller=True)
+        process_dead_code(graph)
+        assert graph.get_node(helper_id).is_dead is False
+
+    def test_exported_api_never_dead_even_with_only_test_callers(self) -> None:
+        # The known false positive: public API whose usage the graph cannot
+        # trace must never be flagged merely because only tests call it.
+        graph = KnowledgeGraph()
+        _add_file_node(graph, "src/api.py")
+        api_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "src/api.py", "create_client", is_exported=True
+        )
+        _add_file_node(graph, "tests/test_api.py")
+        test_id = _add_symbol_node(
+            graph, NodeLabel.FUNCTION, "tests/test_api.py", "test_create_client"
+        )
+        _add_calls_relationship(graph, test_id, api_id)
+        process_dead_code(graph)
+        assert graph.get_node(api_id).is_dead is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["docs/.vitepress/theme/index.ts", "gulpfile.js", "rollup.config.js", "sandbox/client.js", "webpack.dev.config.mjs"],
+)
+def test_docs_and_build_config_exempt(path: str) -> None:
+    """Dogfood cycle-3 (axios): docs-site + root build-tool config helpers are
+    invoked by tooling, never by repo code — not dead-code candidates."""
+    graph = KnowledgeGraph()
+    _add_file_node(graph, path)
+    fn_id = _add_symbol_node(graph, NodeLabel.FUNCTION, path, "toolingHelper")
+    process_dead_code(graph)
+    assert graph.get_node(fn_id).is_dead is False

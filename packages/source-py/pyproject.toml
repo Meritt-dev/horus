@@ -1,0 +1,109 @@
+[project]
+name = "horus-source"
+version = "0.20.0"
+description = "Graph-powered code intelligence engine — indexes codebases into a knowledge graph, exposed via MCP tools for AI agents and a CLI for developers."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Mohammad Hammoud", email = "mohammad.hammoud.lb@hotmail.com" }
+]
+keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "static-analysis", "dead-code", "claude-code"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Code Generators",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.15.0",
+    "rich>=13.0.0",
+    "tree-sitter>=0.25.0",
+    "tree-sitter-python>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-typescript>=0.23.0",
+    "sqlite-vec>=0.1.9",
+    "igraph>=1.0.0",
+    "leidenalg>=0.11.0",
+    "fastembed>=0.7.0",
+    # MCP 2 removes streamablehttp_client, used by the shared-host stdio proxy.
+    "mcp>=1.0.0,<2",
+    "watchfiles>=1.0.0",
+    "pathspec>=1.0.4",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "sse-starlette>=2.0.0",
+    "tree-sitter-go>=0.23.0",
+    "tree-sitter-java>=0.23.0",
+    "tree-sitter-rust>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Mhmdhammoud/horus-source"
+Repository = "https://github.com/Mhmdhammoud/horus-source"
+Issues = "https://github.com/Mhmdhammoud/horus-source/issues"
+
+[project.optional-dependencies]
+neo4j = ["neo4j>=5.0.0"]
+# KùzuDB is no longer the default backend (HOR-392); it remains installable for
+# one deprecation release via HORUS_SOURCE_STORAGE_BACKEND=kuzu. Install with the
+# ``kuzu`` extra.
+kuzu = ["kuzu>=0.11.0"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+    # Kept in dev so the cross-backend parity suite still exercises KùzuDB.
+    "kuzu>=0.11.0",
+]
+
+[project.scripts]
+horus-source = "horus_source.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["src/horus_source"]
+artifacts = [
+    "src/horus_source/web/frontend/dist/**",
+]
+
+[tool.hatch.build.targets.wheel]
+exclude = [
+    "src/horus_source/web/frontend/node_modules",
+    "src/horus_source/web/frontend/src",
+    "src/horus_source/web/frontend/package.json",
+    "src/horus_source/web/frontend/package-lock.json",
+    "src/horus_source/web/frontend/tsconfig*.json",
+    "src/horus_source/web/frontend/vite.config.ts",
+    "src/horus_source/web/frontend/index.html",
+    "src/horus_source/web/frontend/.gitignore",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+# E501 (line-too-long) is deferred: the tree predates enforcement with ~76
+# long lines, and `ruff format` would rewrite thousands of unrelated lines
+# (it explodes collection literals). Re-enable after a dedicated formatting
+# pass. Every bug-catching rule (F/N/W and the rest of E) stays enforced.
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "allow_update_notice: run CLI tests with the real update notifier enabled",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

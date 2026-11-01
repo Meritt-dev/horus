@@ -1,0 +1,56 @@
+name: source-py
+
+# Gates the source-intelligence backend (packages/source-py). Ported from the
+# source-py job in the TypeScript repo's ci.yml.
+on:
+  pull_request:
+    paths:
+      - "packages/source-py/**"
+      - "scripts/release/build-source-wheel.sh"
+      - ".github/workflows/source-py.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/source-py/**"
+      - "scripts/release/build-source-wheel.sh"
+      - ".github/workflows/source-py.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  source-py:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/source-py
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uvx ruff check src/ tests/
+
+      - run: uv lock --check
+
+      # Wheel installs resolve third-party dependencies independently of uv.lock.
+      # Catch incompatible releases before shipping a backend that cannot start.
+      - name: Verify fresh source package startup
+        run: uv tool run --isolated --from . horus-source --version
+
+      - run: uv sync --extra dev --frozen
+
+      - run: uv run --extra dev pytest tests/ -q
+
+  wheel:
+    # Builds the bundled wheel exactly as a release does, so a broken build fails
+    # on the pull request instead of during a tagged release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: bash scripts/release/build-source-wheel.sh

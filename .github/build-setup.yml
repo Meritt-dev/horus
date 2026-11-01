@@ -5,15 +5,6 @@
 - name: Stamp HORUS_VERSION from the release tag
   shell: bash
   run: echo "HORUS_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-- name: Check out the source backend (Meritt-dev/horus-ts)
-  uses: actions/checkout@v6
-  with:
-    repository: Meritt-dev/horus-ts
-    # Meritt-dev/horus-ts (the archived TS repo) is public; no token. The backend is versioned independently of this CLI:
-    # repo variable HORUS_SOURCE_REF picks the ref, else v0.23.0 (bcdc5f0, the commit npm
-    # @merittdev/horus@0.23.0 was published from). The wheel is restamped to HORUS_VERSION below.
-    ref: ${{ vars.HORUS_SOURCE_REF || 'v0.23.0' }}
-    path: _horus-src
 - name: Install uv
   uses: astral-sh/setup-uv@v5
 - name: Install Node.js
@@ -24,8 +15,8 @@
   shell: bash
   run: |
     set -euo pipefail
-    # One bundle, one version: stamp source-py exactly like horus' release.yml does.
-    python3 - "$HORUS_VERSION" _horus-src/packages/source-py <<'PYEOF'
+    # One bundle, one version: stamp packages/source-py to the release version.
+    python3 - "$HORUS_VERSION" packages/source-py <<'PYEOF'
     import re, sys
     version, src = sys.argv[1], sys.argv[2]
     pp = f"{src}/pyproject.toml"
@@ -39,6 +30,6 @@
     assert n == 1
     open(lock, "w").write(t)
     PYEOF
-    bash _horus-src/scripts/release/build-source-wheel.sh
-    cp _horus-src/packages/source-py/dist/horus_source.whl crates/cli/horus_source.whl
+    bash scripts/release/build-source-wheel.sh
+    cp packages/source-py/dist/horus_source.whl crates/cli/horus_source.whl
     unzip -l crates/cli/horus_source.whl | grep -q "horus_source-${HORUS_VERSION}.dist-info/"
